@@ -1,10 +1,26 @@
+import 'dart:async';
+import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'logging_service.dart';
 
 class CommandExecutor {
+  LoggingService? _loggingService;
+  
+  // Stream to notify UI about clipboard sync events (for snackbar)
+  final StreamController<String> _clipboardSyncController = StreamController.broadcast();
+  Stream<String> get clipboardSyncStream => _clipboardSyncController.stream;
+
+  void setLoggingService(LoggingService loggingService) {
+    _loggingService = loggingService;
+  }
+
+  void _log(String message) {
+    final logMsg = '[CMD] $message';
+    print(logMsg);
+    _loggingService?.log(logMsg);
+  }
+
   Future<void> execute(Map<String, dynamic> command) async {
-    // Android client sends: { "type": "...", "payload": { ... } }
-    // Original design: { "action": "...", ... }
-    
     String? action = command['action'];
     Map<String, dynamic>? payload;
 
@@ -12,18 +28,14 @@ class CommandExecutor {
       final type = command['type'] as String;
       payload = command['payload'] as Map<String, dynamic>?;
       
-      // Map event types to actions if needed, or handle directly
       if (type == 'open_url') {
         action = 'open_url';
-        // Payload might contain 'url'
       } else if (type == 'clipboard.text_copied') {
-        // Just log for now, or maybe this is an event FROM Android?
-        print('CommandExecutor: Received clipboard event: $payload');
+        await _handleClipboardSync(payload);
         return;
       }
     }
 
-    // Fallback for flat structure or standard action
     final urlString = payload?['url'] ?? command['url'];
 
     switch (action) {
@@ -32,15 +44,35 @@ class CommandExecutor {
           final uri = Uri.parse(urlString);
           if (await canLaunchUrl(uri)) {
              await launchUrl(uri);
-             print('CommandExecutor: Launched $urlString');
+             _log('Launched $urlString');
           } else {
-            print('CommandExecutor: Could not launch $urlString');
+            _log('Could not launch $urlString');
           }
         }
         break;
-      // Add other commands here
       default:
-        print('CommandExecutor: Unknown action $action or type ${command['type']}');
+        _log('Unknown action $action or type ${command['type']}');
     }
+  }
+
+  Future<void> _handleClipboardSync(Map<String, dynamic>? payload) async {
+    final text = payload?['text'] as String?;
+    if (text == null || text.isEmpty) {
+      _log('Clipboard sync: empty or null text, ignoring');
+      return;
+    }
+
+    try {
+      await Clipboard.setData(ClipboardData(text: text));
+      final preview = text.length > 50 ? '${text.substring(0, 50)}...' : text;
+      _log('Clipboard synced: "$preview"');
+      _clipboardSyncController.add(text);
+    } catch (e) {
+      _log('Clipboard sync failed: $e');
+    }
+  }
+
+  void dispose() {
+    _clipboardSyncController.close();
   }
 }

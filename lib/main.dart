@@ -62,6 +62,7 @@ class _AgentHomePageState extends State<AgentHomePage> {
   bool _isAdvertising = false;
   int? _port;
   StreamSubscription? _commandSubscription;
+  StreamSubscription<String>? _clipboardSyncSubscription;
 
   @override
   void initState() {
@@ -82,6 +83,7 @@ class _AgentHomePageState extends State<AgentHomePage> {
       // Wire logging into services so events appear in the UI
       wsService.setLoggingService(loggingService);
       discoveryService.setLoggingService(loggingService);
+      commandExecutor.setLoggingService(loggingService);
 
       // 1. Start WebSocket Server
       _port = await wsService.startServer();
@@ -101,6 +103,33 @@ class _AgentHomePageState extends State<AgentHomePage> {
         commandExecutor.execute(command);
       });
 
+      // 4. Listen for clipboard sync events to show snackbar
+      _clipboardSyncSubscription = commandExecutor.clipboardSyncStream.listen((text) {
+        if (mounted) {
+          final preview = text.length > 60 ? '${text.substring(0, 60)}...' : text;
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Row(
+                children: [
+                  const Icon(Icons.content_paste, color: Colors.white, size: 18),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Clipboard synced: "$preview"',
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ],
+              ),
+              backgroundColor: Colors.green.shade700,
+              duration: const Duration(seconds: 3),
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
+        }
+      });
+
     } catch (e) {
       loggingService.log('Error starting services: $e');
     }
@@ -115,6 +144,7 @@ class _AgentHomePageState extends State<AgentHomePage> {
     await discoveryService.stopAdvertising();
     await wsService.stopServer();
     await _commandSubscription?.cancel();
+    await _clipboardSyncSubscription?.cancel();
 
     setState(() {
       _isAdvertising = false;
