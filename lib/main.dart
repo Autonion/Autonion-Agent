@@ -80,10 +80,11 @@ class _AgentHomePageState extends State<AgentHomePage> {
     loggingService.log('Starting services...');
 
     try {
-      // Wire logging into services so events appear in the UI
+      // Wire logging and dependencies
       wsService.setLoggingService(loggingService);
       discoveryService.setLoggingService(loggingService);
       commandExecutor.setLoggingService(loggingService);
+      commandExecutor.setWebSocketService(wsService);
 
       // 1. Start WebSocket Server
       _port = await wsService.startServer();

@@ -3,8 +3,11 @@ import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'logging_service.dart';
 
+import 'websocket_service.dart';
+
 class CommandExecutor {
   LoggingService? _loggingService;
+  WebSocketService? _webSocketService;
   
   // Stream to notify UI about clipboard sync events (for snackbar)
   final StreamController<String> _clipboardSyncController = StreamController.broadcast();
@@ -14,6 +17,10 @@ class CommandExecutor {
     _loggingService = loggingService;
   }
 
+  void setWebSocketService(WebSocketService webSocketService) {
+    _webSocketService = webSocketService;
+  }
+
   void _log(String message) {
     final logMsg = '[CMD] $message';
     print(logMsg);
@@ -21,6 +28,25 @@ class CommandExecutor {
   }
 
   Future<void> execute(Map<String, dynamic> command) async {
+    // 1. Handle natural language prompts from Android
+    if (command.containsKey('prompt')) {
+      final prompt = command['prompt'];
+      _log('Received prompt from Android: "$prompt"');
+      
+      // Forward to Browser Extension
+      if (_webSocketService != null) {
+        _webSocketService!.broadcastEvent({
+          'type': 'execute_prompt',
+          'payload': command, // Forward the entire payload (includes timestamp, ids)
+          'target': 'extension',
+        });
+        _log('Forwarded prompt to Browser Extension');
+      } else {
+        _log('Error: WebSocketService not linked, cannot forward to extension');
+      }
+      return;
+    }
+
     String? action = command['action'];
     Map<String, dynamic>? payload;
 
@@ -51,7 +77,51 @@ class CommandExecutor {
         }
         break;
       default:
-        _log('Unknown action $action or type ${command['type']}');
+        // Handle messages from the Browser Extension
+        if (command.containsKey('source') && command['source'] == 'extension') {
+          _handleExtensionMessage(command);
+        } else {
+          _log('Unknown action $action or type ${command['type']}');
+        }
+    }
+  }
+
+  void _handleExtensionMessage(Map<String, dynamic> message) {
+    final type = message['type'] as String?;
+    final payload = message['payload'] as Map<String, dynamic>?;
+
+    switch (type) {
+      case 'url_trigger':
+        final domain = payload?['domain'] ?? 'unknown';
+        final category = payload?['category'] ?? 'other';
+        _log('URL Trigger: $domain → $category');
+        // If it's a meeting domain, would broadcast DND trigger to Android
+        // For now, just log it - Android relay handled by WebSocketService.broadcastEvent
+        break;
+
+      case 'execution_status':
+        final status = message['status'] ?? 'unknown';
+        final msg = message['message'] ?? '';
+        _log('Extension execution: [$status] $msg');
+        break;
+
+      case 'execution_result':
+        final status = message['status'] ?? 'unknown';
+        final stepsExecuted = message['steps_executed'] ?? 0;
+        _log('Execution complete: $status ($stepsExecuted steps)');
+        break;
+
+      case 'kill_switch_ack':
+        _log('Kill switch acknowledged by extension');
+        break;
+
+      case 'execute_desktop_actions':
+        final steps = message['steps'] as List<dynamic>?;
+        _log('Received ${steps?.length ?? 0} desktop-level actions (not yet supported in V1)');
+        break;
+
+      default:
+        _log('Extension message: $type');
     }
   }
 
