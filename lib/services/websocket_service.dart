@@ -11,10 +11,16 @@ class WebSocketService {
   HttpServer? _server;
   final List<WebSocketChannel> _clients = [];
   final StreamController<Map<String, dynamic>> _commandController = StreamController.broadcast();
+  final StreamController<bool> _extensionConnectionController = StreamController.broadcast();
   LoggingService? _loggingService;
+  bool _extensionConnected = false;
+  WebSocketChannel? _extensionClient; // Track the specific extension client
 
   Stream<Map<String, dynamic>> get commandStream => _commandController.stream;
+  /// Stream that emits true when the extension connects.
+  Stream<bool> get extensionConnectionStream => _extensionConnectionController.stream;
   int get connectedClients => _clients.length;
+  bool get hasExtensionClient => _extensionConnected;
 
   void setLoggingService(LoggingService loggingService) {
     _loggingService = loggingService;
@@ -80,6 +86,14 @@ class WebSocketService {
               }
               return;
             }
+            // Track extension connection — identify THIS specific client
+            if (data['source'] == 'extension' && !_extensionConnected) {
+              _extensionConnected = true;
+              _extensionClient = webSocket;
+              _extensionConnectionController.add(true);
+              _log('Extension client identified and tracked');
+            }
+
             _commandController.add(data);
             _log('Command dispatched: ${data['type'] ?? data['action'] ?? 'unknown'}');
           } else {
@@ -89,11 +103,13 @@ class WebSocketService {
           _log('Error decoding message: $e');
         }
       }, onDone: () {
-        _log('Client disconnected. Remaining: ${_clients.length - 1}');
         _clients.remove(webSocket);
+        _log('Client disconnected. Remaining: ${_clients.length}');
+        _onClientDisconnected(webSocket);
       }, onError: (error) {
-        _log('Client error: $error');
         _clients.remove(webSocket);
+        _log('Client error: $error. Remaining: ${_clients.length}');
+        _onClientDisconnected(webSocket);
       });
     });
 
@@ -140,6 +156,16 @@ class WebSocketService {
     return _server!.port;
   }
 
+  /// Check if the disconnected client was the extension client.
+  void _onClientDisconnected(WebSocketChannel client) {
+    if (_extensionConnected && identical(client, _extensionClient)) {
+      _extensionConnected = false;
+      _extensionClient = null;
+      _extensionConnectionController.add(false);
+      _log('Extension client disconnected — browser likely closed');
+    }
+  }
+
   Future<void> stopServer() async {
     _log('Stopping server (${_clients.length} clients connected)');
     for (final client in _clients) {
@@ -148,6 +174,7 @@ class WebSocketService {
       } catch (_) {}
     }
     _clients.clear();
+    _extensionConnected = false;
     await _server?.close(force: true);
     _server = null;
     _log('Server stopped');

@@ -2,12 +2,13 @@ import 'dart:async';
 import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'logging_service.dart';
-
 import 'websocket_service.dart';
+import 'browser_launcher_service.dart';
 
 class CommandExecutor {
   LoggingService? _loggingService;
   WebSocketService? _webSocketService;
+  BrowserLauncherService? _browserLauncherService;
   
   // Stream to notify UI about clipboard sync events (for snackbar)
   final StreamController<String> _clipboardSyncController = StreamController.broadcast();
@@ -19,6 +20,10 @@ class CommandExecutor {
 
   void setWebSocketService(WebSocketService webSocketService) {
     _webSocketService = webSocketService;
+  }
+
+  void setBrowserLauncherService(BrowserLauncherService service) {
+    _browserLauncherService = service;
   }
 
   void _log(String message) {
@@ -35,9 +40,19 @@ class CommandExecutor {
       
       // Forward to Browser Extension
       if (_webSocketService != null) {
+        // Check if extension is connected; if not, launch the browser
+        if (!_webSocketService!.hasExtensionClient) {
+          _log('Extension not connected — attempting to launch browser...');
+          final launched = await _ensureBrowserRunning();
+          if (!launched) {
+            _log('Error: Could not launch browser or extension did not connect');
+            return;
+          }
+        }
+
         _webSocketService!.broadcastEvent({
           'type': 'execute_prompt',
-          'payload': command, // Forward the entire payload (includes timestamp, ids)
+          'payload': command,
           'target': 'extension',
         });
         _log('Forwarded prompt to Browser Extension');
@@ -139,6 +154,37 @@ class CommandExecutor {
       _clipboardSyncController.add(text);
     } catch (e) {
       _log('Clipboard sync failed: $e');
+    }
+  }
+
+  /// Launch the browser and wait for the extension to connect.
+  /// Returns true if extension is connected after browser launch.
+  Future<bool> _ensureBrowserRunning() async {
+    if (_browserLauncherService == null) {
+      _log('BrowserLauncherService not available');
+      return false;
+    }
+
+    final launched = await _browserLauncherService!.launchBrowser();
+    if (!launched) return false;
+
+    if (_webSocketService == null) return false;
+
+    // Already connected? (race condition: extension connected between check and launch)
+    if (_webSocketService!.hasExtensionClient) return true;
+
+    // Wait for extension to connect (timeout 15 seconds)
+    _log('Waiting for extension to connect (up to 15s)...');
+    try {
+      await _webSocketService!.extensionConnectionStream
+          .where((connected) => connected)
+          .first
+          .timeout(const Duration(seconds: 15));
+      _log('Extension connected after browser launch!');
+      return true;
+    } catch (_) {
+      _log('Timeout: Extension did not connect within 15 seconds');
+      return false;
     }
   }
 

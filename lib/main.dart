@@ -8,6 +8,7 @@ import 'services/websocket_service.dart';
 import 'services/command_executor.dart';
 import 'services/event_emitter.dart';
 import 'services/logging_service.dart';
+import 'services/browser_launcher_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -23,6 +24,7 @@ void main() async {
         Provider.value(value: deviceInfoService),
         Provider(create: (_) => WebSocketService()),
         Provider(create: (_) => CommandExecutor()),
+        ChangeNotifierProvider(create: (_) => BrowserLauncherService()),
         ProxyProvider<WebSocketService, EventEmitter>(
           update: (_, ws, __) => EventEmitter(ws),
         ),
@@ -76,6 +78,7 @@ class _AgentHomePageState extends State<AgentHomePage> {
     final discoveryService = context.read<DiscoveryService>();
     final loggingService = context.read<LoggingService>();
     final commandExecutor = context.read<CommandExecutor>();
+    final browserLauncher = context.read<BrowserLauncherService>();
 
     loggingService.log('Starting services...');
 
@@ -85,6 +88,11 @@ class _AgentHomePageState extends State<AgentHomePage> {
       discoveryService.setLoggingService(loggingService);
       commandExecutor.setLoggingService(loggingService);
       commandExecutor.setWebSocketService(wsService);
+      commandExecutor.setBrowserLauncherService(browserLauncher);
+      browserLauncher.setLoggingService(loggingService);
+
+      // Detect installed browsers
+      await browserLauncher.detectBrowsers();
 
       // 1. Start WebSocket Server
       _port = await wsService.startServer();
@@ -246,7 +254,68 @@ class _AgentHomePageState extends State<AgentHomePage> {
                 ),
               ),
             ),
-            const SizedBox(height: 20),
+            const SizedBox(height: 12),
+            // Browser Selector Card
+            Consumer<BrowserLauncherService>(
+              builder: (context, browserService, _) {
+                final browsers = browserService.detectedBrowsers;
+                final selected = browserService.selectedBrowser;
+
+                return Card(
+                  elevation: 4,
+                  child: Padding(
+                    padding: const EdgeInsets.all(16.0),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.public, size: 20),
+                        const SizedBox(width: 8),
+                        const Text('Browser:', style: TextStyle(fontWeight: FontWeight.bold)),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: browsers.isEmpty
+                              ? const Text('No browsers detected', style: TextStyle(color: Colors.red))
+                              : DropdownButton<String>(
+                                  value: selected?.name,
+                                  isExpanded: true,
+                                  underline: const SizedBox(),
+                                  items: browsers.map((b) => DropdownMenuItem(
+                                    value: b.name,
+                                    child: Text(b.name),
+                                  )).toList(),
+                                  onChanged: (name) {
+                                    if (name != null) browserService.selectBrowser(name);
+                                  },
+                                ),
+                        ),
+                        const SizedBox(width: 8),
+                        // Extension connection indicator
+                        Consumer<WebSocketService>(
+                          builder: (_, ws, __) => Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(
+                                Icons.extension,
+                                size: 16,
+                                color: ws.hasExtensionClient ? Colors.green : Colors.orange,
+                              ),
+                              const SizedBox(width: 4),
+                              Text(
+                                ws.hasExtensionClient ? 'Connected' : 'Waiting',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: ws.hasExtensionClient ? Colors.green : Colors.orange,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                );
+              },
+            ),
+            const SizedBox(height: 12),
             Text('Logs', style: Theme.of(context).textTheme.titleLarge),
             const SizedBox(height: 8),
             // Logs Console
