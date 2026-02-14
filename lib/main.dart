@@ -10,6 +10,7 @@ import 'services/event_emitter.dart';
 import 'services/logging_service.dart';
 import 'services/browser_launcher_service.dart';
 import 'services/clipboard_sync_service.dart';
+import 'services/trigger_rule_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -27,6 +28,7 @@ void main() async {
         Provider(create: (_) => CommandExecutor()),
         ChangeNotifierProvider(create: (_) => BrowserLauncherService()),
         Provider(create: (_) => ClipboardSyncService()),
+        Provider(create: (_) => TriggerRuleService()),
         ProxyProvider<WebSocketService, EventEmitter>(
           update: (_, ws, __) => EventEmitter(ws),
         ),
@@ -99,6 +101,13 @@ class _AgentHomePageState extends State<AgentHomePage> {
       clipboardSync.setLoggingService(loggingService);
       clipboardSync.setWebSocketService(wsService);
       clipboardSync.setDeviceInfoService(context.read<DeviceInfoService>());
+
+      // Wire trigger rule service
+      final triggerRuleService = context.read<TriggerRuleService>();
+      triggerRuleService.setLoggingService(loggingService);
+      triggerRuleService.setWebSocketService(wsService);
+      commandExecutor.setTriggerRuleService(triggerRuleService);
+      triggerRuleService.startListening();
 
       // Detect installed browsers
       await browserLauncher.detectBrowsers();

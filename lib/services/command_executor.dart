@@ -5,12 +5,14 @@ import 'logging_service.dart';
 import 'websocket_service.dart';
 import 'browser_launcher_service.dart';
 import 'clipboard_sync_service.dart';
+import 'trigger_rule_service.dart';
 
 class CommandExecutor {
   LoggingService? _loggingService;
   WebSocketService? _webSocketService;
   BrowserLauncherService? _browserLauncherService;
   ClipboardSyncService? _clipboardSyncService;
+  TriggerRuleService? _triggerRuleService;
 
   void setLoggingService(LoggingService loggingService) {
     _loggingService = loggingService;
@@ -26,6 +28,10 @@ class CommandExecutor {
 
   void setClipboardSyncService(ClipboardSyncService service) {
     _clipboardSyncService = service;
+  }
+
+  void setTriggerRuleService(TriggerRuleService service) {
+    _triggerRuleService = service;
   }
 
   void _log(String message) {
@@ -75,6 +81,9 @@ class CommandExecutor {
         action = 'open_url';
       } else if (type == 'clipboard.text_copied') {
         await _handleClipboardSync(payload);
+        return;
+      } else if (type == 'register_triggers') {
+        _triggerRuleService?.handleRegisterTriggers(payload ?? {});
         return;
       }
     }
@@ -135,6 +144,10 @@ class CommandExecutor {
       case 'execute_desktop_actions':
         final steps = message['steps'] as List<dynamic>?;
         _log('Received ${steps?.length ?? 0} desktop-level actions (not yet supported in V1)');
+        break;
+
+      case 'rule_triggered':
+        _triggerRuleService?.handleRuleTriggered(message);
         break;
 
       default:
