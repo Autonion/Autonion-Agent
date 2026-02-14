@@ -9,6 +9,7 @@ import 'services/command_executor.dart';
 import 'services/event_emitter.dart';
 import 'services/logging_service.dart';
 import 'services/browser_launcher_service.dart';
+import 'services/clipboard_sync_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -25,6 +26,7 @@ void main() async {
         Provider(create: (_) => WebSocketService()),
         Provider(create: (_) => CommandExecutor()),
         ChangeNotifierProvider(create: (_) => BrowserLauncherService()),
+        Provider(create: (_) => ClipboardSyncService()),
         ProxyProvider<WebSocketService, EventEmitter>(
           update: (_, ws, __) => EventEmitter(ws),
         ),
@@ -79,6 +81,7 @@ class _AgentHomePageState extends State<AgentHomePage> {
     final loggingService = context.read<LoggingService>();
     final commandExecutor = context.read<CommandExecutor>();
     final browserLauncher = context.read<BrowserLauncherService>();
+    final clipboardSync = context.read<ClipboardSyncService>();
 
     loggingService.log('Starting services...');
 
@@ -89,7 +92,13 @@ class _AgentHomePageState extends State<AgentHomePage> {
       commandExecutor.setLoggingService(loggingService);
       commandExecutor.setWebSocketService(wsService);
       commandExecutor.setBrowserLauncherService(browserLauncher);
+      commandExecutor.setClipboardSyncService(clipboardSync);
       browserLauncher.setLoggingService(loggingService);
+
+      // Wire clipboard sync service
+      clipboardSync.setLoggingService(loggingService);
+      clipboardSync.setWebSocketService(wsService);
+      clipboardSync.setDeviceInfoService(context.read<DeviceInfoService>());
 
       // Detect installed browsers
       await browserLauncher.detectBrowsers();
@@ -112,8 +121,11 @@ class _AgentHomePageState extends State<AgentHomePage> {
         commandExecutor.execute(command);
       });
 
-      // 4. Listen for clipboard sync events to show snackbar
-      _clipboardSyncSubscription = commandExecutor.clipboardSyncStream.listen((text) {
+      // 4. Start clipboard polling (Desktop -> Android)
+      clipboardSync.startPolling();
+
+      // 5. Listen for clipboard sync events to show snackbar
+      _clipboardSyncSubscription = clipboardSync.clipboardSyncStream.listen((text) {
         if (mounted) {
           final preview = text.length > 60 ? '${text.substring(0, 60)}...' : text;
           ScaffoldMessenger.of(context).showSnackBar(
@@ -148,8 +160,10 @@ class _AgentHomePageState extends State<AgentHomePage> {
     final wsService = context.read<WebSocketService>();
     final discoveryService = context.read<DiscoveryService>();
     final loggingService = context.read<LoggingService>();
+    final clipboardSync = context.read<ClipboardSyncService>();
 
     loggingService.log('Stopping services...');
+    clipboardSync.stopPolling();
     await discoveryService.stopAdvertising();
     await wsService.stopServer();
     await _commandSubscription?.cancel();

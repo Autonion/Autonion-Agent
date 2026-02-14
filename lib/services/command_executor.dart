@@ -4,15 +4,13 @@ import 'package:url_launcher/url_launcher.dart';
 import 'logging_service.dart';
 import 'websocket_service.dart';
 import 'browser_launcher_service.dart';
+import 'clipboard_sync_service.dart';
 
 class CommandExecutor {
   LoggingService? _loggingService;
   WebSocketService? _webSocketService;
   BrowserLauncherService? _browserLauncherService;
-  
-  // Stream to notify UI about clipboard sync events (for snackbar)
-  final StreamController<String> _clipboardSyncController = StreamController.broadcast();
-  Stream<String> get clipboardSyncStream => _clipboardSyncController.stream;
+  ClipboardSyncService? _clipboardSyncService;
 
   void setLoggingService(LoggingService loggingService) {
     _loggingService = loggingService;
@@ -24,6 +22,10 @@ class CommandExecutor {
 
   void setBrowserLauncherService(BrowserLauncherService service) {
     _browserLauncherService = service;
+  }
+
+  void setClipboardSyncService(ClipboardSyncService service) {
+    _clipboardSyncService = service;
   }
 
   void _log(String message) {
@@ -147,13 +149,17 @@ class CommandExecutor {
       return;
     }
 
-    try {
-      await Clipboard.setData(ClipboardData(text: text));
-      final preview = text.length > 50 ? '${text.substring(0, 50)}...' : text;
-      _log('Clipboard synced: "$preview"');
-      _clipboardSyncController.add(text);
-    } catch (e) {
-      _log('Clipboard sync failed: $e');
+    if (_clipboardSyncService != null) {
+      await _clipboardSyncService!.writeFromRemote(text);
+    } else {
+      // Fallback: write directly (no loop prevention)
+      try {
+        await Clipboard.setData(ClipboardData(text: text));
+        final preview = text.length > 50 ? '${text.substring(0, 50)}...' : text;
+        _log('Clipboard synced (fallback): "$preview"');
+      } catch (e) {
+        _log('Clipboard sync failed: $e');
+      }
     }
   }
 
@@ -189,6 +195,5 @@ class CommandExecutor {
   }
 
   void dispose() {
-    _clipboardSyncController.close();
   }
 }
