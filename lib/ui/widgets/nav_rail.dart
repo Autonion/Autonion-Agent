@@ -1,0 +1,48 @@
+import 'package:flutter/material.dart';
+import '../theme/app_colors.dart';
+
+/// Sidebar navigation rail for the desktop layout.
+class AppNavRail extends StatelessWidget {
+  final int selectedIndex;
+  final ValueChanged<int> onDestinationSelected;
+  final List<NavigationRailDestination> destinations;
+
+  const AppNavRail({
+    super.key,
+    required this.selectedIndex,
+    required this.onDestinationSelected,
+    required this.destinations,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: const BoxDecoration(
+        color: AppColors.surface,
+        border: Border(
+          right: BorderSide(color: AppColors.border, width: 1),
+        ),
+      ),
+      child: NavigationRail(
+        selectedIndex: selectedIndex,
+        onDestinationSelected: onDestinationSelected,
+        backgroundColor: Colors.transparent,
+        extended: false,
+        minWidth: 72,
+        leading: Padding(
+          padding: const EdgeInsets.only(top: 12, bottom: 24),
+          child: Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              gradient: AppColors.primaryGradient,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: const Icon(Icons.smart_toy_outlined, color: Colors.white, size: 22),
+          ),
+        ),
+        destinations: destinations,
+      ),
+    );
+  }
+}
