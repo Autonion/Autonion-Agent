@@ -88,7 +88,7 @@ class BrowserLauncherService extends ChangeNotifier {
     final browser = _selectedBrowser!;
     _log('Launching ${browser.name}...');
     try {
-      await Process.start(browser.executablePath, [],
+      await Process.start(browser.executablePath, ['--profile-directory=Default'],
           mode: ProcessStartMode.detached);
       _log('${browser.name} launched');
       return true;
