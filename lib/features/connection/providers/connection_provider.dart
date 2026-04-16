@@ -1,5 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
+import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../../../core/config/platform_config.dart';
@@ -158,6 +160,9 @@ class ConnectionProvider extends ChangeNotifier {
         action = 'open_url';
       } else if (type == 'clipboard.text_copied') {
         await _handleClipboardSync(payload);
+        return;
+      } else if (type == 'clipboard.image_copied') {
+        await _handleImageClipboardSync(payload);
         return;
       } else if (type == 'register_triggers') {
         _triggers.handleRegisterTriggers(payload ?? {});
@@ -525,6 +530,55 @@ RULES:
     final text = payload?['text'] as String?;
     if (text == null || text.isEmpty) return;
     await _clipboard.writeFromRemote(text);
+  }
+
+  /// Handle image clipboard sync from Android → Desktop.
+  Future<void> _handleImageClipboardSync(Map<String, dynamic>? payload) async {
+    final base64Data = payload?['image_base64'] as String?;
+    final mimeType = payload?['mime_type'] as String? ?? 'image/png';
+    if (base64Data == null || base64Data.isEmpty) return;
+
+    try {
+      final bytes = base64Decode(base64Data);
+      final extension = mimeType.contains('jpeg') || mimeType.contains('jpg') ? 'jpg' : 'png';
+      final tempDir = Directory.systemTemp;
+      final tempFile = File('${tempDir.path}/autonion_clipboard_sync.$extension');
+      await tempFile.writeAsBytes(bytes);
+      _log.info('Clipboard', 'Received image from Android: ${bytes.length ~/ 1024}KB ($mimeType)');
+
+      // Copy image to system clipboard using platform-native approach
+      if (Platform.isWindows) {
+        // PowerShell: Load image and set to clipboard
+        final escapedPath = tempFile.path.replaceAll('\\', '\\\\');
+        final psScript =
+          "Add-Type -AssemblyName System.Windows.Forms; "
+          "\$img = [System.Drawing.Image]::FromFile('$escapedPath'); "
+          "[System.Windows.Forms.Clipboard]::SetImage(\$img)";
+        final result = await Process.run(
+          'powershell',
+          ['-NoProfile', '-Command', psScript],
+        );
+        if (result.exitCode == 0) {
+          _log.info('Clipboard', 'Image synced to Windows clipboard');
+        } else {
+          _log.warn('Clipboard', 'PowerShell clipboard failed: ${result.stderr}');
+        }
+      } else if (Platform.isMacOS) {
+        // macOS: use osascript
+        await Process.run('osascript', [
+          '-e', 'set the clipboard to (read (POSIX file "${tempFile.path}") as TIFF picture)'
+        ]);
+        _log.info('Clipboard', 'Image synced to macOS clipboard');
+      } else if (Platform.isLinux) {
+        // Linux: use xclip
+        await Process.run('xclip', [
+          '-selection', 'clipboard', '-t', mimeType, '-i', tempFile.path
+        ]);
+        _log.info('Clipboard', 'Image synced to Linux clipboard');
+      }
+    } catch (e) {
+      _log.error('Clipboard', 'Failed to sync image clipboard: $e');
+    }
   }
 
   Future<bool> _ensureBrowserRunning() async {
