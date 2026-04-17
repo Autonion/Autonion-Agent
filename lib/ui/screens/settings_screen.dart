@@ -94,15 +94,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
               children: [
                 Row(
                   children: [
-                    Container(
-                      width: 48,
-                      height: 48,
-                      decoration: BoxDecoration(
-                        gradient: AppColors.primaryGradient,
-                        borderRadius: BorderRadius.circular(14),
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(14),
+                      child: Image.asset(
+                        'assets/icons/tray_icon.png',
+                        width: 48,
+                        height: 48,
+                        fit: BoxFit.cover,
                       ),
-                      child: const Icon(Icons.smart_toy_outlined,
-                          color: Colors.white, size: 26),
                     ),
                     const SizedBox(width: 16),
                     Column(

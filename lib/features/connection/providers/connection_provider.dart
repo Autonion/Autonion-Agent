@@ -112,11 +112,13 @@ class ConnectionProvider extends ChangeNotifier {
   Future<void> stopServices() async {
     if (!_isRunning) return;
     _log.info('APP', 'Stopping services...');
-    _clipboard.stopPolling();
-    await _discovery.stopAdvertising();
-    await _ws.stopServer();
-    await _commandSub?.cancel();
-    await _clipboardSub?.cancel();
+    
+    try { _clipboard.stopPolling(); } catch (e) { _log.error('APP', 'Error stopping clipboard: $e'); }
+    try { await _discovery.stopAdvertising(); } catch (e) { _log.error('APP', 'Error stopping discovery: $e'); }
+    try { await _ws.stopServer(); } catch (e) { _log.error('APP', 'Error stopping websocket server: $e'); }
+    try { await _commandSub?.cancel(); } catch (e) { _log.error('APP', 'Error canceling command sub: $e'); }
+    try { await _clipboardSub?.cancel(); } catch (e) { _log.error('APP', 'Error canceling clipboard sub: $e'); }
+    
     _isRunning = false;
     _port = null;
     notifyListeners();
