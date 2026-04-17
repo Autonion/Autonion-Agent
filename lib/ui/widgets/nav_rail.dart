@@ -31,14 +31,14 @@ class AppNavRail extends StatelessWidget {
         minWidth: 72,
         leading: Padding(
           padding: const EdgeInsets.only(top: 12, bottom: 24),
-          child: Container(
-            width: 40,
-            height: 40,
-            decoration: BoxDecoration(
-              gradient: AppColors.primaryGradient,
-              borderRadius: BorderRadius.circular(12),
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(12),
+            child: Image.asset(
+              'assets/icons/tray_icon.png',
+              width: 40,
+              height: 40,
+              fit: BoxFit.cover,
             ),
-            child: const Icon(Icons.smart_toy_outlined, color: Colors.white, size: 22),
           ),
         ),
         destinations: destinations,
