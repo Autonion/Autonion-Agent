@@ -181,7 +181,11 @@ class WebSocketService extends ChangeNotifier {
     _clients.clear();
     _extensionConnected = false;
     _extensionClient = null;
-    await _server?.close(force: true);
+    try {
+      await _server?.close(force: true);
+    } catch (e) {
+      _log('Error closing server: $e');
+    }
     _server = null;
     _log('Server stopped');
     notifyListeners();
