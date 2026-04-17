@@ -141,9 +141,15 @@ class PythonBridgeService {
 
   Future<void> _startAgent(String pythonExe) async {
     // Find the python script. It is inside `python/desktop_agent.py`.
-    // In dev, it's relative to CWD. In prod, we may need to bundle it.
-    // For now assuming flutter run folder structure.
-    final scriptPath = p.join(Directory.current.path, 'python', 'desktop_agent.py');
+    // We use the executable's directory so it works when installed or launched via shortcut.
+    final exeDir = p.dirname(Platform.resolvedExecutable);
+    
+    // In dev (flutter run), the exe is deep in build/windows/..., so we fallback to Directory.current if not found.
+    String scriptPath = p.join(exeDir, 'python', 'desktop_agent.py');
+    if (!File(scriptPath).existsSync()) {
+      scriptPath = p.join(Directory.current.path, 'python', 'desktop_agent.py');
+    }
+    
     if (!File(scriptPath).existsSync()) {
       throw PythonBridgeException('desktop_agent.py not found at $scriptPath');
     }
