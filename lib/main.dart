@@ -8,6 +8,7 @@ import 'features/connection/providers/connection_provider.dart';
 import 'features/system/services/startup_service.dart';
 import 'features/system/services/system_tray_service.dart';
 import 'features/system/services/window_manager_service.dart';
+import 'features/desktop_automation/providers/desktop_automation_provider.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -49,6 +50,17 @@ void main() async {
   // ── 3. Auto-start connection services ───────────────────
   final connectionProvider = getIt<ConnectionProvider>();
   await connectionProvider.startServices();
+
+  // ── Auto-start python bridge ────────────────────────────
+  if (PlatformConfig.isDesktop) {
+    try {
+      final desktopAutomationProvider = getIt<DesktopAutomationProvider>();
+      // Don't await it so we don't block the UI from showing up
+      desktopAutomationProvider.initBridge();
+    } catch (e) {
+      log.error('APP', 'Failed to auto-init Python bridge: $e');
+    }
+  }
 
   // ── 4. Run the app ──────────────────────────────────────
   runApp(const AutonionApp());
