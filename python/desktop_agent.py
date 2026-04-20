@@ -114,12 +114,24 @@ class DesktopAgent:
 
         root = auto.GetRootControl()
         fg_win = auto.GetForegroundControl()
+        
+        if fg_win:
+            try:
+                if fg_win.ControlType == auto.ControlType.ToolTipControl:
+                    parent = fg_win.GetParentControl()
+                    if parent:
+                        fg_win = parent.GetTopLevelControl() or parent
+                    else:
+                        fg_win = root
+            except Exception:
+                pass
+
         if not fg_win:
             fg_win = root
 
         def walk(control, depth):
             nonlocal node_id_counter
-            if depth > 10 or not control:
+            if depth > 14 or not control:
                 return
 
             try:
@@ -211,6 +223,8 @@ class DesktopAgent:
             center_y = rect.top + (rect.height() // 2)
             pyautogui.moveTo(center_x, center_y, duration=0.2)
             pyautogui.click()
+            # Move mouse away to prevent hover tooltips from stealing foreground control
+            pyautogui.moveTo(10, 10, duration=0.1)
         else:
             raise KeyError(f"Element {node_id} not found in cache")
 
