@@ -14,6 +14,7 @@ import '../services/discovery_service.dart';
 import '../services/websocket_service.dart';
 import '../../../core/di/service_locator.dart';
 import '../../desktop_automation/providers/desktop_automation_provider.dart';
+import '../../desktop_automation/services/desktop_agent_service.dart';
 import '../../ai/models/ai_message.dart';
 import '../../ai/providers/ai_provider_notifier.dart';
 import '../../ai/models/ai_provider_type.dart';
@@ -145,6 +146,11 @@ class ConnectionProvider extends ChangeNotifier {
       return;
     }
 
+    if (command['type'] == 'kill_switch') {
+      _handleKillSwitch(command);
+      return;
+    }
+
     // Schedule cancellation
     if (command['type'] == 'schedule_cancel') {
       _handleScheduleCancel(command);
@@ -219,31 +225,71 @@ class ConnectionProvider extends ChangeNotifier {
     // Send immediate acknowledgment back to Android
     _sendPromptResponse(transactionId, 'started', 'Processing command...');
 
-    // ── Step 1: LLM-based classification (browser vs desktop) ──
+    // ── Step 1: Classify prompt (browser vs desktop) ──
     bool isBrowserRelated = command['target'] == 'browser';
+
+    // ── Step 1a: Keyword pre-classification (fast, no LLM cost) ──
+    if (!isBrowserRelated) {
+      final pLower = prompt.toLowerCase();
+      // Media keywords — these are almost always web tasks
+      const mediaKeywords = ['play ', 'watch ', 'stream ', 'listen to '];
+      const webKeywords = [
+        'youtube', 'browser', 'website', 'http', '.com', '.org', '.net',
+        'amazon', 'search the web', 'google', 'spotify', 'netflix',
+        'search for', 'search online', 'look up', 'find online',
+        'twitter', 'reddit', 'instagram', 'facebook', 'tiktok',
+        'open website', 'go to site', 'navigate to',
+      ];
+      // Check media keywords (prefix match to catch "play X", "watch Y")
+      for (final kw in mediaKeywords) {
+        if (pLower.startsWith(kw) || pLower.contains(' $kw')) {
+          // Only treat as browser if no local app is explicitly mentioned
+          if (!pLower.contains('vlc') && !pLower.contains('media player') &&
+              !pLower.contains('winamp') && !pLower.contains('foobar') &&
+              !pLower.contains('local')) {
+            isBrowserRelated = true;
+            _log.info('CMD', 'Pre-classified as BROWSER (media keyword: "$kw")');
+            break;
+          }
+        }
+      }
+      // Check web keywords
+      if (!isBrowserRelated) {
+        for (final kw in webKeywords) {
+          if (pLower.contains(kw)) {
+            isBrowserRelated = true;
+            _log.info('CMD', 'Pre-classified as BROWSER (web keyword: "$kw")');
+            break;
+          }
+        }
+      }
+    }
+
+    // ── Step 1b: LLM classification (only if keywords didn't match) ──
     if (!isBrowserRelated) {
       try {
         final aiNotifier = getIt<AiProviderNotifier>();
         final aiService = aiNotifier.activeService;
-        _log.info('CMD', 'Classifying prompt...');
+        _log.info('CMD', 'Classifying prompt via LLM...');
         final classifyResponse = await aiService.chat([
           AiMessage(
             role: AiMessageRole.user,
             content: 'Classify this user prompt into one word: "browser" or "desktop".\n'
-                '- browser: tasks involving websites, web search, online content, video streaming, shopping, social media\n'
-                '- desktop: tasks involving local files, system settings, apps, folders, screenshots, opening local programs\n\n'
+                '- browser: tasks involving websites, web search, online content, playing videos/music/songs, streaming, shopping, social media, looking things up\n'
+                '- desktop: tasks involving local files, system settings, installed apps, folders, screenshots, opening local programs like Notepad/Calculator\n\n'
+                'Examples:\n'
+                '  "play one piece intro" → browser\n'
+                '  "search for python tutorials" → browser\n'
+                '  "open Notepad" → desktop\n'
+                '  "take a screenshot" → desktop\n\n'
                 'Prompt: "$prompt"\n\nReply with ONLY one word.',
           ),
         ]);
         final classification = classifyResponse.content?.trim().toLowerCase() ?? '';
         isBrowserRelated = classification.contains('browser');
-        _log.info('CMD', 'Classified as: ${isBrowserRelated ? "BROWSER" : "DESKTOP"} (raw: $classification)');
+        _log.info('CMD', 'LLM classified as: ${isBrowserRelated ? "BROWSER" : "DESKTOP"} (raw: $classification)');
       } catch (e) {
-        _log.warn('CMD', 'Classification failed, falling back to keyword matching: $e');
-        final pLower = prompt.toLowerCase();
-        isBrowserRelated = pLower.contains('browser') || pLower.contains('youtube') ||
-            pLower.contains('website') || pLower.contains('http') || pLower.contains('.com') ||
-            pLower.contains('amazon') || pLower.contains('search the web') || pLower.contains('google');
+        _log.warn('CMD', 'LLM classification failed, defaulting to desktop: $e');
       }
     }
 
@@ -285,6 +331,21 @@ class ConnectionProvider extends ChangeNotifier {
           },
         );
         _sendPromptResponse(transactionId, 'completed', 'Desktop task completed successfully.');
+      } on NeedsBrowserException catch (e) {
+        // Desktop Agent determined this is actually a web task — re-route
+        _log.info('CMD', 'Desktop Agent re-routing to browser: ${e.message}');
+        _sendPromptResponse(transactionId, 'in_progress', 'Re-routing to browser...');
+        
+        if (!_ws.hasExtensionClient) {
+          final launched = await _ensureBrowserRunning();
+          if (!launched) {
+            _sendPromptResponse(transactionId, 'failed', 'Could not launch browser with extension.');
+            return;
+          }
+        }
+        
+        final aiNotifier = getIt<AiProviderNotifier>();
+        await _handleBrowserPromptAgentic(prompt, transactionId, aiNotifier);
       } catch (e) {
         _log.error('CMD', 'Failed to route to Desktop Agent: $e');
         _sendPromptResponse(transactionId, 'failed', 'Desktop Agent error: $e');
@@ -300,6 +361,42 @@ class ConnectionProvider extends ChangeNotifier {
     String prompt, String transactionId, AiProviderNotifier aiNotifier,
   ) async {
     _log.info('CMD', 'Starting agentic browser loop for: "$prompt"');
+
+    // ── Pre-check: Is the AI provider reachable? ──
+    if (aiNotifier.config.providerType == AiProviderType.ollama) {
+      final isAvailable = await aiNotifier.activeService.isAvailable();
+      if (!isAvailable) {
+        _log.warn('CMD', 'Ollama is not reachable — checking for web AI fallback');
+
+        // Fallback: forward to browser extension's web-based AI (ChatGPT/Gemini)
+        if (_ws.hasExtensionClient) {
+          _log.info('CMD', 'Falling back to Browser Extension web AI planning');
+          _sendPromptResponse(transactionId, 'in_progress',
+            'Ollama unavailable — using browser AI instead...');
+          _ws.broadcastEvent({
+            'type': 'execute_prompt',
+            'payload': {
+              'prompt': prompt,
+              'transactionId': transactionId,
+              'target': 'browser',
+            },
+            'target': 'extension',
+          });
+          return;
+        }
+
+        // No fallback available — show setup guide
+        _sendPromptResponse(transactionId, 'failed',
+          'Ollama is not running on this PC.\n\n'
+          'To fix this:\n'
+          '1. Install Ollama from ollama.com\n'
+          '2. Open a terminal and run: ollama serve\n'
+          '3. Pull a model: ollama pull qwen3\n\n'
+          'Then try your command again.');
+        return;
+      }
+    }
+
     _sendPromptResponse(transactionId, 'in_progress', 'Planning browser actions...');
 
     final aiService = aiNotifier.activeService;
@@ -407,13 +504,38 @@ class ConnectionProvider extends ChangeNotifier {
         ], jsonSchema: {"type": "object", "properties": {"thought": {"type": "string"}, "action": {"type": "object"}, "done": {"type": "boolean"}}});
 
         if (!nextResponse.success || nextResponse.content == null) {
-          _log.warn('CMD', 'Agentic loop: AI failed at step ${i + 2}');
+          _log.warn('CMD', 'Agentic loop: AI returned empty at step ${i + 2}');
           break;
         }
 
         stepData = _extractJson(nextResponse.content!);
         if (stepData == null) {
-          _log.warn('CMD', 'Agentic loop: Failed to parse AI response at step ${i + 2}');
+          // Log the raw response for debugging
+          final rawPreview = nextResponse.content!.length > 300 
+              ? nextResponse.content!.substring(0, 300) 
+              : nextResponse.content!;
+          _log.warn('CMD', 'Agentic loop: Failed to parse AI response at step ${i + 2}. Raw: $rawPreview');
+          
+          // Retry: ask AI to reformat as valid JSON
+          _log.info('CMD', 'Retrying with JSON correction prompt...');
+          final retryResponse = await aiService.chat([
+            AiMessage(role: AiMessageRole.user, content: 
+              'Your previous response was not valid JSON. Here it is:\n\n'
+              '${nextResponse.content}\n\n'
+              'Please reformat your answer as a single valid JSON object with these fields:\n'
+              '{"thought": "your reasoning", "action": {"action": "action_name", ...params}, "done": false}\n'
+              'Or if the goal is achieved: {"thought": "...", "done": true}\n'
+              'Output ONLY the JSON, nothing else.'),
+          ], jsonSchema: {"type": "object", "properties": {"thought": {"type": "string"}, "action": {"type": "object"}, "done": {"type": "boolean"}}});
+          
+          if (retryResponse.success && retryResponse.content != null) {
+            stepData = _extractJson(retryResponse.content!);
+            if (stepData != null) {
+              _log.info('CMD', 'JSON retry succeeded — continuing loop');
+              continue;
+            }
+          }
+          _log.warn('CMD', 'JSON retry also failed — ending loop');
           break;
         }
       }
@@ -425,7 +547,17 @@ class ConnectionProvider extends ChangeNotifier {
       }
     } catch (e) {
       _log.error('CMD', 'Agentic loop failed: $e');
-      _sendPromptResponse(transactionId, 'failed', 'Browser automation failed: $e');
+      // Detect Ollama-specific connection errors
+      final errorStr = e.toString().toLowerCase();
+      if (errorStr.contains('connection refused') || errorStr.contains('socketexception') || errorStr.contains('ollama')) {
+        _sendPromptResponse(transactionId, 'failed',
+          'Ollama server is not reachable.\n\n'
+          'Make sure Ollama is running:\n'
+          '1. Open a terminal and run: ollama serve\n'
+          '2. Then try your command again.');
+      } else {
+        _sendPromptResponse(transactionId, 'failed', 'Browser automation failed: $e');
+      }
     }
   }
 
@@ -451,13 +583,18 @@ Available actions:
 - "press_key": params { "key": "Enter|Tab|Escape|ArrowDown" }
 - "wait": params { "ms": 2000 }
 - "scroll_to": params { "target_id": "el_X" }
+- "play_media": params {} — clicks the video/audio play button and starts playback. Use this after landing on a video page.
 
 RULES:
 - Use target_id (e.g. "el_5") to reference elements from the DOM snapshot
 - Only output ONE action per response
 - After typing into a search box, use press_key with Enter to submit
-- After navigating to search results, click the most relevant result
-- If a video or media page is loaded and the goal is to play it, set done=true (videos autoplay)
+- After navigating to search results, prioritize clicking the first relevant result. For YouTube, look for elements with tag 'ytd-video-renderer' or links containing '/watch'.
+- MEDIA PLAYBACK: When the goal involves playing a video, song, or media:
+  1. Navigate to the site, search, and click the result to reach the video page.
+  2. Once on the video/watch page, use the "play_media" action to start playback.
+  3. After play_media, set done=true on the NEXT step.
+  4. Do NOT set done=true until you have used play_media on the video page.
 - Maximum 8 steps total
 - Output ONLY the JSON, nothing else.''';
   }
@@ -523,8 +660,12 @@ RULES:
       case 'rule_triggered':
         _triggers.handleRuleTriggered(message);
         break;
+      case 'log':
+        final logMsg = message['message']?.toString() ?? message['data']?.toString() ?? '';
+        _log.info('EXT', 'Log: $logMsg');
+        break;
       default:
-        _log.debug('EXT', 'Message: $type');
+        _log.debug('EXT', 'Message: $type ${message.keys.join(', ')}');
     }
   }
 
@@ -629,11 +770,18 @@ RULES:
     final transactionId = command['transactionId']?.toString() ?? '';
     _log.info('CMD', 'Structured key_press: $keyName');
 
+    // Map user-friendly names to pyautogui key names
+    String pyKey = keyName.toLowerCase();
+    if (pyKey == 'up arrow') pyKey = 'up';
+    if (pyKey == 'down arrow') pyKey = 'down';
+    if (pyKey == 'left arrow') pyKey = 'left';
+    if (pyKey == 'right arrow') pyKey = 'right';
+
     try {
       final desktopProvider = getIt<DesktopAutomationProvider>();
       await desktopProvider.bridge.sendCommand('execute_action', {
         'type': 'hotkey',
-        'keys': [keyName]
+        'keys': [pyKey]
       });
       _sendPromptResponse(transactionId, 'completed', 'Pressed key: $keyName');
     } catch (e) {
@@ -697,6 +845,26 @@ RULES:
       timer.cancel();
       _sendPromptResponse(transactionId, 'cancelled', 'Scheduled task stopped.');
       _log.info('CMD', 'Cancelled scheduled task: $transactionId');
+    }
+  }
+
+  void _handleKillSwitch(Map<String, dynamic> command) {
+    _log.info('CMD', 'Received global kill_switch');
+    // Stop local desktop agent
+    try {
+      final desktopProvider = getIt<DesktopAutomationProvider>();
+      desktopProvider.stop();
+    } catch (e) {
+      _log.error('CMD', 'Failed to stop DesktopAutomationProvider: $e');
+    }
+
+    // Forward to extension
+    _ws.sendToExtension({'type': 'kill_switch'});
+
+    // Optional: send response back to Android
+    final transactionId = command['transactionId']?.toString();
+    if (transactionId != null && transactionId.isNotEmpty) {
+      _sendPromptResponse(transactionId, 'cancelled', 'Automation stopped by user.');
     }
   }
 

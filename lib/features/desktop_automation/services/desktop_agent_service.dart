@@ -10,6 +10,14 @@ import 'input_simulation_service.dart';
 
 enum AgentStatus { idle, running, error, complete }
 
+/// Thrown when the Desktop Agent determines a task needs the browser extension.
+class NeedsBrowserException implements Exception {
+  final String message;
+  NeedsBrowserException([this.message = 'Task requires browser extension']);
+  @override
+  String toString() => 'NeedsBrowserException: $message';
+}
+
 /// Orchestrates the Agentic Loop for desktop automation.
 class DesktopAgentService {
   final LoggingService _log;
@@ -60,9 +68,7 @@ class DesktopAgentService {
         // 1. Observe Screen
         final screenState = await _a11y.getScreenState(tier);
         if (screenState.elements.isEmpty) {
-          _log.warn('DesktopAgent', 'No UI elements found. Retrying...');
-          await Future.delayed(const Duration(seconds: 1));
-          continue;
+          _log.warn('DesktopAgent', 'No UI elements found. Proceeding with empty UI state...');
         }
 
         // 2. Build Prompt
@@ -83,7 +89,7 @@ class DesktopAgentService {
             "action": {
               "type": "object",
               "properties": {
-                "type": {"type": "string", "enum": ["click", "type", "scroll", "hotkey", "wait", "done"]},
+                "type": {"type": "string", "enum": ["click", "type", "scroll", "hotkey", "wait", "needs_browser", "done"]},
                 "targetIndex": {"type": ["integer", "null"]},
                 "text": {"type": ["string", "null"]},
                 "direction": {"type": ["string", "null"]},
@@ -140,6 +146,12 @@ class DesktopAgentService {
           _log.info('DesktopAgent', 'Task completed successfully by Agent.');
           _status = AgentStatus.complete;
           return;
+        }
+
+        if (action.type == 'needs_browser') {
+          _log.info('DesktopAgent', 'Agent determined task needs browser. Re-routing...');
+          _status = AgentStatus.idle;
+          throw NeedsBrowserException(parsed['thought']?.toString() ?? 'Task requires web access');
         }
 
         await _input.execute(action);
