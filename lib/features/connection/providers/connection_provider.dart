@@ -240,16 +240,26 @@ class ConnectionProvider extends ChangeNotifier {
         'twitter', 'reddit', 'instagram', 'facebook', 'tiktok',
         'open website', 'go to site', 'navigate to',
       ];
+      // Desktop context words — if present alongside media keywords,
+      // the task is local (e.g. "play the presentation", "play this file")
+      const desktopContextWords = [
+        'presentation', 'slideshow', 'powerpoint', 'pptx', 'ppt',
+        'file', 'folder', 'document', 'pdf', 'excel', 'word',
+        'local', 'vlc', 'media player', 'winamp', 'foobar',
+        'desktop', 'disk', 'drive', 'c:', 'd:', 'e:',
+        'notepad', 'calculator', 'explorer', 'terminal',
+      ];
       // Check media keywords (prefix match to catch "play X", "watch Y")
       for (final kw in mediaKeywords) {
         if (pLower.startsWith(kw) || pLower.contains(' $kw')) {
-          // Only treat as browser if no local app is explicitly mentioned
-          if (!pLower.contains('vlc') && !pLower.contains('media player') &&
-              !pLower.contains('winamp') && !pLower.contains('foobar') &&
-              !pLower.contains('local')) {
+          // Only treat as browser if no desktop/local context is present
+          final hasDesktopContext = desktopContextWords.any((dw) => pLower.contains(dw));
+          if (!hasDesktopContext) {
             isBrowserRelated = true;
             _log.info('CMD', 'Pre-classified as BROWSER (media keyword: "$kw")');
             break;
+          } else {
+            _log.info('CMD', 'Skipped browser pre-classification — desktop context detected for "$kw"');
           }
         }
       }
@@ -275,13 +285,18 @@ class ConnectionProvider extends ChangeNotifier {
           AiMessage(
             role: AiMessageRole.user,
             content: 'Classify this user prompt into one word: "browser" or "desktop".\n'
-                '- browser: tasks involving websites, web search, online content, playing videos/music/songs, streaming, shopping, social media, looking things up\n'
-                '- desktop: tasks involving local files, system settings, installed apps, folders, screenshots, opening local programs like Notepad/Calculator\n\n'
+                '- browser: tasks involving websites, web search, online content, streaming videos/music/songs from the internet, shopping, social media, looking things up online\n'
+                '- desktop: tasks involving local files, presentations, slideshows, system settings, installed apps, folders, screenshots, opening local programs\n\n'
                 'Examples:\n'
                 '  "play one piece intro" → browser\n'
+                '  "play lofi music" → browser\n'
                 '  "search for python tutorials" → browser\n'
                 '  "open Notepad" → desktop\n'
-                '  "take a screenshot" → desktop\n\n'
+                '  "take a screenshot" → desktop\n'
+                '  "play the presentation" → desktop\n'
+                '  "play the slideshow" → desktop\n'
+                '  "open the powerpoint" → desktop\n'
+                '  "open my document" → desktop\n\n'
                 'Prompt: "$prompt"\n\nReply with ONLY one word.',
           ),
         ]);
