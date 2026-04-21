@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import '../../core/config/platform_config.dart';
 import '../../core/di/service_locator.dart';
@@ -86,6 +87,15 @@ class DashboardScreen extends StatelessWidget {
                     label: 'Clear Logs',
                     color: AppColors.textSecondary,
                     onTap: () => log.clearLogs(),
+                  ),
+                  _ActionChip(
+                    icon: Icons.extension_outlined,
+                    label: 'Get Browser Extension',
+                    color: AppColors.accent,
+                    onTap: () => launchUrl(
+                      Uri.parse('https://github.com/Autonion/Autonion-Extension/releases'),
+                      mode: LaunchMode.externalApplication,
+                    ),
                   ),
                 ],
               ).animate().fadeIn(duration: 500.ms, delay: 300.ms),
