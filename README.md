@@ -19,6 +19,8 @@ The primary purpose of the Autonion Agent is to provide a seamless, unified conn
 - **Cross-Platform Compatibility:** Built with Flutter, supporting Windows, macOS, and Linux out of the box.
 - **Zero-Config Discovery:** Uses mDNS for automatic LAN discovery and pairing.
 - **WebSocket Bridge:** A robust, low-latency bridge connecting mobile clients, browser extensions, and Python runtimes.
+- **Hardware Remote Support:** Receives and executes remote presentation and media commands directly from the Android app's hardware remote module.
+- **Intelligent Task Routing:** Automatically distinguishes between browser DOM tasks (routed to extension) and native OS automation (executed via Python).
 - **Clipboard Sync:** Bi-directional clipboard synchronization for text and images.
 - **Background Execution:** Designed to run quietly in the background, supporting minimizing to the system tray and auto-launching at system startup.
 - **Auto-Initialization:** Automatically initializes the Python automation bridge upon startup for a friction-free experience.
