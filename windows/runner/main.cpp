@@ -8,8 +8,35 @@
 #include "flutter_window.h"
 #include "utils.h"
 
+// Unique mutex name to enforce single-instance behavior.
+constexpr const wchar_t kMutexName[] = L"Global\\AutonionAgentSingleInstance";
+// Must match the title passed to window.Create() below.
+constexpr const wchar_t kWindowTitle[] = L"autonion_cross_device";
+
 int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
                       _In_ wchar_t *command_line, _In_ int show_command) {
+  // ── Single-instance guard ───────────────────────────────
+  // Try to create a named mutex. If it already exists, another
+  // instance of the app is running – bring it to the foreground
+  // and exit this duplicate process.
+  HANDLE mutex = ::CreateMutexW(nullptr, FALSE, kMutexName);
+  if (mutex == nullptr || ::GetLastError() == ERROR_ALREADY_EXISTS) {
+    // Another instance is running. Find its window and activate it.
+    HWND existing = ::FindWindowW(nullptr, kWindowTitle);
+    if (existing) {
+      // If the window is minimized or hidden, restore it first.
+      if (::IsIconic(existing) || !::IsWindowVisible(existing)) {
+        ::ShowWindow(existing, SW_RESTORE);
+      }
+      ::SetForegroundWindow(existing);
+    }
+    // Clean up and exit the duplicate instance.
+    if (mutex) {
+      ::CloseHandle(mutex);
+    }
+    return EXIT_SUCCESS;
+  }
+
   // Attach to console when present (e.g., 'flutter run') or create a
   // new console when running with a debugger.
   if (!::AttachConsole(ATTACH_PARENT_PROCESS) && ::IsDebuggerPresent()) {
@@ -47,5 +74,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   }
 
   ::CoUninitialize();
+  ::ReleaseMutex(mutex);
+  ::CloseHandle(mutex);
   return EXIT_SUCCESS;
 }
