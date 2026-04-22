@@ -20,8 +20,10 @@ class ClipboardSyncService {
   Stream<String> get clipboardSyncStream => _syncController.stream;
 
   void setLoggingService(LoggingService service) => _loggingService = service;
-  void setWebSocketService(WebSocketService service) => _webSocketService = service;
-  void setDeviceInfoService(DeviceInfoService service) => _deviceInfoService = service;
+  void setWebSocketService(WebSocketService service) =>
+      _webSocketService = service;
+  void setDeviceInfoService(DeviceInfoService service) =>
+      _deviceInfoService = service;
 
   void _log(String message) => _loggingService?.info('Clipboard', message);
 
@@ -30,9 +32,14 @@ class ClipboardSyncService {
     _isRunning = true;
     _readCurrentClipboard().then((text) {
       _lastClipboardText = text;
-      _log('Polling started (seeded: ${text != null ? "${text.length} chars" : "empty"})');
+      _log(
+        'Polling started (seeded: ${text != null ? "${text.length} chars" : "empty"})',
+      );
     });
-    _pollTimer = Timer.periodic(const Duration(seconds: 1), (_) => _pollClipboard());
+    _pollTimer = Timer.periodic(
+      const Duration(seconds: 1),
+      (_) => _pollClipboard(),
+    );
   }
 
   void stopPolling() {

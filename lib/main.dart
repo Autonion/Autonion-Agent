@@ -10,8 +10,9 @@ import 'features/system/services/system_tray_service.dart';
 import 'features/system/services/window_manager_service.dart';
 import 'features/desktop_automation/providers/desktop_automation_provider.dart';
 
-void main() async {
+void main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
+  final isStartup = args.contains('--startup');
 
   // ── 1. Register all services via DI ─────────────────────
   await setupServiceLocator();
@@ -21,21 +22,22 @@ void main() async {
   log.info('APP', 'Platform: ${PlatformConfig.platformName}');
 
   // ── 2. Desktop-only: Window manager & System tray ───────
+  WindowManagerService? windowService;
   if (PlatformConfig.isDesktop) {
     // Window manager (intercepts close → hide to tray)
-    final windowService = getIt<WindowManagerService>();
+    windowService = getIt<WindowManagerService>();
     windowService.setLoggingService(log);
-    await windowService.init();
+    await windowService.init(isStartup: isStartup);
 
     // System tray
     final trayService = getIt<SystemTrayService>();
     trayService.setLoggingService(log);
     trayService.setCallbacks(
-      onShowWindow: () => windowService.show(),
+      onShowWindow: () => windowService!.show(),
       onQuit: () async {
         // Stop all services before quitting
         await getIt<ConnectionProvider>().stopServices();
-        await windowService.forceClose();
+        await windowService!.forceClose();
         exit(0);
       },
     );
@@ -64,4 +66,13 @@ void main() async {
 
   // ── 4. Run the app ──────────────────────────────────────
   runApp(const AutonionApp());
+
+  // ── 5. Re-enforce hidden state after Flutter renders ────
+  // Flutter's rendering pipeline can briefly flash the window;
+  // this ensures it stays hidden when launched via --startup.
+  if (isStartup && windowService != null) {
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      await windowService!.ensureHiddenIfStartup();
+    });
+  }
 }

@@ -21,7 +21,7 @@ class AiMessage {
           {'type': 'text', 'text': content},
           {
             'type': 'image_url',
-            'image_url': {'url': 'data:image/png;base64,$base64Image'}
+            'image_url': {'url': 'data:image/png;base64,$base64Image'},
           },
         ],
       };
@@ -30,10 +30,7 @@ class AiMessage {
   }
 
   Map<String, dynamic> toOllamaJson() {
-    final msg = <String, dynamic>{
-      'role': role.name,
-      'content': content,
-    };
+    final msg = <String, dynamic>{'role': role.name, 'content': content};
     if (base64Image != null) {
       msg['images'] = [base64Image];
     }

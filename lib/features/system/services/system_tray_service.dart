@@ -33,11 +33,13 @@ class SystemTrayService with TrayListener {
     await trayManager.setIcon(iconPath);
     await trayManager.setToolTip('Autonion Agent — Running');
 
-    final menu = Menu(items: [
-      MenuItem(key: 'show', label: 'Show Autonion'),
-      MenuItem.separator(),
-      MenuItem(key: 'quit', label: 'Quit'),
-    ]);
+    final menu = Menu(
+      items: [
+        MenuItem(key: 'show', label: 'Show Autonion'),
+        MenuItem.separator(),
+        MenuItem(key: 'quit', label: 'Quit'),
+      ],
+    );
 
     await trayManager.setContextMenu(menu);
     _log('System tray initialised');

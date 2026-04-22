@@ -26,30 +26,37 @@ class ConnectionsScreen extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text('Connections',
-                  style: Theme.of(context).textTheme.displayMedium)
-                  .animate().fadeIn(duration: 400.ms).slideX(begin: -0.05),
+              Text(
+                'Connections',
+                style: Theme.of(context).textTheme.displayMedium,
+              ).animate().fadeIn(duration: 400.ms).slideX(begin: -0.05),
               const SizedBox(height: 8),
-              Text('Manage connected devices and browser extension',
-                  style: Theme.of(context)
-                      .textTheme
-                      .bodyMedium
-                      ?.copyWith(color: AppColors.textSecondary)),
+              Text(
+                'Manage connected devices and browser extension',
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  color: AppColors.textSecondary,
+                ),
+              ),
               const SizedBox(height: 28),
 
               // ── WebSocket Server Status ─────────────
-              _ServerStatusCard(conn: conn, ws: ws)
-                  .animate().fadeIn(duration: 500.ms, delay: 100.ms),
+              _ServerStatusCard(
+                conn: conn,
+                ws: ws,
+              ).animate().fadeIn(duration: 500.ms, delay: 100.ms),
               const SizedBox(height: 16),
 
               // ── Browser Selector ────────────────────
-              _BrowserSelectorCard(browser: browser, ws: ws)
-                  .animate().fadeIn(duration: 500.ms, delay: 200.ms),
+              _BrowserSelectorCard(
+                browser: browser,
+                ws: ws,
+              ).animate().fadeIn(duration: 500.ms, delay: 200.ms),
               const SizedBox(height: 16),
 
               // ── Device Info ─────────────────────────
-              _DeviceInfoCard(conn: conn)
-                  .animate().fadeIn(duration: 500.ms, delay: 300.ms),
+              _DeviceInfoCard(
+                conn: conn,
+              ).animate().fadeIn(duration: 500.ms, delay: 300.ms),
             ],
           ),
         );
@@ -71,18 +78,24 @@ class _ServerStatusCard extends StatelessWidget {
         children: [
           Row(
             children: [
-              const Icon(Icons.dns_outlined, color: AppColors.primary, size: 22),
+              const Icon(
+                Icons.dns_outlined,
+                color: AppColors.primary,
+                size: 22,
+              ),
               const SizedBox(width: 10),
-              Text('WebSocket Server',
-                  style: Theme.of(context).textTheme.titleMedium),
+              Text(
+                'WebSocket Server',
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
               const Spacer(),
               StatusIndicator(isOnline: conn.isRunning),
               const SizedBox(width: 8),
               Text(
                 conn.isRunning ? 'Running' : 'Stopped',
                 style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                    color:
-                        conn.isRunning ? AppColors.success : AppColors.error),
+                  color: conn.isRunning ? AppColors.success : AppColors.error,
+                ),
               ),
             ],
           ),
@@ -90,8 +103,11 @@ class _ServerStatusCard extends StatelessWidget {
           if (conn.isRunning) ...[
             _infoRow(context, 'Port', '${conn.port}'),
             _infoRow(context, 'Clients', '${ws.connectedClients}'),
-            _infoRow(context, 'Extension',
-                ws.hasExtensionClient ? 'Connected' : 'Not Connected'),
+            _infoRow(
+              context,
+              'Extension',
+              ws.hasExtensionClient ? 'Connected' : 'Not Connected',
+            ),
           ],
           const SizedBox(height: 16),
           Row(
@@ -104,14 +120,19 @@ class _ServerStatusCard extends StatelessWidget {
                     conn.startServices();
                   }
                 },
-                icon: Icon(conn.isRunning
-                    ? Icons.stop_circle_outlined
-                    : Icons.play_circle_outline, size: 18),
-                label:
-                    Text(conn.isRunning ? 'Stop Services' : 'Start Services'),
+                icon: Icon(
+                  conn.isRunning
+                      ? Icons.stop_circle_outlined
+                      : Icons.play_circle_outline,
+                  size: 18,
+                ),
+                label: Text(
+                  conn.isRunning ? 'Stop Services' : 'Start Services',
+                ),
                 style: ElevatedButton.styleFrom(
-                  backgroundColor:
-                      conn.isRunning ? AppColors.error : AppColors.success,
+                  backgroundColor: conn.isRunning
+                      ? AppColors.error
+                      : AppColors.success,
                 ),
               ),
             ],
@@ -128,11 +149,12 @@ class _ServerStatusCard extends StatelessWidget {
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
           Text(label, style: Theme.of(context).textTheme.bodySmall),
-          Text(value,
-              style: Theme.of(context)
-                  .textTheme
-                  .bodySmall
-                  ?.copyWith(color: AppColors.textPrimary)),
+          Text(
+            value,
+            style: Theme.of(
+              context,
+            ).textTheme.bodySmall?.copyWith(color: AppColors.textPrimary),
+          ),
         ],
       ),
     );
@@ -156,27 +178,32 @@ class _BrowserSelectorCard extends StatelessWidget {
               const SizedBox(width: 10),
               Text('Browser', style: Theme.of(context).textTheme.titleMedium),
               const Spacer(),
-              Icon(Icons.extension, size: 16,
-                  color: ws.hasExtensionClient
-                      ? AppColors.success
-                      : AppColors.warning),
+              Icon(
+                Icons.extension,
+                size: 16,
+                color: ws.hasExtensionClient
+                    ? AppColors.success
+                    : AppColors.warning,
+              ),
               const SizedBox(width: 6),
               Text(
                 ws.hasExtensionClient ? 'Extension Connected' : 'Waiting',
                 style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                    color: ws.hasExtensionClient
-                        ? AppColors.success
-                        : AppColors.warning),
+                  color: ws.hasExtensionClient
+                      ? AppColors.success
+                      : AppColors.warning,
+                ),
               ),
             ],
           ),
           const SizedBox(height: 16),
           if (browser.detectedBrowsers.isEmpty)
-            Text('No browsers detected',
-                style: Theme.of(context)
-                    .textTheme
-                    .bodySmall
-                    ?.copyWith(color: AppColors.error))
+            Text(
+              'No browsers detected',
+              style: Theme.of(
+                context,
+              ).textTheme.bodySmall?.copyWith(color: AppColors.error),
+            )
           else
             DropdownButtonFormField<String>(
               initialValue: browser.selectedBrowser?.name,
@@ -185,8 +212,9 @@ class _BrowserSelectorCard extends StatelessWidget {
                 prefixIcon: Icon(Icons.web, size: 20),
               ),
               items: browser.detectedBrowsers
-                  .map((b) => DropdownMenuItem(
-                      value: b.name, child: Text(b.name)))
+                  .map(
+                    (b) => DropdownMenuItem(value: b.name, child: Text(b.name)),
+                  )
                   .toList(),
               onChanged: (name) {
                 if (name != null) browser.selectBrowser(name);
@@ -211,11 +239,16 @@ class _DeviceInfoCard extends StatelessWidget {
         children: [
           Row(
             children: [
-              const Icon(Icons.perm_device_information,
-                  color: AppColors.accent, size: 22),
+              const Icon(
+                Icons.perm_device_information,
+                color: AppColors.accent,
+                size: 22,
+              ),
               const SizedBox(width: 10),
-              Text('This Device',
-                  style: Theme.of(context).textTheme.titleMedium),
+              Text(
+                'This Device',
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
             ],
           ),
           const SizedBox(height: 16),
@@ -234,11 +267,12 @@ class _DeviceInfoCard extends StatelessWidget {
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
           Text(label, style: Theme.of(context).textTheme.bodySmall),
-          Text(value,
-              style: Theme.of(context)
-                  .textTheme
-                  .bodySmall
-                  ?.copyWith(color: AppColors.textPrimary)),
+          Text(
+            value,
+            style: Theme.of(
+              context,
+            ).textTheme.bodySmall?.copyWith(color: AppColors.textPrimary),
+          ),
         ],
       ),
     );

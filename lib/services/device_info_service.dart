@@ -6,7 +6,7 @@ import 'package:uuid/uuid.dart';
 class DeviceInfoService {
   static const String _deviceIdKey = 'device_id';
   final DeviceInfoPlugin _deviceInfoPlugin = DeviceInfoPlugin();
-  
+
   String? _deviceId;
   String? _deviceName;
   String? _platform;
@@ -14,7 +14,7 @@ class DeviceInfoService {
   Future<void> init() async {
     final prefs = await SharedPreferences.getInstance();
     _deviceId = prefs.getString(_deviceIdKey);
-    
+
     if (_deviceId == null) {
       _deviceId = const Uuid().v4();
       await prefs.setString(_deviceIdKey, _deviceId!);

@@ -9,12 +9,12 @@ class InputSimulationService {
   InputSimulationService({
     required LoggingService log,
     required PythonBridgeService bridge,
-  })  : _log = log,
-        _bridge = bridge;
+  }) : _log = log,
+       _bridge = bridge;
 
   Future<void> execute(DesktopAction action) async {
     _log.info('InputService', 'Executing action: ${action.type}');
-    
+
     await _bridge.sendCommand('execute_action', {
       'type': action.type,
       'targetIndex': action.targetIndex,

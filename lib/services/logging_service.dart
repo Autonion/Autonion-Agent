@@ -6,7 +6,10 @@ class LoggingService extends ChangeNotifier {
   List<String> get logs => _logs;
 
   void log(String message) {
-    final timestamp = DateTime.now().toIso8601String().split('T')[1].split('.')[0];
+    final timestamp = DateTime.now()
+        .toIso8601String()
+        .split('T')[1]
+        .split('.')[0];
     final logEntry = '[$timestamp] $message';
     _logs.add(logEntry);
     notifyListeners();

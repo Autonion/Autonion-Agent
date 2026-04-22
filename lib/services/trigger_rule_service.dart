@@ -27,7 +27,9 @@ class TriggerRuleService {
   /// When the extension (re)connects, auto-resend any registered rules.
   void startListening() {
     _extensionSub?.cancel();
-    _extensionSub = _webSocketService?.extensionConnectionStream.listen((connected) {
+    _extensionSub = _webSocketService?.extensionConnectionStream.listen((
+      connected,
+    ) {
       if (connected) {
         resendRulesToExtension();
       }
@@ -70,9 +72,7 @@ class TriggerRuleService {
 
     _webSocketService!.broadcastEvent({
       'type': 'register_triggers',
-      'payload': {
-        'rules': _rules,
-      },
+      'payload': {'rules': _rules},
       'target': 'extension',
     });
     _log('Forwarded ${_rules.length} rules to extension');
@@ -98,9 +98,7 @@ class TriggerRuleService {
 
     _webSocketService?.broadcastEvent({
       'type': 'rule_triggered',
-      'payload': {
-        'rule_id': ruleId,
-      },
+      'payload': {'rule_id': ruleId},
       'timestamp': DateTime.now().millisecondsSinceEpoch,
     });
   }

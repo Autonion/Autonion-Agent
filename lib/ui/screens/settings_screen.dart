@@ -34,21 +34,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('Settings',
-              style: Theme.of(context).textTheme.displayMedium)
-              .animate().fadeIn(duration: 400.ms).slideX(begin: -0.05),
+          Text(
+            'Settings',
+            style: Theme.of(context).textTheme.displayMedium,
+          ).animate().fadeIn(duration: 400.ms).slideX(begin: -0.05),
           const SizedBox(height: 8),
-          Text('Configure app behavior and preferences',
-              style: Theme.of(context)
-                  .textTheme
-                  .bodyMedium
-                  ?.copyWith(color: AppColors.textSecondary)),
+          Text(
+            'Configure app behavior and preferences',
+            style: Theme.of(
+              context,
+            ).textTheme.bodyMedium?.copyWith(color: AppColors.textSecondary),
+          ),
           const SizedBox(height: 28),
 
           // ── System ──────────────────────────────
           if (PlatformConfig.isDesktop) ...[
-            Text('System',
-                style: Theme.of(context).textTheme.titleLarge),
+            Text('System', style: Theme.of(context).textTheme.titleLarge),
             const SizedBox(height: 12),
             GlassmorphicCard(
               padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 20),
@@ -75,8 +76,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     subtitle: 'Keep running in system tray when closed',
                     trailing: Switch(
                       value: _minimizeToTray,
-                      onChanged: (v) =>
-                          setState(() => _minimizeToTray = v),
+                      onChanged: (v) => setState(() => _minimizeToTray = v),
                     ),
                   ),
                 ],
@@ -107,13 +107,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(AppConfig.appName,
-                            style: Theme.of(context).textTheme.titleMedium),
-                        Text('v${AppConfig.appVersion}',
-                            style: Theme.of(context)
-                                .textTheme
-                                .bodySmall
-                                ?.copyWith(color: AppColors.textSecondary)),
+                        Text(
+                          AppConfig.appName,
+                          style: Theme.of(context).textTheme.titleMedium,
+                        ),
+                        Text(
+                          'v${AppConfig.appVersion}',
+                          style: Theme.of(context).textTheme.bodySmall
+                              ?.copyWith(color: AppColors.textSecondary),
+                        ),
                       ],
                     ),
                   ],
@@ -123,10 +125,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   'Cross-device AI-powered automation agent. '
                   'Bridges Android, browser extensions, and desktop '
                   'for unified automation workflows.',
-                  style: Theme.of(context)
-                      .textTheme
-                      .bodySmall
-                      ?.copyWith(color: AppColors.textSecondary),
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: AppColors.textSecondary,
+                  ),
                 ),
               ],
             ),
@@ -162,11 +163,13 @@ class _SettingsTile extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(title,
-                    style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                        color: AppColors.textPrimary)),
-                Text(subtitle,
-                    style: Theme.of(context).textTheme.bodySmall),
+                Text(
+                  title,
+                  style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                    color: AppColors.textPrimary,
+                  ),
+                ),
+                Text(subtitle, style: Theme.of(context).textTheme.bodySmall),
               ],
             ),
           ),

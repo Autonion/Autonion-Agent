@@ -17,7 +17,9 @@ class ScreenState {
   factory ScreenState.fromJson(Map<String, dynamic> json) {
     final elems = json['elements'] as List<dynamic>? ?? [];
     return ScreenState(
-      elements: elems.map((e) => UIElement.fromJson(e as Map<String, dynamic>)).toList(),
+      elements: elems
+          .map((e) => UIElement.fromJson(e as Map<String, dynamic>))
+          .toList(),
       screenshotBase64: json['screenshotBase64'] as String?,
       screenWidth: json['screenWidth'] as int? ?? 1920,
       screenHeight: json['screenHeight'] as int? ?? 1080,

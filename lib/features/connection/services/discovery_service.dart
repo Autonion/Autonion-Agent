@@ -23,8 +23,9 @@ class DiscoveryService {
 
   Future<String?> _getLanIp() async {
     try {
-      final interfaces =
-          await NetworkInterface.list(type: InternetAddressType.IPv4);
+      final interfaces = await NetworkInterface.list(
+        type: InternetAddressType.IPv4,
+      );
       for (var iface in interfaces) {
         for (var addr in iface.addresses) {
           if (!addr.isLoopback) return addr.address;
@@ -42,8 +43,10 @@ class DiscoveryService {
     const String serviceType = '_myautomation._tcp';
 
     try {
-      final txtData = _deviceInfoService.toJson().map((key, value) =>
-          MapEntry(key, Uint8List.fromList(utf8.encode(value.toString()))));
+      final txtData = _deviceInfoService.toJson().map(
+        (key, value) =>
+            MapEntry(key, Uint8List.fromList(utf8.encode(value.toString()))),
+      );
 
       final lanIp = await _getLanIp();
       if (lanIp != null) {
@@ -57,8 +60,10 @@ class DiscoveryService {
 
       _registration = await register(
         Service(
-          name: _deviceInfoService.deviceName
-              .replaceAll(RegExp(r'[^a-zA-Z0-9]'), '-'),
+          name: _deviceInfoService.deviceName.replaceAll(
+            RegExp(r'[^a-zA-Z0-9]'),
+            '-',
+          ),
           type: serviceType,
           port: port,
           txt: txtData,

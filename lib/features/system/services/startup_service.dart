@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'package:launch_at_startup/launch_at_startup.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../../../core/services/logging_service.dart';
@@ -17,7 +18,8 @@ class StartupService {
   Future<void> init() async {
     launchAtStartup.setup(
       appName: 'Autonion Agent',
-      appPath: '', // Auto-detected on Windows
+      appPath: Platform.resolvedExecutable,
+      args: const ['--startup'],
     );
 
     final prefs = await SharedPreferences.getInstance();
@@ -25,7 +27,8 @@ class StartupService {
 
     // Sync with OS registration
     final isRegistered = await launchAtStartup.isEnabled();
-    if (_enabled && !isRegistered) {
+    if (_enabled) {
+      // Always call enable to ensure the registry key has the latest arguments (e.g. --startup)
       await launchAtStartup.enable();
     } else if (!_enabled && isRegistered) {
       await launchAtStartup.disable();

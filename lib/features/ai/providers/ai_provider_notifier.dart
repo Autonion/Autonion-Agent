@@ -60,7 +60,9 @@ class AiProviderNotifier extends ChangeNotifier {
       final prefs = await SharedPreferences.getInstance();
       final jsonStr = prefs.getString(_configKey);
       if (jsonStr != null) {
-        _config = AiConfig.fromJson(jsonDecode(jsonStr) as Map<String, dynamic>);
+        _config = AiConfig.fromJson(
+          jsonDecode(jsonStr) as Map<String, dynamic>,
+        );
       }
 
       // Load API key separately
@@ -142,7 +144,10 @@ class AiProviderNotifier extends ChangeNotifier {
     _ollamaAvailable = await _ollamaService.isAvailable();
     if (_ollamaAvailable) {
       _ollamaModels = await _ollamaService.listModels();
-      _log.info('AiProvider', 'Ollama available — ${_ollamaModels.length} models found');
+      _log.info(
+        'AiProvider',
+        'Ollama available — ${_ollamaModels.length} models found',
+      );
     } else {
       _ollamaModels = [];
     }

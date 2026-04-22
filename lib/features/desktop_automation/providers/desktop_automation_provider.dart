@@ -14,9 +14,9 @@ class DesktopAutomationProvider extends ChangeNotifier {
     required LoggingService log,
     required PythonBridgeService bridge,
     required DesktopAgentService agent,
-  })  : _log = log,
-        _bridge = bridge,
-        _agent = agent;
+  }) : _log = log,
+       _bridge = bridge,
+       _agent = agent;
 
   AutomationTier _tier = AutomationTier.accessibilityOnly;
   AutomationTier get tier => _tier;

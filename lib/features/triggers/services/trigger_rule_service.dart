@@ -14,13 +14,16 @@ class TriggerRuleService {
   List<Map<String, dynamic>> get rules => List.unmodifiable(_rules);
 
   void setLoggingService(LoggingService service) => _loggingService = service;
-  void setWebSocketService(WebSocketService service) => _webSocketService = service;
+  void setWebSocketService(WebSocketService service) =>
+      _webSocketService = service;
 
   void _log(String message) => _loggingService?.info('Triggers', message);
 
   void startListening() {
     _extensionSub?.cancel();
-    _extensionSub = _webSocketService?.extensionConnectionStream.listen((connected) {
+    _extensionSub = _webSocketService?.extensionConnectionStream.listen((
+      connected,
+    ) {
       if (connected) resendRulesToExtension();
     });
   }

@@ -36,14 +36,17 @@ Future<void> setupServiceLocator() async {
 
   getIt.registerLazySingleton<WebSocketService>(() => WebSocketService());
   getIt.registerLazySingleton<DiscoveryService>(
-      () => DiscoveryService(getIt<DeviceInfoService>()));
+    () => DiscoveryService(getIt<DeviceInfoService>()),
+  );
   getIt.registerLazySingleton<ClipboardSyncService>(
-      () => ClipboardSyncService());
+    () => ClipboardSyncService(),
+  );
   getIt.registerLazySingleton<TriggerRuleService>(() => TriggerRuleService());
 
   // ── Browser Automation (desktop-only instances, but registered always for DI) ─
   getIt.registerLazySingleton<BrowserLauncherService>(
-      () => BrowserLauncherService());
+    () => BrowserLauncherService(),
+  );
 
   // ── AI Integration ──────────────────────────────────────
   final aiProvider = AiProviderNotifier(log: log);
@@ -54,19 +57,20 @@ Future<void> setupServiceLocator() async {
   if (PlatformConfig.isDesktop) {
     getIt.registerLazySingleton<SystemTrayService>(() => SystemTrayService());
     getIt.registerLazySingleton<WindowManagerService>(
-        () => WindowManagerService());
+      () => WindowManagerService(),
+    );
     getIt.registerLazySingleton<StartupService>(() => StartupService());
-    
+
     // ── Desktop Automation (desktop-only) ─────────────────
     final pythonBridge = PythonBridgeService(log: log);
     getIt.registerSingleton<PythonBridgeService>(pythonBridge);
-    
+
     final a11y = AccessibilityTreeService(log: log, bridge: pythonBridge);
     getIt.registerSingleton<AccessibilityTreeService>(a11y);
-    
+
     final inputSim = InputSimulationService(log: log, bridge: pythonBridge);
     getIt.registerSingleton<InputSimulationService>(inputSim);
-    
+
     final desktopAgent = DesktopAgentService(
       log: log,
       aiProvider: aiProvider,
@@ -74,7 +78,7 @@ Future<void> setupServiceLocator() async {
       input: inputSim,
     );
     getIt.registerSingleton<DesktopAgentService>(desktopAgent);
-    
+
     final desktopProvider = DesktopAutomationProvider(
       log: log,
       bridge: pythonBridge,
@@ -84,13 +88,15 @@ Future<void> setupServiceLocator() async {
   }
 
   // ── Providers ───────────────────────────────────────────
-  getIt.registerLazySingleton<ConnectionProvider>(() => ConnectionProvider(
-        loggingService: log,
-        webSocketService: getIt<WebSocketService>(),
-        discoveryService: getIt<DiscoveryService>(),
-        deviceInfoService: getIt<DeviceInfoService>(),
-        browserLauncherService: getIt<BrowserLauncherService>(),
-        clipboardSyncService: getIt<ClipboardSyncService>(),
-        triggerRuleService: getIt<TriggerRuleService>(),
-      ));
+  getIt.registerLazySingleton<ConnectionProvider>(
+    () => ConnectionProvider(
+      loggingService: log,
+      webSocketService: getIt<WebSocketService>(),
+      discoveryService: getIt<DiscoveryService>(),
+      deviceInfoService: getIt<DeviceInfoService>(),
+      browserLauncherService: getIt<BrowserLauncherService>(),
+      clipboardSyncService: getIt<ClipboardSyncService>(),
+      triggerRuleService: getIt<TriggerRuleService>(),
+    ),
+  );
 }

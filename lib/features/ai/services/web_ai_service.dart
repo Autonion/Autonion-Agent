@@ -25,11 +25,14 @@ class WebAiService extends AiService {
     // It works through the extension bridge → browser page flow.
     // This method is a stub — the actual flow is driven by the
     // WebSocket connection to the browser extension.
-    _log.warn('WebAiService',
-        'WebAiService.chat() called — this mode works via browser extension, not direct API');
+    _log.warn(
+      'WebAiService',
+      'WebAiService.chat() called — this mode works via browser extension, not direct API',
+    );
     return AiResponse.failure(
-        'Web-based mode works through the browser extension. '
-        'Switch to Ollama or API Key for direct AI access.');
+      'Web-based mode works through the browser extension. '
+      'Switch to Ollama or API Key for direct AI access.',
+    );
   }
 
   @override

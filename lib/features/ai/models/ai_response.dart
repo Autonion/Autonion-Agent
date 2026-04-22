@@ -16,8 +16,12 @@ class AiResponse {
     this.latency,
   });
 
-  factory AiResponse.success(String content,
-      {int? promptTokens, int? completionTokens, Duration? latency}) {
+  factory AiResponse.success(
+    String content, {
+    int? promptTokens,
+    int? completionTokens,
+    Duration? latency,
+  }) {
     return AiResponse(
       success: true,
       content: content,
@@ -31,8 +35,7 @@ class AiResponse {
     return AiResponse(success: false, error: error);
   }
 
-  int? get totalTokens =>
-      (promptTokens != null && completionTokens != null)
-          ? promptTokens! + completionTokens!
-          : null;
+  int? get totalTokens => (promptTokens != null && completionTokens != null)
+      ? promptTokens! + completionTokens!
+      : null;
 }

@@ -45,7 +45,7 @@ class CommandExecutor {
     if (command.containsKey('prompt')) {
       final prompt = command['prompt'];
       _log('Received prompt from Android: "$prompt"');
-      
+
       // Forward to Browser Extension
       if (_webSocketService != null) {
         // Check if extension is connected; if not, launch the browser
@@ -53,7 +53,9 @@ class CommandExecutor {
           _log('Extension not connected — attempting to launch browser...');
           final launched = await _ensureBrowserRunning();
           if (!launched) {
-            _log('Error: Could not launch browser or extension did not connect');
+            _log(
+              'Error: Could not launch browser or extension did not connect',
+            );
             return;
           }
         }
@@ -76,7 +78,7 @@ class CommandExecutor {
     if (command.containsKey('type')) {
       final type = command['type'] as String;
       payload = command['payload'] as Map<String, dynamic>?;
-      
+
       if (type == 'open_url') {
         action = 'open_url';
       } else if (type == 'clipboard.text_copied') {
@@ -95,8 +97,8 @@ class CommandExecutor {
         if (urlString != null) {
           final uri = Uri.parse(urlString);
           if (await canLaunchUrl(uri)) {
-             await launchUrl(uri);
-             _log('Launched $urlString');
+            await launchUrl(uri);
+            _log('Launched $urlString');
           } else {
             _log('Could not launch $urlString');
           }
@@ -143,7 +145,9 @@ class CommandExecutor {
 
       case 'execute_desktop_actions':
         final steps = message['steps'] as List<dynamic>?;
-        _log('Received ${steps?.length ?? 0} desktop-level actions (not yet supported in V1)');
+        _log(
+          'Received ${steps?.length ?? 0} desktop-level actions (not yet supported in V1)',
+        );
         break;
 
       case 'rule_triggered':
@@ -207,6 +211,5 @@ class CommandExecutor {
     }
   }
 
-  void dispose() {
-  }
+  void dispose() {}
 }

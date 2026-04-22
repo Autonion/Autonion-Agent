@@ -31,22 +31,25 @@ class DashboardScreen extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               // ── Header ──────────────────────────────
-              Text('Dashboard',
-                  style: Theme.of(context).textTheme.displayMedium)
-                  .animate().fadeIn(duration: 400.ms).slideX(begin: -0.05),
+              Text(
+                'Dashboard',
+                style: Theme.of(context).textTheme.displayMedium,
+              ).animate().fadeIn(duration: 400.ms).slideX(begin: -0.05),
               const SizedBox(height: 8),
               Text(
                 'Autonion Agent on ${PlatformConfig.platformName}',
                 style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                      color: AppColors.textSecondary,
-                    ),
+                  color: AppColors.textSecondary,
+                ),
               ),
               const SizedBox(height: 28),
 
               // ── Status Cards Row ────────────────────
               Row(
                 children: [
-                  Expanded(child: _StatusCard(conn: conn, ws: ws)),
+                  Expanded(
+                    child: _StatusCard(conn: conn, ws: ws),
+                  ),
                   const SizedBox(width: 16),
                   Expanded(child: _ConnectionStatsCard(ws: ws)),
                   const SizedBox(width: 16),
@@ -56,13 +59,16 @@ class DashboardScreen extends StatelessWidget {
               const SizedBox(height: 20),
 
               // ── Network Info ────────────────────────
-              _NetworkInfoCard(conn: conn)
-                  .animate().fadeIn(duration: 500.ms, delay: 200.ms),
+              _NetworkInfoCard(
+                conn: conn,
+              ).animate().fadeIn(duration: 500.ms, delay: 200.ms),
               const SizedBox(height: 20),
 
               // ── Quick Actions ───────────────────────
-              Text('Quick Actions',
-                  style: Theme.of(context).textTheme.titleLarge),
+              Text(
+                'Quick Actions',
+                style: Theme.of(context).textTheme.titleLarge,
+              ),
               const SizedBox(height: 12),
               Wrap(
                 spacing: 12,
@@ -93,7 +99,9 @@ class DashboardScreen extends StatelessWidget {
                     label: 'Get Browser Extension',
                     color: AppColors.accent,
                     onTap: () => launchUrl(
-                      Uri.parse('https://github.com/Autonion/Autonion-Extension/releases'),
+                      Uri.parse(
+                        'https://github.com/Autonion/Autonion-Extension/releases',
+                      ),
                       mode: LaunchMode.externalApplication,
                     ),
                   ),
@@ -103,11 +111,14 @@ class DashboardScreen extends StatelessWidget {
               const SizedBox(height: 24),
 
               // ── Recent Logs ─────────────────────────
-              Text('Recent Logs',
-                  style: Theme.of(context).textTheme.titleLarge),
+              Text(
+                'Recent Logs',
+                style: Theme.of(context).textTheme.titleLarge,
+              ),
               const SizedBox(height: 12),
-              _RecentLogsCard(log: log)
-                  .animate().fadeIn(duration: 500.ms, delay: 400.ms),
+              _RecentLogsCard(
+                log: log,
+              ).animate().fadeIn(duration: 500.ms, delay: 400.ms),
             ],
           ),
         );
@@ -136,20 +147,16 @@ class _StatusCard extends StatelessWidget {
               Text(
                 conn.isRunning ? 'Online' : 'Offline',
                 style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    color: conn.isRunning
-                        ? AppColors.success
-                        : AppColors.error),
+                  color: conn.isRunning ? AppColors.success : AppColors.error,
+                ),
               ),
             ],
           ),
           const SizedBox(height: 16),
-          Text('Server Status',
-              style: Theme.of(context).textTheme.labelSmall),
+          Text('Server Status', style: Theme.of(context).textTheme.labelSmall),
           const SizedBox(height: 4),
           Text(
-            conn.isRunning
-                ? 'Port ${conn.port ?? "..."}'
-                : 'Not running',
+            conn.isRunning ? 'Port ${conn.port ?? "..."}' : 'Not running',
             style: Theme.of(context).textTheme.bodySmall,
           ),
         ],
@@ -174,31 +181,35 @@ class _ConnectionStatsCard extends StatelessWidget {
               const SizedBox(width: 8),
               Text(
                 '${ws.connectedClients}',
-                style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-                      color: AppColors.primary,
-                    ),
+                style: Theme.of(
+                  context,
+                ).textTheme.headlineMedium?.copyWith(color: AppColors.primary),
               ),
             ],
           ),
           const SizedBox(height: 12),
-          Text('Connected Clients',
-              style: Theme.of(context).textTheme.labelSmall),
+          Text(
+            'Connected Clients',
+            style: Theme.of(context).textTheme.labelSmall,
+          ),
           const SizedBox(height: 4),
           Row(
             children: [
-              Icon(Icons.extension,
-                  size: 14,
-                  color: ws.hasExtensionClient
-                      ? AppColors.success
-                      : AppColors.textMuted),
+              Icon(
+                Icons.extension,
+                size: 14,
+                color: ws.hasExtensionClient
+                    ? AppColors.success
+                    : AppColors.textMuted,
+              ),
               const SizedBox(width: 4),
               Text(
                 ws.hasExtensionClient ? 'Extension ✓' : 'No Extension',
                 style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: ws.hasExtensionClient
-                          ? AppColors.success
-                          : AppColors.textMuted,
-                    ),
+                  color: ws.hasExtensionClient
+                      ? AppColors.success
+                      : AppColors.textMuted,
+                ),
               ),
             ],
           ),
@@ -221,8 +232,10 @@ class _PlatformCard extends StatelessWidget {
             children: [
               Icon(_platformIcon, color: AppColors.accent, size: 20),
               const SizedBox(width: 8),
-              Text(PlatformConfig.platformName,
-                  style: Theme.of(context).textTheme.titleMedium),
+              Text(
+                PlatformConfig.platformName,
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
             ],
           ),
           const SizedBox(height: 12),
@@ -261,8 +274,10 @@ class _NetworkInfoCard extends StatelessWidget {
             future: NetworkInterface.list(type: InternetAddressType.IPv4),
             builder: (context, snapshot) {
               if (!snapshot.hasData || snapshot.data!.isEmpty) {
-                return Text('Fetching...',
-                    style: Theme.of(context).textTheme.bodySmall);
+                return Text(
+                  'Fetching...',
+                  style: Theme.of(context).textTheme.bodySmall,
+                );
               }
               return Wrap(
                 spacing: 16,
@@ -272,10 +287,15 @@ class _NetworkInfoCard extends StatelessWidget {
                     for (var addr in iface.addresses)
                       if (!addr.isLoopback)
                         Chip(
-                          avatar: const Icon(Icons.lan, size: 16,
-                              color: AppColors.secondary),
-                          label: Text('${iface.name}: ${addr.address}',
-                              style: Theme.of(context).textTheme.bodySmall),
+                          avatar: const Icon(
+                            Icons.lan,
+                            size: 16,
+                            color: AppColors.secondary,
+                          ),
+                          label: Text(
+                            '${iface.name}: ${addr.address}',
+                            style: Theme.of(context).textTheme.bodySmall,
+                          ),
                           backgroundColor: AppColors.surfaceVariant,
                           side: const BorderSide(color: AppColors.border),
                         ),
@@ -320,11 +340,12 @@ class _ActionChip extends StatelessWidget {
             children: [
               Icon(icon, size: 18, color: color),
               const SizedBox(width: 8),
-              Text(label,
-                  style: Theme.of(context)
-                      .textTheme
-                      .labelLarge
-                      ?.copyWith(color: color)),
+              Text(
+                label,
+                style: Theme.of(
+                  context,
+                ).textTheme.labelLarge?.copyWith(color: color),
+              ),
             ],
           ),
         ),
@@ -346,8 +367,7 @@ class _RecentLogsCard extends StatelessWidget {
     return GlassmorphicCard(
       padding: const EdgeInsets.all(16),
       child: recentEntries.isEmpty
-          ? Text('No logs yet',
-              style: Theme.of(context).textTheme.bodySmall)
+          ? Text('No logs yet', style: Theme.of(context).textTheme.bodySmall)
           : Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: recentEntries.reversed.map((entry) {
@@ -357,21 +377,19 @@ class _RecentLogsCard extends StatelessWidget {
                     children: [
                       _logLevelDot(entry.level),
                       const SizedBox(width: 8),
-                      Text(entry.timeString,
-                          style: Theme.of(context)
-                              .textTheme
-                              .bodySmall
-                              ?.copyWith(
-                                  color: AppColors.textMuted,
-                                  fontFamily: 'monospace',
-                                  fontSize: 11)),
+                      Text(
+                        entry.timeString,
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: AppColors.textMuted,
+                          fontFamily: 'monospace',
+                          fontSize: 11,
+                        ),
+                      ),
                       const SizedBox(width: 8),
                       Expanded(
                         child: Text(
                           entry.message,
-                          style: Theme.of(context)
-                              .textTheme
-                              .bodySmall
+                          style: Theme.of(context).textTheme.bodySmall
                               ?.copyWith(fontFamily: 'monospace', fontSize: 11),
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,

@@ -43,20 +43,22 @@ JSON RESPONSE FORMAT (you MUST respond with ONLY this exact JSON):
 }
 ''';
 
-  static String buildUserPrompt(String goal, ScreenState state, List<Map<String, dynamic>> history) {
+  static String buildUserPrompt(
+    String goal,
+    ScreenState state,
+    List<Map<String, dynamic>> history,
+  ) {
     // Only send the LLM the promptable JSON to save tokens
     final elementsJson = state.elements.map((e) => e.toPromptJson()).toList();
-    
-    final promptMap = <String, dynamic>{
-      'goal': goal,
-    };
-    
+
+    final promptMap = <String, dynamic>{'goal': goal};
+
     if (history.isNotEmpty) {
       promptMap['history'] = history;
     }
-    
+
     promptMap['ui_elements'] = elementsJson;
-    
+
     return jsonEncode(promptMap);
   }
 }

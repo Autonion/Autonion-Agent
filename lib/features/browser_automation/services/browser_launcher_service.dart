@@ -20,12 +20,32 @@ class BrowserLauncherService extends ChangeNotifier {
   LoggingService? _loggingService;
 
   static final List<Map<String, String>> _browserPaths = [
-    {'name': 'Google Chrome', 'path': r'C:\Program Files\Google\Chrome\Application\chrome.exe'},
-    {'name': 'Google Chrome (x86)', 'path': r'C:\Program Files (x86)\Google\Chrome\Application\chrome.exe'},
-    {'name': 'Microsoft Edge', 'path': r'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe'},
-    {'name': 'Microsoft Edge', 'path': r'C:\Program Files\Microsoft\Edge\Application\msedge.exe'},
-    {'name': 'Brave', 'path': r'C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe'},
-    {'name': 'Brave (x86)', 'path': r'C:\Program Files (x86)\BraveSoftware\Brave-Browser\Application\brave.exe'},
+    {
+      'name': 'Google Chrome',
+      'path': r'C:\Program Files\Google\Chrome\Application\chrome.exe',
+    },
+    {
+      'name': 'Google Chrome (x86)',
+      'path': r'C:\Program Files (x86)\Google\Chrome\Application\chrome.exe',
+    },
+    {
+      'name': 'Microsoft Edge',
+      'path': r'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe',
+    },
+    {
+      'name': 'Microsoft Edge',
+      'path': r'C:\Program Files\Microsoft\Edge\Application\msedge.exe',
+    },
+    {
+      'name': 'Brave',
+      'path':
+          r'C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe',
+    },
+    {
+      'name': 'Brave (x86)',
+      'path':
+          r'C:\Program Files (x86)\BraveSoftware\Brave-Browser\Application\brave.exe',
+    },
   ];
 
   List<BrowserInfo> _detectedBrowsers = [];
@@ -88,8 +108,9 @@ class BrowserLauncherService extends ChangeNotifier {
     final browser = _selectedBrowser!;
     _log('Launching ${browser.name}...');
     try {
-      await Process.start(browser.executablePath, ['--profile-directory=Default'],
-          mode: ProcessStartMode.detached);
+      await Process.start(browser.executablePath, [
+        '--profile-directory=Default',
+      ], mode: ProcessStartMode.detached);
       _log('${browser.name} launched');
       return true;
     } catch (e) {

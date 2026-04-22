@@ -15,8 +15,8 @@ class OllamaService extends AiService {
   AiConfig _config;
 
   OllamaService({required LoggingService log, required AiConfig config})
-      : _log = log,
-        _config = config;
+    : _log = log,
+      _config = config;
 
   void updateConfig(AiConfig config) => _config = config;
 
@@ -44,9 +44,11 @@ class OllamaService extends AiService {
     final stopwatch = Stopwatch()..start();
     try {
       final response = await http
-          .post(url,
-              headers: {'Content-Type': 'application/json'},
-              body: jsonEncode(body))
+          .post(
+            url,
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode(body),
+          )
           .timeout(const Duration(seconds: 120));
 
       stopwatch.stop();
@@ -58,8 +60,11 @@ class OllamaService extends AiService {
         final evalCount = json['eval_count'] as int?;
         final promptEvalCount = json['prompt_eval_count'] as int?;
 
-        _log.info('OllamaService', 'Ollama response in ${stopwatch.elapsedMilliseconds}ms '
-            '(prompt=$promptEvalCount, eval=$evalCount)');
+        _log.info(
+          'OllamaService',
+          'Ollama response in ${stopwatch.elapsedMilliseconds}ms '
+              '(prompt=$promptEvalCount, eval=$evalCount)',
+        );
 
         return AiResponse.success(
           content,
@@ -68,7 +73,8 @@ class OllamaService extends AiService {
           latency: stopwatch.elapsed,
         );
       } else {
-        final errorMsg = 'Ollama error ${response.statusCode}: ${response.body}';
+        final errorMsg =
+            'Ollama error ${response.statusCode}: ${response.body}';
         _log.error('OllamaService', errorMsg);
         return AiResponse.failure(errorMsg);
       }
@@ -98,7 +104,8 @@ class OllamaService extends AiService {
       final response = await http.get(url).timeout(const Duration(seconds: 5));
       if (response.statusCode == 200) {
         final json = jsonDecode(response.body) as Map<String, dynamic>;
-        final models = (json['models'] as List<dynamic>?)
+        final models =
+            (json['models'] as List<dynamic>?)
                 ?.map((m) => (m as Map<String, dynamic>)['name'] as String)
                 .toList() ??
             [];
