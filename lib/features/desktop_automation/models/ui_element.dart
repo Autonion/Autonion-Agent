@@ -34,15 +34,15 @@ class UIElement {
   }
 
   Map<String, dynamic> toJson() => {
-        'id': id,
-        'name': name,
-        'role': role,
-        'type': type,
-        'boundingBox': boundingBox,
-        'isClickable': isClickable,
-        'isKeyboardFocusable': isKeyboardFocusable,
-        'value': value,
-      };
+    'id': id,
+    'name': name,
+    'role': role,
+    'type': type,
+    'boundingBox': boundingBox,
+    'isClickable': isClickable,
+    'isKeyboardFocusable': isKeyboardFocusable,
+    'value': value,
+  };
 
   /// Used for prompting the LLM simply
   Map<String, dynamic> toPromptJson() {

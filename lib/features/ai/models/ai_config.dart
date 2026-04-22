@@ -48,14 +48,14 @@ class AiConfig {
   }
 
   Map<String, dynamic> toJson() => {
-        'providerType': providerType.storageName,
-        'ollamaHost': ollamaHost,
-        'ollamaPort': ollamaPort,
-        'ollamaModel': ollamaModel,
-        'apiEndpoint': apiEndpoint,
-        'apiModel': apiModel,
-        // API key is NOT serialised — stored securely separately
-      };
+    'providerType': providerType.storageName,
+    'ollamaHost': ollamaHost,
+    'ollamaPort': ollamaPort,
+    'ollamaModel': ollamaModel,
+    'apiEndpoint': apiEndpoint,
+    'apiModel': apiModel,
+    // API key is NOT serialised — stored securely separately
+  };
 
   factory AiConfig.fromJson(Map<String, dynamic> json) {
     final typeName = json['providerType'] as String? ?? 'webBased';
@@ -68,7 +68,8 @@ class AiConfig {
       ollamaHost: json['ollamaHost'] as String? ?? 'localhost',
       ollamaPort: json['ollamaPort'] as int? ?? 11434,
       ollamaModel: json['ollamaModel'] as String? ?? 'llama3.2:latest',
-      apiEndpoint: json['apiEndpoint'] as String? ??
+      apiEndpoint:
+          json['apiEndpoint'] as String? ??
           'https://api.openai.com/v1/chat/completions',
       apiModel: json['apiModel'] as String? ?? 'gpt-4o-mini',
     );

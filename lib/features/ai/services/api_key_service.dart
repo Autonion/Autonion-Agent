@@ -19,9 +19,9 @@ class ApiKeyService extends AiService {
     required LoggingService log,
     required AiConfig config,
     String? apiKey,
-  })  : _log = log,
-        _config = config,
-        _apiKey = apiKey ?? config.apiKey;
+  }) : _log = log,
+       _config = config,
+       _apiKey = apiKey ?? config.apiKey;
 
   void updateConfig(AiConfig config, {String? apiKey}) {
     _config = config;
@@ -62,12 +62,14 @@ class ApiKeyService extends AiService {
     final stopwatch = Stopwatch()..start();
     try {
       final response = await http
-          .post(url,
-              headers: {
-                'Content-Type': 'application/json',
-                'Authorization': 'Bearer $_apiKey',
-              },
-              body: jsonEncode(body))
+          .post(
+            url,
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': 'Bearer $_apiKey',
+            },
+            body: jsonEncode(body),
+          )
           .timeout(const Duration(seconds: 60));
 
       stopwatch.stop();
@@ -75,14 +77,19 @@ class ApiKeyService extends AiService {
       if (response.statusCode == 200) {
         final json = jsonDecode(response.body) as Map<String, dynamic>;
         final choices = json['choices'] as List<dynamic>?;
-        final content = (choices?.first as Map<String, dynamic>?)?['message']
-                ?['content'] as String? ?? '';
+        final content =
+            (choices?.first as Map<String, dynamic>?)?['message']?['content']
+                as String? ??
+            '';
         final usage = json['usage'] as Map<String, dynamic>?;
         final promptTokens = usage?['prompt_tokens'] as int?;
         final completionTokens = usage?['completion_tokens'] as int?;
 
-        _log.info('ApiKeyService', 'API response in ${stopwatch.elapsedMilliseconds}ms '
-            '(prompt=$promptTokens, completion=$completionTokens)');
+        _log.info(
+          'ApiKeyService',
+          'API response in ${stopwatch.elapsedMilliseconds}ms '
+              '(prompt=$promptTokens, completion=$completionTokens)',
+        );
 
         return AiResponse.success(
           content,

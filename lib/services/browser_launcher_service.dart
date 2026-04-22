@@ -39,11 +39,13 @@ class BrowserLauncherService extends ChangeNotifier {
     },
     {
       'name': 'Brave',
-      'path': r'C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe',
+      'path':
+          r'C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe',
     },
     {
       'name': 'Brave (x86)',
-      'path': r'C:\Program Files (x86)\BraveSoftware\Brave-Browser\Application\brave.exe',
+      'path':
+          r'C:\Program Files (x86)\BraveSoftware\Brave-Browser\Application\brave.exe',
     },
   ];
 

@@ -40,7 +40,9 @@ class WebSocketService extends ChangeNotifier {
 
   void broadcastEvent(Map<String, dynamic> event) {
     final payload = jsonEncode(event);
-    _log('Broadcasting to ${_clients.length} client(s): ${event['type'] ?? 'unknown'}');
+    _log(
+      'Broadcasting to ${_clients.length} client(s): ${event['type'] ?? 'unknown'}',
+    );
     for (final client in _clients) {
       try {
         client.sink.add(payload);
@@ -64,8 +66,10 @@ class WebSocketService extends ChangeNotifier {
   }
 
   Future<int> startServer() async {
-    var wsHandler = webSocketHandler(
-        (WebSocketChannel webSocket, String? protocol) {
+    var wsHandler = webSocketHandler((
+      WebSocketChannel webSocket,
+      String? protocol,
+    ) {
       _clients.add(webSocket);
       _log('Client connected! Total clients: ${_clients.length}');
       notifyListeners();
@@ -76,52 +80,55 @@ class WebSocketService extends ChangeNotifier {
           'status': 'connected',
           'agent': 'autonion',
           'timestamp': DateTime.now().toIso8601String(),
-          'server_info': {
-            'port': _server?.port,
-            'clients': _clients.length,
-          },
+          'server_info': {'port': _server?.port, 'clients': _clients.length},
         });
         webSocket.sink.add(ack);
       } catch (e) {
         _log('Error sending ack: $e');
       }
 
-      webSocket.stream.listen((message) {
-        try {
-          final data = jsonDecode(message);
-          if (data is Map<String, dynamic>) {
-            if (data['type'] == 'ping') {
-              try {
-                webSocket.sink.add(jsonEncode({
-                  'type': 'pong',
-                  'timestamp': DateTime.now().toIso8601String(),
-                }));
-              } catch (e) {
-                _log('Error sending pong: $e');
+      webSocket.stream.listen(
+        (message) {
+          try {
+            final data = jsonDecode(message);
+            if (data is Map<String, dynamic>) {
+              if (data['type'] == 'ping') {
+                try {
+                  webSocket.sink.add(
+                    jsonEncode({
+                      'type': 'pong',
+                      'timestamp': DateTime.now().toIso8601String(),
+                    }),
+                  );
+                } catch (e) {
+                  _log('Error sending pong: $e');
+                }
+                return;
               }
-              return;
+              if (data['source'] == 'extension' && !_extensionConnected) {
+                _extensionConnected = true;
+                _extensionClient = webSocket;
+                _extensionConnectionController.add(true);
+                _log('Extension client identified and tracked');
+                notifyListeners();
+              }
+              _commandController.add(data);
             }
-            if (data['source'] == 'extension' && !_extensionConnected) {
-              _extensionConnected = true;
-              _extensionClient = webSocket;
-              _extensionConnectionController.add(true);
-              _log('Extension client identified and tracked');
-              notifyListeners();
-            }
-            _commandController.add(data);
+          } catch (e) {
+            _log('Error decoding message: $e');
           }
-        } catch (e) {
-          _log('Error decoding message: $e');
-        }
-      }, onDone: () {
-        _clients.remove(webSocket);
-        _onClientDisconnected(webSocket);
-        notifyListeners();
-      }, onError: (error) {
-        _clients.remove(webSocket);
-        _onClientDisconnected(webSocket);
-        notifyListeners();
-      });
+        },
+        onDone: () {
+          _clients.remove(webSocket);
+          _onClientDisconnected(webSocket);
+          notifyListeners();
+        },
+        onError: (error) {
+          _clients.remove(webSocket);
+          _onClientDisconnected(webSocket);
+          notifyListeners();
+        },
+      );
     });
 
     Future<Response> handler(Request request) async {
@@ -138,21 +145,29 @@ class WebSocketService extends ChangeNotifier {
 
     try {
       _server = await shelf_io.serve(
-          handler, InternetAddress.anyIPv4, AppConfig.defaultWebSocketPort);
+        handler,
+        InternetAddress.anyIPv4,
+        AppConfig.defaultWebSocketPort,
+      );
     } catch (e) {
-      _log('Port ${AppConfig.defaultWebSocketPort} busy, falling back to dynamic');
+      _log(
+        'Port ${AppConfig.defaultWebSocketPort} busy, falling back to dynamic',
+      );
       _server = await shelf_io.serve(handler, InternetAddress.anyIPv4, 0);
     }
 
     _log('Server listening on 0.0.0.0:${_server!.port}');
 
     try {
-      final interfaces =
-          await NetworkInterface.list(type: InternetAddressType.IPv4);
+      final interfaces = await NetworkInterface.list(
+        type: InternetAddressType.IPv4,
+      );
       for (var iface in interfaces) {
         for (var addr in iface.addresses) {
           if (!addr.isLoopback) {
-            _log('Reachable at: ws://${addr.address}:${_server!.port}${AppConfig.webSocketPath}');
+            _log(
+              'Reachable at: ws://${addr.address}:${_server!.port}${AppConfig.webSocketPath}',
+            );
           }
         }
       }

@@ -49,10 +49,15 @@ class ClipboardSyncService {
     // Seed with the current clipboard content so we don't send stale data on startup
     _readCurrentClipboard().then((text) {
       _lastClipboardText = text;
-      _log('Clipboard polling started (seeded: ${text != null ? "${text.length} chars" : "empty"})');
+      _log(
+        'Clipboard polling started (seeded: ${text != null ? "${text.length} chars" : "empty"})',
+      );
     });
 
-    _pollTimer = Timer.periodic(const Duration(seconds: 1), (_) => _pollClipboard());
+    _pollTimer = Timer.periodic(
+      const Duration(seconds: 1),
+      (_) => _pollClipboard(),
+    );
   }
 
   /// Stop polling.
@@ -82,7 +87,8 @@ class ClipboardSyncService {
     // No change? Clear any pending suppress flag and skip.
     if (current == _lastClipboardText) {
       if (_suppressNext) {
-        _suppressNext = false; // Consume the flag — remote write matched, no echo needed
+        _suppressNext =
+            false; // Consume the flag — remote write matched, no echo needed
       }
       return;
     }
@@ -114,9 +120,7 @@ class ClipboardSyncService {
       'timestamp': DateTime.now().millisecondsSinceEpoch,
       'type': 'clipboard.text_copied',
       'sourceDeviceId': deviceId,
-      'payload': {
-        'text': text,
-      },
+      'payload': {'text': text},
     };
 
     _webSocketService!.broadcastEvent(message);

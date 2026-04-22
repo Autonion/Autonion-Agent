@@ -15,11 +15,11 @@ class AiSettingsScreen extends StatefulWidget {
 
 class _AiSettingsScreenState extends State<AiSettingsScreen> {
   final _aiProvider = getIt<AiProviderNotifier>();
-  
+
   final _ollamaHostCtrl = TextEditingController();
   final _ollamaPortCtrl = TextEditingController();
   final _ollamaModelCtrl = TextEditingController();
-  
+
   final _apiKeyCtrl = TextEditingController();
   final _apiEndpointCtrl = TextEditingController();
   final _apiModelCtrl = TextEditingController();
@@ -54,7 +54,7 @@ class _AiSettingsScreenState extends State<AiSettingsScreen> {
     _ollamaHostCtrl.text = config.ollamaHost;
     _ollamaPortCtrl.text = config.ollamaPort.toString();
     _ollamaModelCtrl.text = config.ollamaModel;
-    
+
     _apiKeyCtrl.text = config.apiKey ?? '';
     _apiEndpointCtrl.text = config.apiEndpoint;
     _apiModelCtrl.text = config.apiModel;
@@ -85,29 +85,40 @@ class _AiSettingsScreenState extends State<AiSettingsScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('AI Settings',
-              style: Theme.of(context).textTheme.displayMedium)
-              .animate().fadeIn(duration: 400.ms).slideX(begin: -0.05),
+          Text(
+            'AI Settings',
+            style: Theme.of(context).textTheme.displayMedium,
+          ).animate().fadeIn(duration: 400.ms).slideX(begin: -0.05),
           const SizedBox(height: 8),
-          Text('Configure your AI provider for automation',
-              style: Theme.of(context)
-                  .textTheme
-                  .bodyMedium
-                  ?.copyWith(color: AppColors.textSecondary)),
+          Text(
+            'Configure your AI provider for automation',
+            style: Theme.of(
+              context,
+            ).textTheme.bodyMedium?.copyWith(color: AppColors.textSecondary),
+          ),
           const SizedBox(height: 28),
 
           // ── Provider Cards ──────────────────────
-          _buildProviderCard(AiProviderType.ollama, Icons.computer, AppColors.success)
-              .animate().fadeIn(duration: 500.ms, delay: 100.ms),
+          _buildProviderCard(
+            AiProviderType.ollama,
+            Icons.computer,
+            AppColors.success,
+          ).animate().fadeIn(duration: 500.ms, delay: 100.ms),
           const SizedBox(height: 12),
 
-          _buildProviderCard(AiProviderType.apiKey, Icons.cloud_outlined, AppColors.primary)
-              .animate().fadeIn(duration: 500.ms, delay: 200.ms),
+          _buildProviderCard(
+            AiProviderType.apiKey,
+            Icons.cloud_outlined,
+            AppColors.primary,
+          ).animate().fadeIn(duration: 500.ms, delay: 200.ms),
           const SizedBox(height: 12),
 
-          _buildProviderCard(AiProviderType.webBased, Icons.public, AppColors.warning)
-              .animate().fadeIn(duration: 500.ms, delay: 300.ms),
-          
+          _buildProviderCard(
+            AiProviderType.webBased,
+            Icons.public,
+            AppColors.warning,
+          ).animate().fadeIn(duration: 500.ms, delay: 300.ms),
+
           const SizedBox(height: 32),
 
           // ── Config Panels ───────────────────────
@@ -121,13 +132,15 @@ class _AiSettingsScreenState extends State<AiSettingsScreen> {
                 padding: const EdgeInsets.all(16.0),
                 child: Text(
                   'Web-Based mode delegates requests to the Autonion browser extension, which interacts with ChatGPT or Gemini DOM. No extra configuration required.',
-                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: AppColors.textSecondary),
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    color: AppColors.textSecondary,
+                  ),
                 ),
               ),
             ),
-          
+
           const SizedBox(height: 32),
-          
+
           // ── Test Connection ─────────────────────
           if (currentType != AiProviderType.webBased)
             _buildTestConnectionPanel(),
@@ -138,7 +151,7 @@ class _AiSettingsScreenState extends State<AiSettingsScreen> {
 
   Widget _buildProviderCard(AiProviderType type, IconData icon, Color color) {
     final isSelected = _aiProvider.config.providerType == type;
-    
+
     return InkWell(
       onTap: () {
         _aiProvider.setProvider(type);
@@ -165,34 +178,42 @@ class _AiSettingsScreenState extends State<AiSettingsScreen> {
                 children: [
                   Row(
                     children: [
-                      Text(type.displayName,
-                          style: Theme.of(context).textTheme.titleMedium),
+                      Text(
+                        type.displayName,
+                        style: Theme.of(context).textTheme.titleMedium,
+                      ),
                       if (isSelected) ...[
                         const SizedBox(width: 8),
                         Container(
                           padding: const EdgeInsets.symmetric(
-                              horizontal: 8, vertical: 2),
+                            horizontal: 8,
+                            vertical: 2,
+                          ),
                           decoration: BoxDecoration(
                             color: color.withAlpha(30),
                             borderRadius: BorderRadius.circular(8),
                           ),
-                          child: Text('Active',
-                              style: Theme.of(context)
-                                  .textTheme
-                                  .labelSmall
-                                  ?.copyWith(color: color)),
+                          child: Text(
+                            'Active',
+                            style: Theme.of(
+                              context,
+                            ).textTheme.labelSmall?.copyWith(color: color),
+                          ),
                         ),
                       ],
                     ],
                   ),
                   const SizedBox(height: 4),
-                  Text(type.description,
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(color: AppColors.textSecondary)),
+                  Text(
+                    type.description,
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: AppColors.textSecondary,
+                    ),
+                  ),
                 ],
               ),
             ),
-            if (isSelected)
-              Icon(Icons.check_circle, color: color, size: 24),
+            if (isSelected) Icon(Icons.check_circle, color: color, size: 24),
           ],
         ),
       ),
@@ -206,16 +227,21 @@ class _AiSettingsScreenState extends State<AiSettingsScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('Ollama Configuration', style: Theme.of(context).textTheme.titleLarge),
+            Text(
+              'Ollama Configuration',
+              style: Theme.of(context).textTheme.titleLarge,
+            ),
             const SizedBox(height: 16),
-            
+
             Row(
               children: [
                 Expanded(
                   flex: 2,
                   child: TextFormField(
                     controller: _ollamaHostCtrl,
-                    decoration: const InputDecoration(labelText: 'Host (e.g. localhost)'),
+                    decoration: const InputDecoration(
+                      labelText: 'Host (e.g. localhost)',
+                    ),
                     onChanged: (_) => _saveOllama(),
                   ),
                 ),
@@ -223,7 +249,9 @@ class _AiSettingsScreenState extends State<AiSettingsScreen> {
                 Expanded(
                   child: TextFormField(
                     controller: _ollamaPortCtrl,
-                    decoration: const InputDecoration(labelText: 'Port (e.g. 11434)'),
+                    decoration: const InputDecoration(
+                      labelText: 'Port (e.g. 11434)',
+                    ),
                     keyboardType: TextInputType.number,
                     onChanged: (_) => _saveOllama(),
                   ),
@@ -231,14 +259,16 @@ class _AiSettingsScreenState extends State<AiSettingsScreen> {
               ],
             ),
             const SizedBox(height: 16),
-            
+
             Row(
               crossAxisAlignment: CrossAxisAlignment.end,
               children: [
                 Expanded(
                   child: TextFormField(
                     controller: _ollamaModelCtrl,
-                    decoration: const InputDecoration(labelText: 'Model (e.g. llama3.2:latest)'),
+                    decoration: const InputDecoration(
+                      labelText: 'Model (e.g. llama3.2:latest)',
+                    ),
                     onChanged: (_) => _saveOllama(),
                   ),
                 ),
@@ -253,37 +283,52 @@ class _AiSettingsScreenState extends State<AiSettingsScreen> {
                 ),
               ],
             ),
-            
+
             if (_aiProvider.ollamaModels.isNotEmpty) ...[
               const SizedBox(height: 16),
-              const Text('Available Models:', style: TextStyle(fontWeight: FontWeight.bold)),
+              const Text(
+                'Available Models:',
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
               const SizedBox(height: 8),
               Wrap(
                 spacing: 8,
                 runSpacing: 8,
-                children: _aiProvider.ollamaModels.map((model) => ActionChip(
-                  label: Text(model),
-                  onPressed: () {
-                    _ollamaModelCtrl.text = model;
-                    _saveOllama();
-                  },
-                )).toList(),
+                children: _aiProvider.ollamaModels
+                    .map(
+                      (model) => ActionChip(
+                        label: Text(model),
+                        onPressed: () {
+                          _ollamaModelCtrl.text = model;
+                          _saveOllama();
+                        },
+                      ),
+                    )
+                    .toList(),
               ),
             ],
-            
+
             const SizedBox(height: 16),
             Row(
               children: [
                 Icon(
-                  _aiProvider.ollamaAvailable ? Icons.check_circle : Icons.error,
-                  color: _aiProvider.ollamaAvailable ? AppColors.success : AppColors.error,
+                  _aiProvider.ollamaAvailable
+                      ? Icons.check_circle
+                      : Icons.error,
+                  color: _aiProvider.ollamaAvailable
+                      ? AppColors.success
+                      : AppColors.error,
                   size: 16,
                 ),
                 const SizedBox(width: 8),
                 Text(
-                  _aiProvider.ollamaAvailable ? 'Ollama instance reachable' : 'Ollama not reachable',
+                  _aiProvider.ollamaAvailable
+                      ? 'Ollama instance reachable'
+                      : 'Ollama not reachable',
                   style: TextStyle(
-                    color: _aiProvider.ollamaAvailable ? AppColors.success : AppColors.error,
+                    color: _aiProvider.ollamaAvailable
+                        ? AppColors.success
+                        : AppColors.error,
                     fontSize: 12,
                   ),
                 ),
@@ -302,9 +347,12 @@ class _AiSettingsScreenState extends State<AiSettingsScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('API Configuration', style: Theme.of(context).textTheme.titleLarge),
+            Text(
+              'API Configuration',
+              style: Theme.of(context).textTheme.titleLarge,
+            ),
             const SizedBox(height: 16),
-            
+
             TextFormField(
               controller: _apiKeyCtrl,
               decoration: const InputDecoration(
@@ -315,7 +363,7 @@ class _AiSettingsScreenState extends State<AiSettingsScreen> {
               onChanged: (_) => _saveApiKey(),
             ),
             const SizedBox(height: 16),
-            
+
             TextFormField(
               controller: _apiEndpointCtrl,
               decoration: const InputDecoration(
@@ -324,7 +372,7 @@ class _AiSettingsScreenState extends State<AiSettingsScreen> {
               onChanged: (_) => _saveApiKey(),
             ),
             const SizedBox(height: 16),
-            
+
             TextFormField(
               controller: _apiModelCtrl,
               decoration: const InputDecoration(
@@ -343,11 +391,17 @@ class _AiSettingsScreenState extends State<AiSettingsScreen> {
     return Row(
       children: [
         ElevatedButton.icon(
-          onPressed: _aiProvider.testing ? null : () {
-            _aiProvider.testConnection();
-          },
-          icon: _aiProvider.testing 
-              ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+          onPressed: _aiProvider.testing
+              ? null
+              : () {
+                  _aiProvider.testConnection();
+                },
+          icon: _aiProvider.testing
+              ? const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
               : const Icon(Icons.network_ping),
           label: const Text('Test Connection'),
         ),
@@ -357,7 +411,9 @@ class _AiSettingsScreenState extends State<AiSettingsScreen> {
             child: Text(
               _aiProvider.testResult!,
               style: TextStyle(
-                color: _aiProvider.testResult!.contains('✅') ? AppColors.success : AppColors.error,
+                color: _aiProvider.testResult!.contains('✅')
+                    ? AppColors.success
+                    : AppColors.error,
               ),
             ),
           ),

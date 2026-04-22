@@ -10,15 +10,19 @@ import 'logging_service.dart';
 class WebSocketService {
   HttpServer? _server;
   final List<WebSocketChannel> _clients = [];
-  final StreamController<Map<String, dynamic>> _commandController = StreamController.broadcast();
-  final StreamController<bool> _extensionConnectionController = StreamController.broadcast();
+  final StreamController<Map<String, dynamic>> _commandController =
+      StreamController.broadcast();
+  final StreamController<bool> _extensionConnectionController =
+      StreamController.broadcast();
   LoggingService? _loggingService;
   bool _extensionConnected = false;
   WebSocketChannel? _extensionClient; // Track the specific extension client
 
   Stream<Map<String, dynamic>> get commandStream => _commandController.stream;
+
   /// Stream that emits true when the extension connects.
-  Stream<bool> get extensionConnectionStream => _extensionConnectionController.stream;
+  Stream<bool> get extensionConnectionStream =>
+      _extensionConnectionController.stream;
   int get connectedClients => _clients.length;
   bool get hasExtensionClient => _extensionConnected;
 
@@ -35,7 +39,9 @@ class WebSocketService {
   // Function to broadcast events to all connected controllers (usually just one)
   void broadcastEvent(Map<String, dynamic> event) {
     final payload = jsonEncode(event);
-    _log('Broadcasting to ${_clients.length} client(s): ${event['type'] ?? 'unknown'}');
+    _log(
+      'Broadcasting to ${_clients.length} client(s): ${event['type'] ?? 'unknown'}',
+    );
     for (final client in _clients) {
       try {
         client.sink.add(payload);
@@ -46,9 +52,14 @@ class WebSocketService {
   }
 
   Future<int> startServer() async {
-    var wsHandler = webSocketHandler((WebSocketChannel webSocket, String? protocol) {
+    var wsHandler = webSocketHandler((
+      WebSocketChannel webSocket,
+      String? protocol,
+    ) {
       _clients.add(webSocket);
-      _log('Client connected! Total clients: ${_clients.length} (protocol: $protocol)');
+      _log(
+        'Client connected! Total clients: ${_clients.length} (protocol: $protocol)',
+      );
 
       // Send connection acknowledgment immediately
       try {
@@ -57,10 +68,7 @@ class WebSocketService {
           'status': 'connected',
           'agent': 'autonion',
           'timestamp': DateTime.now().toIso8601String(),
-          'server_info': {
-            'port': _server?.port,
-            'clients': _clients.length,
-          },
+          'server_info': {'port': _server?.port, 'clients': _clients.length},
         });
         webSocket.sink.add(ack);
         _log('Sent connection_ack to new client');
@@ -68,49 +76,57 @@ class WebSocketService {
         _log('Error sending ack: $e');
       }
 
-      webSocket.stream.listen((message) {
-        _log('Received raw: $message');
-        try {
-          final data = jsonDecode(message);
-          if (data is Map<String, dynamic>) {
-            // Handle ping/pong for connection testing
-            if (data['type'] == 'ping') {
-              _log('Received ping, sending pong');
-              try {
-                webSocket.sink.add(jsonEncode({
-                  'type': 'pong',
-                  'timestamp': DateTime.now().toIso8601String(),
-                }));
-              } catch (e) {
-                _log('Error sending pong: $e');
+      webSocket.stream.listen(
+        (message) {
+          _log('Received raw: $message');
+          try {
+            final data = jsonDecode(message);
+            if (data is Map<String, dynamic>) {
+              // Handle ping/pong for connection testing
+              if (data['type'] == 'ping') {
+                _log('Received ping, sending pong');
+                try {
+                  webSocket.sink.add(
+                    jsonEncode({
+                      'type': 'pong',
+                      'timestamp': DateTime.now().toIso8601String(),
+                    }),
+                  );
+                } catch (e) {
+                  _log('Error sending pong: $e');
+                }
+                return;
               }
-              return;
-            }
-            // Track extension connection — identify THIS specific client
-            if (data['source'] == 'extension' && !_extensionConnected) {
-              _extensionConnected = true;
-              _extensionClient = webSocket;
-              _extensionConnectionController.add(true);
-              _log('Extension client identified and tracked');
-            }
+              // Track extension connection — identify THIS specific client
+              if (data['source'] == 'extension' && !_extensionConnected) {
+                _extensionConnected = true;
+                _extensionClient = webSocket;
+                _extensionConnectionController.add(true);
+                _log('Extension client identified and tracked');
+              }
 
-            _commandController.add(data);
-            _log('Command dispatched: ${data['type'] ?? data['action'] ?? 'unknown'}');
-          } else {
-            _log('Received non-map data, ignoring: ${data.runtimeType}');
+              _commandController.add(data);
+              _log(
+                'Command dispatched: ${data['type'] ?? data['action'] ?? 'unknown'}',
+              );
+            } else {
+              _log('Received non-map data, ignoring: ${data.runtimeType}');
+            }
+          } catch (e) {
+            _log('Error decoding message: $e');
           }
-        } catch (e) {
-          _log('Error decoding message: $e');
-        }
-      }, onDone: () {
-        _clients.remove(webSocket);
-        _log('Client disconnected. Remaining: ${_clients.length}');
-        _onClientDisconnected(webSocket);
-      }, onError: (error) {
-        _clients.remove(webSocket);
-        _log('Client error: $error. Remaining: ${_clients.length}');
-        _onClientDisconnected(webSocket);
-      });
+        },
+        onDone: () {
+          _clients.remove(webSocket);
+          _log('Client disconnected. Remaining: ${_clients.length}');
+          _onClientDisconnected(webSocket);
+        },
+        onError: (error) {
+          _clients.remove(webSocket);
+          _log('Client error: $error. Remaining: ${_clients.length}');
+          _onClientDisconnected(webSocket);
+        },
+      );
     });
 
     // Handler to check paths
@@ -141,11 +157,15 @@ class WebSocketService {
     // Log all available IPs for diagnostics
     _log('Server listening on 0.0.0.0:${_server!.port}');
     try {
-      final interfaces = await NetworkInterface.list(type: InternetAddressType.IPv4);
+      final interfaces = await NetworkInterface.list(
+        type: InternetAddressType.IPv4,
+      );
       for (var interface in interfaces) {
         for (var addr in interface.addresses) {
           if (!addr.isLoopback) {
-            _log('Reachable at: ws://${addr.address}:${_server!.port}/automation');
+            _log(
+              'Reachable at: ws://${addr.address}:${_server!.port}/automation',
+            );
           }
         }
       }

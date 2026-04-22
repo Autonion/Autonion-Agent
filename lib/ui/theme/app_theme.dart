@@ -77,8 +77,10 @@ class AppTheme {
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
         fillColor: AppColors.surfaceVariant,
-        contentPadding:
-            const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        contentPadding: const EdgeInsets.symmetric(
+          horizontal: 16,
+          vertical: 14,
+        ),
         border: OutlineInputBorder(
           borderRadius: BorderRadius.circular(12),
           borderSide: const BorderSide(color: AppColors.border),
@@ -139,12 +141,17 @@ class AppTheme {
       // ── Navigation Rail ──────────────────────────────────
       navigationRailTheme: NavigationRailThemeData(
         backgroundColor: AppColors.surface,
-        selectedIconTheme:
-            const IconThemeData(color: AppColors.primary, size: 24),
-        unselectedIconTheme:
-            const IconThemeData(color: AppColors.textMuted, size: 24),
-        selectedLabelTextStyle:
-            textTheme.labelMedium?.copyWith(color: AppColors.primary),
+        selectedIconTheme: const IconThemeData(
+          color: AppColors.primary,
+          size: 24,
+        ),
+        unselectedIconTheme: const IconThemeData(
+          color: AppColors.textMuted,
+          size: 24,
+        ),
+        selectedLabelTextStyle: textTheme.labelMedium?.copyWith(
+          color: AppColors.primary,
+        ),
         unselectedLabelTextStyle: textTheme.labelMedium,
         indicatorColor: AppColors.primary.withAlpha(30),
       ),

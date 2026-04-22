@@ -19,7 +19,7 @@ class PythonBridgeService {
   Process? _process;
   int _requestId = 0;
   final Map<int, Completer<dynamic>> _pendingRequests = {};
-  
+
   bool _isInitializing = false;
   bool get isReady => _process != null;
 
@@ -32,10 +32,10 @@ class PythonBridgeService {
       _log.info('PythonBridge', 'Initialization already in progress...');
       return;
     }
-    
+
     _isInitializing = true;
     _log.info('PythonBridge', 'Initializing Python bridge...');
-    
+
     try {
       final pythonExe = await _setupVenvAndDependencies();
       await _startAgent(pythonExe);
@@ -48,7 +48,10 @@ class PythonBridgeService {
   }
 
   /// Sends a command to the python agent and waits for a response.
-  Future<dynamic> sendCommand(String action, [Map<String, dynamic>? payload]) async {
+  Future<dynamic> sendCommand(
+    String action, [
+    Map<String, dynamic>? payload,
+  ]) async {
     if (!isReady) {
       await init();
     }
@@ -64,7 +67,7 @@ class PythonBridgeService {
     };
 
     final jsonStr = jsonEncode(command);
-    
+
     try {
       _process!.stdin.writeln(jsonStr);
       _process!.stdin.flush();
@@ -73,10 +76,13 @@ class PythonBridgeService {
       throw PythonBridgeException('Failed to write to agent: $e');
     }
 
-    return completer.future.timeout(const Duration(seconds: 30), onTimeout: () {
-      _pendingRequests.remove(id);
-      throw PythonBridgeException('Command timed out ($action)');
-    });
+    return completer.future.timeout(
+      const Duration(seconds: 30),
+      onTimeout: () {
+        _pendingRequests.remove(id);
+        throw PythonBridgeException('Command timed out ($action)');
+      },
+    );
   }
 
   Future<void> stop() async {
@@ -99,7 +105,7 @@ class PythonBridgeService {
     // 2. Setup Venv directory (in AppData)
     final appDir = await getApplicationSupportDirectory();
     final venvPath = p.join(appDir.path, 'autonion_venv');
-    final venvPythonExe = Platform.isWindows 
+    final venvPythonExe = Platform.isWindows
         ? p.join(venvPath, 'Scripts', 'python.exe')
         : p.join(venvPath, 'bin', 'python');
 
@@ -114,14 +120,20 @@ class PythonBridgeService {
     // 3. Install dependencies
     _log.info('PythonBridge', 'Ensuring dependencies are installed...');
     final pipResult = await Process.run(venvPythonExe, [
-      '-m', 'pip', 'install', '--upgrade',
-      'uiautomation', 'pyautogui', 'mss', 'Pillow'
+      '-m',
+      'pip',
+      'install',
+      '--upgrade',
+      'uiautomation',
+      'pyautogui',
+      'mss',
+      'Pillow',
     ]);
-    
+
     if (pipResult.exitCode != 0) {
       final stderr = pipResult.stderr.toString();
       _log.error('PythonBridge', 'Pip install output: $stderr');
-      // We don't throw because sometimes warnings cause non-zero exits, 
+      // We don't throw because sometimes warnings cause non-zero exits,
       // instead we will fail at runtime if imports fail.
     }
 
@@ -129,7 +141,9 @@ class PythonBridgeService {
   }
 
   Future<String?> _findSystemPython() async {
-    final commands = Platform.isWindows ? ['python', 'py', 'python3'] : ['python3', 'python'];
+    final commands = Platform.isWindows
+        ? ['python', 'py', 'python3']
+        : ['python3', 'python'];
     for (final cmd in commands) {
       try {
         final result = await Process.run(cmd, ['--version']);
@@ -143,13 +157,13 @@ class PythonBridgeService {
     // Find the python script. It is inside `python/desktop_agent.py`.
     // We use the executable's directory so it works when installed or launched via shortcut.
     final exeDir = p.dirname(Platform.resolvedExecutable);
-    
+
     // In dev (flutter run), the exe is deep in build/windows/..., so we fallback to Directory.current if not found.
     String scriptPath = p.join(exeDir, 'python', 'desktop_agent.py');
     if (!File(scriptPath).existsSync()) {
       scriptPath = p.join(Directory.current.path, 'python', 'desktop_agent.py');
     }
-    
+
     if (!File(scriptPath).existsSync()) {
       throw PythonBridgeException('desktop_agent.py not found at $scriptPath');
     }
@@ -158,28 +172,41 @@ class PythonBridgeService {
     _process = await Process.start(pythonExe, [scriptPath]);
 
     // Handle stdout (JSON responses)
-    _process!.stdout.transform(utf8.decoder).transform(const LineSplitter()).listen((line) {
-      if (line.trim().isEmpty) return;
-      try {
-        final Map<String, dynamic> response = jsonDecode(line);
-        final id = response['id'] as int?;
-        if (id != null && _pendingRequests.containsKey(id)) {
-          final completer = _pendingRequests.remove(id)!;
-          if (response['success'] == true) {
-            completer.complete(response['data']);
-          } else {
-            completer.completeError(PythonBridgeException(response['error'] as String? ?? 'Unknown error'));
+    _process!.stdout
+        .transform(utf8.decoder)
+        .transform(const LineSplitter())
+        .listen((line) {
+          if (line.trim().isEmpty) return;
+          try {
+            final Map<String, dynamic> response = jsonDecode(line);
+            final id = response['id'] as int?;
+            if (id != null && _pendingRequests.containsKey(id)) {
+              final completer = _pendingRequests.remove(id)!;
+              if (response['success'] == true) {
+                completer.complete(response['data']);
+              } else {
+                completer.completeError(
+                  PythonBridgeException(
+                    response['error'] as String? ?? 'Unknown error',
+                  ),
+                );
+              }
+            }
+          } catch (e) {
+            _log.error(
+              'PythonBridge',
+              'Failed to parse agent stdout: $line (Error: $e)',
+            );
           }
-        }
-      } catch (e) {
-        _log.error('PythonBridge', 'Failed to parse agent stdout: $line (Error: $e)');
-      }
-    });
+        });
 
     // Handle stderr (Agent logs)
-    _process!.stderr.transform(utf8.decoder).transform(const LineSplitter()).listen((line) {
-      _log.debug('PythonAgent', line);
-    });
+    _process!.stderr
+        .transform(utf8.decoder)
+        .transform(const LineSplitter())
+        .listen((line) {
+          _log.debug('PythonAgent', line);
+        });
 
     // Handle exit
     _process!.exitCode.then((code) {
@@ -190,7 +217,9 @@ class PythonBridgeService {
     // Ping test
     _log.info('PythonBridge', 'Pinging agent...');
     final response = await sendCommand('ping');
-    if (response == 'pong' || (response is Map && (response['status'] == 'pong' || response['data'] == 'pong'))) {
+    if (response == 'pong' ||
+        (response is Map &&
+            (response['status'] == 'pong' || response['data'] == 'pong'))) {
       _log.info('PythonBridge', 'Pong received.');
     } else {
       _log.warn('PythonBridge', 'Unexpected ping response: $response');

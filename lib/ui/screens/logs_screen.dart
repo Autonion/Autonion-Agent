@@ -42,9 +42,11 @@ class _LogsScreenState extends State<LogsScreen> {
         // Filter by search
         if (_searchQuery.isNotEmpty) {
           entries = entries
-              .where((e) => e.message
-                  .toLowerCase()
-                  .contains(_searchQuery.toLowerCase()))
+              .where(
+                (e) => e.message.toLowerCase().contains(
+                  _searchQuery.toLowerCase(),
+                ),
+              )
               .toList();
         }
 
@@ -53,7 +55,8 @@ class _LogsScreenState extends State<LogsScreen> {
           WidgetsBinding.instance.addPostFrameCallback((_) {
             if (_scrollController.hasClients) {
               _scrollController.jumpTo(
-                  _scrollController.position.maxScrollExtent);
+                _scrollController.position.maxScrollExtent,
+              );
             }
           });
         }
@@ -67,9 +70,10 @@ class _LogsScreenState extends State<LogsScreen> {
               Row(
                 children: [
                   Expanded(
-                    child: Text('Logs',
-                        style: Theme.of(context).textTheme.displayMedium)
-                        .animate().fadeIn(duration: 400.ms),
+                    child: Text(
+                      'Logs',
+                      style: Theme.of(context).textTheme.displayMedium,
+                    ).animate().fadeIn(duration: 400.ms),
                   ),
                   // Clear button
                   IconButton(
@@ -80,16 +84,14 @@ class _LogsScreenState extends State<LogsScreen> {
                   ),
                   // Auto-scroll toggle
                   IconButton(
-                    onPressed: () =>
-                        setState(() => _autoScroll = !_autoScroll),
+                    onPressed: () => setState(() => _autoScroll = !_autoScroll),
                     icon: Icon(
                       _autoScroll
                           ? Icons.vertical_align_bottom
                           : Icons.vertical_align_center,
                       size: 20,
                     ),
-                    tooltip:
-                        _autoScroll ? 'Auto-scroll ON' : 'Auto-scroll OFF',
+                    tooltip: _autoScroll ? 'Auto-scroll ON' : 'Auto-scroll OFF',
                     color: _autoScroll
                         ? AppColors.primary
                         : AppColors.textSecondary,
@@ -109,10 +111,11 @@ class _LogsScreenState extends State<LogsScreen> {
                         onChanged: (v) => setState(() => _searchQuery = v),
                         decoration: InputDecoration(
                           hintText: 'Search logs...',
-                          prefixIcon:
-                              const Icon(Icons.search, size: 18),
+                          prefixIcon: const Icon(Icons.search, size: 18),
                           contentPadding: const EdgeInsets.symmetric(
-                              horizontal: 12, vertical: 0),
+                            horizontal: 12,
+                            vertical: 0,
+                          ),
                           border: OutlineInputBorder(
                             borderRadius: BorderRadius.circular(10),
                           ),
@@ -123,33 +126,36 @@ class _LogsScreenState extends State<LogsScreen> {
                   ),
                   const SizedBox(width: 12),
                   // Level filter chips
-                  ...[null, LogLevel.error, LogLevel.warning, LogLevel.info]
-                      .map((level) => Padding(
-                            padding: const EdgeInsets.only(left: 4),
-                            child: FilterChip(
-                              label: Text(
-                                level?.name.toUpperCase() ?? 'ALL',
-                                style: Theme.of(context)
-                                    .textTheme
-                                    .labelSmall
-                                    ?.copyWith(
-                                      color: _filterLevel == level
-                                          ? Colors.white
-                                          : AppColors.textSecondary,
-                                    ),
-                              ),
-                              selected: _filterLevel == level,
-                              selectedColor: AppColors.primary,
-                              backgroundColor: AppColors.surfaceVariant,
-                              side: BorderSide(
+                  ...[
+                    null,
+                    LogLevel.error,
+                    LogLevel.warning,
+                    LogLevel.info,
+                  ].map(
+                    (level) => Padding(
+                      padding: const EdgeInsets.only(left: 4),
+                      child: FilterChip(
+                        label: Text(
+                          level?.name.toUpperCase() ?? 'ALL',
+                          style: Theme.of(context).textTheme.labelSmall
+                              ?.copyWith(
                                 color: _filterLevel == level
-                                    ? AppColors.primary
-                                    : AppColors.border,
+                                    ? Colors.white
+                                    : AppColors.textSecondary,
                               ),
-                              onSelected: (_) =>
-                                  setState(() => _filterLevel = level),
-                            ),
-                          )),
+                        ),
+                        selected: _filterLevel == level,
+                        selectedColor: AppColors.primary,
+                        backgroundColor: AppColors.surfaceVariant,
+                        side: BorderSide(
+                          color: _filterLevel == level
+                              ? AppColors.primary
+                              : AppColors.border,
+                        ),
+                        onSelected: (_) => setState(() => _filterLevel = level),
+                      ),
+                    ),
+                  ),
                 ],
               ),
               const SizedBox(height: 16),
@@ -164,11 +170,11 @@ class _LogsScreenState extends State<LogsScreen> {
                   ),
                   child: entries.isEmpty
                       ? Center(
-                          child: Text('No logs to display',
-                              style: Theme.of(context)
-                                  .textTheme
-                                  .bodySmall
-                                  ?.copyWith(color: AppColors.textMuted)),
+                          child: Text(
+                            'No logs to display',
+                            style: Theme.of(context).textTheme.bodySmall
+                                ?.copyWith(color: AppColors.textMuted),
+                          ),
                         )
                       : ListView.builder(
                           controller: _scrollController,
@@ -177,8 +183,9 @@ class _LogsScreenState extends State<LogsScreen> {
                           itemBuilder: (context, index) {
                             final entry = entries[index];
                             return Padding(
-                              padding:
-                                  const EdgeInsets.symmetric(vertical: 1.5),
+                              padding: const EdgeInsets.symmetric(
+                                vertical: 1.5,
+                              ),
                               child: Row(
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
@@ -187,31 +194,35 @@ class _LogsScreenState extends State<LogsScreen> {
                                   Text(
                                     entry.timeString,
                                     style: AppTypography.mono.copyWith(
-                                        color: AppColors.textMuted,
-                                        fontSize: 11),
+                                      color: AppColors.textMuted,
+                                      fontSize: 11,
+                                    ),
                                   ),
                                   const SizedBox(width: 8),
                                   Container(
                                     padding: const EdgeInsets.symmetric(
-                                        horizontal: 5, vertical: 1),
+                                      horizontal: 5,
+                                      vertical: 1,
+                                    ),
                                     decoration: BoxDecoration(
                                       color: AppColors.surfaceVariant,
-                                      borderRadius:
-                                          BorderRadius.circular(4),
+                                      borderRadius: BorderRadius.circular(4),
                                     ),
                                     child: Text(
                                       entry.source,
                                       style: AppTypography.mono.copyWith(
-                                          color: AppColors.secondary,
-                                          fontSize: 10),
+                                        color: AppColors.secondary,
+                                        fontSize: 10,
+                                      ),
                                     ),
                                   ),
                                   const SizedBox(width: 8),
                                   Expanded(
                                     child: Text(
                                       entry.message,
-                                      style: AppTypography.mono
-                                          .copyWith(fontSize: 11),
+                                      style: AppTypography.mono.copyWith(
+                                        fontSize: 11,
+                                      ),
                                     ),
                                   ),
                                 ],
@@ -227,10 +238,9 @@ class _LogsScreenState extends State<LogsScreen> {
                 padding: const EdgeInsets.only(top: 8),
                 child: Text(
                   '${entries.length} entries${_filterLevel != null ? ' (filtered)' : ''}',
-                  style: Theme.of(context)
-                      .textTheme
-                      .labelSmall
-                      ?.copyWith(color: AppColors.textMuted),
+                  style: Theme.of(
+                    context,
+                  ).textTheme.labelSmall?.copyWith(color: AppColors.textMuted),
                 ),
               ),
             ],
@@ -259,10 +269,7 @@ class _LogsScreenState extends State<LogsScreen> {
       width: 6,
       height: 6,
       margin: const EdgeInsets.only(top: 5),
-      decoration: BoxDecoration(
-        shape: BoxShape.circle,
-        color: c,
-      ),
+      decoration: BoxDecoration(shape: BoxShape.circle, color: c),
     );
   }
 }

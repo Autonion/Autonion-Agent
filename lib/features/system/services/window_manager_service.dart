@@ -6,6 +6,7 @@ import '../../../core/services/logging_service.dart';
 class WindowManagerService with WindowListener {
   LoggingService? _loggingService;
   bool _isVisible = true;
+  bool _startedInBackground = false;
 
   bool get isVisible => _isVisible;
 
@@ -13,7 +14,8 @@ class WindowManagerService with WindowListener {
   void _log(String message) => _loggingService?.info('Window', message);
 
   /// Initialise the window manager and intercept the close button.
-  Future<void> init() async {
+  Future<void> init({bool isStartup = false}) async {
+    _startedInBackground = isStartup;
     await windowManager.ensureInitialized();
 
     const windowOptions = WindowOptions(
@@ -22,17 +24,37 @@ class WindowManagerService with WindowListener {
       center: true,
       title: 'Autonion Agent',
       titleBarStyle: TitleBarStyle.normal,
+      skipTaskbar: false,
     );
 
     await windowManager.waitUntilReadyToShow(windowOptions, () async {
-      await windowManager.show();
-      await windowManager.focus();
+      if (isStartup) {
+        // Hide window AND remove from taskbar so it's fully in background
+        await windowManager.setSkipTaskbar(true);
+        await windowManager.hide();
+        _isVisible = false;
+        _log('Window manager initialised in background (startup)');
+      } else {
+        await windowManager.show();
+        await windowManager.focus();
+        _isVisible = true;
+        _log('Window manager initialised');
+      }
     });
 
     // Prevent the default close — instead hide to tray
     await windowManager.setPreventClose(true);
     windowManager.addListener(this);
-    _log('Window manager initialised');
+  }
+
+  /// Call after runApp() to re-enforce hidden state if started via --startup.
+  /// Flutter's rendering pipeline can briefly flash the window after runApp().
+  Future<void> ensureHiddenIfStartup() async {
+    if (_startedInBackground && !_isVisible) {
+      await windowManager.setSkipTaskbar(true);
+      await windowManager.hide();
+      _log('Re-enforced hidden state after runApp');
+    }
   }
 
   @override
@@ -43,6 +65,7 @@ class WindowManagerService with WindowListener {
   }
 
   Future<void> show() async {
+    await windowManager.setSkipTaskbar(false);
     await windowManager.show();
     await windowManager.focus();
     _isVisible = true;
@@ -50,6 +73,7 @@ class WindowManagerService with WindowListener {
   }
 
   Future<void> hide() async {
+    await windowManager.setSkipTaskbar(true);
     await windowManager.hide();
     _isVisible = false;
   }

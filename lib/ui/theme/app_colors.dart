@@ -32,7 +32,7 @@ class AppColors {
 
   // ── Glassmorphism ────────────────────────────────────────
   static const glassBackground = Color(0x1AFFFFFF); // 10% white
-  static const glassBorder = Color(0x33FFFFFF);      // 20% white
+  static const glassBorder = Color(0x33FFFFFF); // 20% white
 
   // ── Gradients ────────────────────────────────────────────
   static const gradientStart = Color(0xFF0D1225);
