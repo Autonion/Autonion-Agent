@@ -46,12 +46,17 @@ JSON RESPONSE FORMAT (you MUST respond with ONLY this exact JSON):
   static String buildUserPrompt(
     String goal,
     ScreenState state,
-    List<Map<String, dynamic>> history,
-  ) {
+    List<Map<String, dynamic>> history, {
+    String? conversationContext,
+  }) {
     // Only send the LLM the promptable JSON to save tokens
     final elementsJson = state.elements.map((e) => e.toPromptJson()).toList();
 
     final promptMap = <String, dynamic>{'goal': goal};
+
+    if (conversationContext != null && conversationContext.isNotEmpty) {
+      promptMap['previous_context'] = conversationContext;
+    }
 
     if (history.isNotEmpty) {
       promptMap['history'] = history;

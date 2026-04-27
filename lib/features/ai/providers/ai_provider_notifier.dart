@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../../../core/services/logging_service.dart';
@@ -159,7 +160,61 @@ class AiProviderNotifier extends ChangeNotifier {
     await _checkOllamaAvailability();
   }
 
-  /// Test the active provider with a simple ping message.
+  /// Update Ollama models directory path.
+  Future<void> updateOllamaModelsPath(String? path) async {
+    _config = _config.copyWith(ollamaModelsPath: path ?? '');
+    await _saveConfig();
+    notifyListeners();
+  }
+
+  /// Ensures Ollama is running if it is the selected provider.
+  /// Launches the Ollama desktop app so it uses the user's configured
+  /// models directory and settings.
+  Future<bool> ensureOllamaRunning() async {
+    if (_config.providerType != AiProviderType.ollama) return true;
+
+    if (await _ollamaService.isAvailable()) {
+      return true;
+    }
+
+    _log.info('AiProvider', 'Ollama is offline. Attempting to start automatically...');
+    try {
+      if (Platform.isWindows) {
+        // Launch the Ollama app exe — preserves user's model path config
+        final userProfile = Platform.environment['LOCALAPPDATA'] ?? '';
+        final ollamaExe = '$userProfile\\Programs\\Ollama\\Ollama.exe';
+        if (await File(ollamaExe).exists()) {
+          _log.info('AiProvider', 'Launching Ollama app: $ollamaExe');
+          Process.start(ollamaExe, [], mode: ProcessStartMode.detached);
+        } else {
+          // Fallback: try via PATH (e.g. user installed elsewhere)
+          _log.info('AiProvider', 'Ollama exe not found at default path, trying PATH...');
+          Process.start('ollama', ['serve'], runInShell: true, mode: ProcessStartMode.detached);
+        }
+      } else if (Platform.isMacOS) {
+        Process.start('open', ['-a', 'Ollama']);
+      } else if (Platform.isLinux) {
+        Process.start('ollama', ['serve'], runInShell: true, mode: ProcessStartMode.detached);
+      }
+      
+      // Poll for availability (up to 20 seconds — app startup can be slow)
+      for (int i = 0; i < 20; i++) {
+        await Future.delayed(const Duration(seconds: 1));
+        if (await _ollamaService.isAvailable()) {
+          _log.info('AiProvider', 'Ollama started successfully.');
+          await _checkOllamaAvailability();
+          return true;
+        }
+      }
+      _log.warn('AiProvider', 'Ollama did not become available within 20s.');
+    } catch (e) {
+      _log.error('AiProvider', 'Failed to start Ollama: $e');
+    }
+    
+    return false;
+  }
+
+  /// Test the active provider — for Ollama, also verifies the model exists.
   Future<void> testConnection() async {
     _testing = true;
     _testResult = null;
@@ -169,6 +224,21 @@ class AiProviderNotifier extends ChangeNotifier {
       final available = await activeService.isAvailable();
       if (!available) {
         _testResult = '❌ Provider not reachable';
+      } else if (_config.providerType == AiProviderType.ollama) {
+        // Verify the configured model actually exists
+        final models = await _ollamaService.listModels();
+        final configuredModel = _config.ollamaModel;
+        final modelExists = models.any((m) =>
+          m == configuredModel || m.startsWith('$configuredModel:'));
+        if (models.isEmpty) {
+          _testResult = '⚠️ Ollama is running but no models found.\n'
+              'Check your Models Directory setting or pull a model.';
+        } else if (!modelExists) {
+          _testResult = '⚠️ Ollama is running but model "$configuredModel" not found.\n'
+              'Available: ${models.take(5).join(", ")}';
+        } else {
+          _testResult = '✅ Connected — ${activeService.providerName}';
+        }
       } else {
         _testResult = '✅ Connected — ${activeService.providerName}';
       }

@@ -6,7 +6,9 @@ import '../models/automation_tier.dart';
 import '../models/desktop_action.dart';
 import '../ml/desktop_prompt_formatter.dart';
 import 'accessibility_tree_service.dart';
+import 'automation_memory_service.dart';
 import 'input_simulation_service.dart';
+import 'task_decomposer_service.dart';
 
 enum AgentStatus { idle, running, error, complete }
 
@@ -24,6 +26,8 @@ class DesktopAgentService {
   final AiProviderNotifier _aiProvider;
   final AccessibilityTreeService _a11y;
   final InputSimulationService _input;
+  final TaskDecomposerService _decomposer = TaskDecomposerService();
+  final AutomationMemoryService _memory = AutomationMemoryService();
 
   AgentStatus _status = AgentStatus.idle;
   AgentStatus get status => _status;
@@ -59,8 +63,50 @@ class DesktopAgentService {
     _stopRequested = false;
     _history.clear();
 
-    _log.info('DesktopAgent', 'Starting task: "$goal" [Tier: ${tier.name}]');
+    // Decompose compound commands
+    final subGoals = _decomposer.decompose(goal);
+    _memory.recordGoalStart(goal);
 
+    _log.info('DesktopAgent', 'Starting task: "$goal" [Tier: ${tier.name}] (${subGoals.length} sub-goals)');
+
+    if (subGoals.length <= 1) {
+      // Simple command — run directly
+      await _runScreenLoop(goal, tier: tier, onProgress: onProgress);
+      final success = _status == AgentStatus.complete;
+      _memory.recordGoalOutcome(goal, success ? 'completed' : 'failed', success);
+      return;
+    }
+
+    // Multi-step: execute sub-goals sequentially
+    for (final subGoal in subGoals) {
+      if (_stopRequested) break;
+
+      _log.info('DesktopAgent', '── Sub-goal ${subGoal.stepNumber}/${subGoals.length}: ${subGoal.description} ──');
+      onProgress?.call('Step ${subGoal.stepNumber}/${subGoals.length}: ${subGoal.description}');
+      _history.clear();
+
+      await _runScreenLoop(subGoal.description, tier: tier, onProgress: onProgress);
+
+      if (_status != AgentStatus.complete) {
+        _memory.recordGoalOutcome(goal, 'failed at step ${subGoal.stepNumber}', false);
+        return;
+      }
+
+      _memory.recordAgentTurn(subGoal.description, 'completed');
+      _status = AgentStatus.running; // Reset for next sub-goal
+      await Future.delayed(const Duration(milliseconds: 500));
+    }
+
+    _status = AgentStatus.complete;
+    _memory.recordGoalOutcome(goal, 'completed all steps', true);
+  }
+
+  /// The core screen interaction loop for a single goal/sub-goal.
+  Future<void> _runScreenLoop(
+    String goal, {
+    AutomationTier tier = AutomationTier.accessibilityOnly,
+    void Function(String)? onProgress,
+  }) async {
     int steps = 0;
     const maxSteps = 15;
 
@@ -84,6 +130,7 @@ class DesktopAgentService {
           goal,
           screenState,
           _history,
+          conversationContext: _memory.buildContextSummary(),
         );
 
         final messages = [

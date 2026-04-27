@@ -44,7 +44,8 @@ class CommandExecutor {
     // 1. Handle natural language prompts from Android
     if (command.containsKey('prompt')) {
       final prompt = command['prompt'];
-      _log('Received prompt from Android: "$prompt"');
+      final context = command['context']; // Conversation context from Android
+      _log('Received prompt from Android: "$prompt"${context != null ? " [with context]" : ""}');
 
       // Forward to Browser Extension
       if (_webSocketService != null) {
@@ -62,7 +63,7 @@ class CommandExecutor {
 
         _webSocketService!.broadcastEvent({
           'type': 'execute_prompt',
-          'payload': command,
+          'payload': command, // Includes 'context' field for extension
           'target': 'extension',
         });
         _log('Forwarded prompt to Browser Extension');

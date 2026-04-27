@@ -248,6 +248,16 @@ class ConnectionProvider extends ChangeNotifier {
     // Send immediate acknowledgment back to Android
     _sendPromptResponse(transactionId, 'started', 'Processing command...');
 
+    // Auto-start Ollama if needed
+    final aiNotifier = getIt<AiProviderNotifier>();
+    if (aiNotifier.config.providerType == AiProviderType.ollama) {
+      final isAvailable = await aiNotifier.activeService.isAvailable();
+      if (!isAvailable) {
+        _sendPromptResponse(transactionId, 'in_progress', 'Starting local AI service (Ollama)...');
+        await aiNotifier.ensureOllamaRunning();
+      }
+    }
+
     // ── Step 1: Classify prompt (browser vs desktop) ──
     bool isBrowserRelated = command['target'] == 'browser';
 
