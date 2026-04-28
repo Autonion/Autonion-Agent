@@ -150,19 +150,14 @@ class ConnectionProvider extends ChangeNotifier {
 
   /// Route incoming WebSocket commands.
   Future<void> _executeCommand(Map<String, dynamic> command) async {
-    // Natural language prompts → forward to extension
-    if (command.containsKey('prompt')) {
-      await _handlePrompt(command);
-      return;
-    }
-
-    // Structured key press commands (from Omni-Chatbot NLU)
+    // Structured key press commands — check BEFORE prompt to avoid
+    // routing type:'key_press' commands (that also carry 'prompt') to LLM.
     if (command['type'] == 'key_press') {
       await _handleStructuredKeyPress(command);
       return;
     }
 
-    // Scheduled/recurring actions
+    // Scheduled/recurring actions — also check before generic prompt
     if (command['type'] == 'schedule') {
       await _handleScheduleCommand(command);
       return;
@@ -170,6 +165,12 @@ class ConnectionProvider extends ChangeNotifier {
 
     if (command['type'] == 'kill_switch') {
       _handleKillSwitch(command);
+      return;
+    }
+
+    // Natural language prompts → forward to LLM
+    if (command.containsKey('prompt')) {
+      await _handlePrompt(command);
       return;
     }
 
@@ -1058,25 +1059,49 @@ RULES:
   // ═══════════════════════════════════════════════════════════
 
   /// Handle a structured key press command directly (no LLM needed).
+  /// Supports both single keys and multi-key combos via the 'keys' array.
   Future<void> _handleStructuredKeyPress(Map<String, dynamic> command) async {
-    final keyName = command['keyName']?.toString() ?? '';
     final transactionId = command['transactionId']?.toString() ?? '';
-    _log.info('CMD', 'Structured key_press: $keyName');
+
+    // Prefer the 'keys' array; fall back to splitting the legacy 'keyName'
+    List<String> keys;
+    if (command['keys'] is List && (command['keys'] as List).isNotEmpty) {
+      keys = (command['keys'] as List).map((k) => k.toString().toLowerCase()).toList();
+    } else {
+      final keyName = command['keyName']?.toString() ?? '';
+      keys = keyName.contains('+')
+          ? keyName.split('+').map((k) => k.trim().toLowerCase()).toList()
+          : [keyName.toLowerCase()];
+    }
 
     // Map user-friendly names to pyautogui key names
-    String pyKey = keyName.toLowerCase();
-    if (pyKey == 'up arrow') pyKey = 'up';
-    if (pyKey == 'down arrow') pyKey = 'down';
-    if (pyKey == 'left arrow') pyKey = 'left';
-    if (pyKey == 'right arrow') pyKey = 'right';
+    keys = keys.map((k) {
+      switch (k) {
+        case 'up arrow': return 'up';
+        case 'down arrow': return 'down';
+        case 'left arrow': return 'left';
+        case 'right arrow': return 'right';
+        case 'return': return 'enter';
+        case 'page_up': return 'pageup';
+        case 'page_down': return 'pagedown';
+        case 'caps_lock': return 'capslock';
+        case 'print_screen': return 'printscreen';
+        case 'num_lock': return 'numlock';
+        case 'scroll_lock': return 'scrolllock';
+        default: return k;
+      }
+    }).toList();
+
+    final keyLabel = keys.join('+');
+    _log.info('CMD', 'Structured key_press: $keyLabel (${keys.length} keys)');
 
     try {
       final desktopProvider = getIt<DesktopAutomationProvider>();
       await desktopProvider.bridge.sendCommand('execute_action', {
         'type': 'hotkey',
-        'keys': [pyKey],
+        'keys': keys,
       });
-      _sendPromptResponse(transactionId, 'completed', 'Pressed key: $keyName');
+      _sendPromptResponse(transactionId, 'completed', 'Pressed key: $keyLabel');
     } catch (e) {
       _log.error('CMD', 'Key press failed: $e');
       _sendPromptResponse(transactionId, 'failed', 'Key press failed: $e');
