@@ -33,12 +33,14 @@ class DesktopAutomationProvider extends ChangeNotifier {
       case AgentStatus.complete:
         return 'Completed';
       case AgentStatus.error:
-        return 'Error';
+        return _agent.lastError ?? 'Error';
     }
   }
 
   bool get isRunning => _agent.status == AgentStatus.running;
   bool get isBridgeReady => _bridge.isReady;
+  bool get hasError => _agent.status == AgentStatus.error;
+  String? get lastError => _agent.lastError;
   PythonBridgeService get bridge => _bridge;
 
   void setTier(AutomationTier t) {

@@ -30,9 +30,14 @@ AVAILABLE ACTIONS:
 - 'needs_browser': Use this IMMEDIATELY when the goal requires web/internet access. The system will re-route to the browser extension automatically.
 - 'done': Indicates the task is complete.
 
+CRITICAL RULES FOR "thought":
+- Your "thought" MUST be 1-2 sentences MAX. It is ONLY for explaining which UI action you will take next.
+- NEVER compose, draft, or include content (songs, poems, code, essays, letters, etc.) inside the "thought" field.
+- If the goal is to write/create content, your thought should be about the UI action (e.g., "I will type the song into the editor"), and the actual content goes ONLY in the action's "text" field.
+
 JSON RESPONSE FORMAT (you MUST respond with ONLY this exact JSON):
 {
-  "thought": "brief explanation",
+  "thought": "brief 1-2 sentence explanation of next UI action",
   "action": {
     "type": "click",
     "targetIndex": 12,

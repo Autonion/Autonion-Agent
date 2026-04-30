@@ -460,11 +460,20 @@ class ConnectionProvider extends ChangeNotifier {
             _sendPromptResponse(transactionId, 'in_progress', msg);
           },
         );
-        _sendPromptResponse(
-          transactionId,
-          'completed',
-          'Desktop task completed successfully.',
-        );
+        // Check if the agent actually succeeded
+        if (desktopProvider.hasError) {
+          _sendPromptResponse(
+            transactionId,
+            'failed',
+            desktopProvider.lastError ?? 'Desktop task failed.',
+          );
+        } else {
+          _sendPromptResponse(
+            transactionId,
+            'completed',
+            'Desktop task completed successfully.',
+          );
+        }
       } on NeedsBrowserException catch (e) {
         // Desktop Agent determined this is actually a web task — re-route
         _log.info('CMD', 'Desktop Agent re-routing to browser: ${e.message}');

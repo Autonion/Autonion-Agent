@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../../../core/services/logging_service.dart';
 import '../models/ai_config.dart';
@@ -14,8 +15,10 @@ import '../services/web_ai_service.dart';
 class AiProviderNotifier extends ChangeNotifier {
   static const _configKey = 'ai_config';
   static const _apiKeyStorageKey = 'ai_api_key';
+  static const _legacyApiKeyKey = 'ai_api_key'; // SharedPreferences key (legacy)
 
   final LoggingService _log;
+  final FlutterSecureStorage _secureStorage = const FlutterSecureStorage();
 
   AiConfig _config = const AiConfig(providerType: AiProviderType.ollama);
   AiConfig get config => _config;
@@ -66,8 +69,20 @@ class AiProviderNotifier extends ChangeNotifier {
         );
       }
 
-      // Load API key separately
-      final apiKey = prefs.getString(_apiKeyStorageKey);
+      // Load API key from secure storage
+      String? apiKey = await _secureStorage.read(key: _apiKeyStorageKey);
+
+      // One-time migration: move plaintext key from SharedPreferences → secure storage
+      if (apiKey == null) {
+        final legacyKey = prefs.getString(_legacyApiKeyKey);
+        if (legacyKey != null && legacyKey.isNotEmpty) {
+          _log.info('AiProvider', 'Migrating API key from plaintext to secure storage...');
+          await _secureStorage.write(key: _apiKeyStorageKey, value: legacyKey);
+          await prefs.remove(_legacyApiKeyKey);
+          apiKey = legacyKey;
+        }
+      }
+
       if (apiKey != null) {
         _config = _config.copyWith(apiKey: apiKey);
       }
@@ -89,9 +104,9 @@ class AiProviderNotifier extends ChangeNotifier {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString(_configKey, jsonEncode(_config.toJson()));
 
-      // API key stored separately
-      if (_config.apiKey != null) {
-        await prefs.setString(_apiKeyStorageKey, _config.apiKey!);
+      // API key stored in encrypted secure storage
+      if (_config.apiKey != null && _config.apiKey!.isNotEmpty) {
+        await _secureStorage.write(key: _apiKeyStorageKey, value: _config.apiKey!);
       }
     } catch (e) {
       _log.error('AiProvider', 'Failed to save AI config: $e');

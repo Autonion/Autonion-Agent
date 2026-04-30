@@ -84,16 +84,16 @@ class DesktopAgent:
             elif action_type == "click":
                 self._click_element(target_index)
             elif action_type == "type":
-                text = command.get("payload", {}).get("text", "")
+                text = command.get("payload", {}).get("text") or ""
                 if target_index is not None:
                     self._click_element(target_index)
-                pyautogui.write(text, interval=0.01)
+                pyautogui.write(str(text), interval=0.01)
             elif action_type == "scroll":
-                direction = command.get("payload", {}).get("direction", "down")
+                direction = command.get("payload", {}).get("direction") or "down"
                 amount = -500 if direction == "down" else 500
                 pyautogui.scroll(amount)
             elif action_type == "hotkey":
-                keys = command.get("payload", {}).get("keys", [])
+                keys = command.get("payload", {}).get("keys") or []
                 if keys:
                     pyautogui.hotkey(*keys)
             elif action_type == "done":

@@ -45,7 +45,7 @@ class ApiKeyService extends AiService {
       'model': _config.apiModel,
       'messages': messages.map((m) => m.toOpenAiJson()).toList(),
       'temperature': 0.1,
-      'max_tokens': 512,
+      'max_tokens': 4096,
     };
 
     if (jsonSchema != null) {
