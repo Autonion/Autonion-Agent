@@ -1,9 +1,9 @@
 [Setup]
 AppName=Autonion Agent
-AppVersion=1.0.0
+AppVersion=2.0.2
 DefaultDirName={autopf}\Autonion Agent
 DefaultGroupName=Autonion
-OutputBaseFilename=AutonionAgent_Setup
+OutputBaseFilename=Autonion Agent
 OutputDir=Output
 Compression=lzma2
 SolidCompression=yes
