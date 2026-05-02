@@ -18,6 +18,7 @@ class InputSimulationService {
     await _bridge.sendCommand('execute_action', {
       'type': action.type,
       'targetIndex': action.targetIndex,
+      'targetStableId': action.targetStableId,
       'text': action.text,
       'direction': action.direction,
       'keys': action.keys,

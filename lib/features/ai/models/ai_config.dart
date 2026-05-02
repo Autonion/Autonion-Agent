@@ -8,6 +8,7 @@ class AiConfig {
   final String ollamaHost;
   final int ollamaPort;
   final String ollamaModel;
+  final String? ollamaModelsPath;
 
   // ── API Key ────────────────────────────────────
   final String? apiKey;
@@ -19,6 +20,7 @@ class AiConfig {
     this.ollamaHost = 'localhost',
     this.ollamaPort = 11434,
     this.ollamaModel = 'llama3.2:latest',
+    this.ollamaModelsPath,
     this.apiKey,
     this.apiEndpoint = 'https://api.openai.com/v1/chat/completions',
     this.apiModel = 'gpt-4o-mini',
@@ -32,6 +34,7 @@ class AiConfig {
     String? ollamaHost,
     int? ollamaPort,
     String? ollamaModel,
+    String? ollamaModelsPath,
     String? apiKey,
     String? apiEndpoint,
     String? apiModel,
@@ -41,6 +44,7 @@ class AiConfig {
       ollamaHost: ollamaHost ?? this.ollamaHost,
       ollamaPort: ollamaPort ?? this.ollamaPort,
       ollamaModel: ollamaModel ?? this.ollamaModel,
+      ollamaModelsPath: ollamaModelsPath ?? this.ollamaModelsPath,
       apiKey: apiKey ?? this.apiKey,
       apiEndpoint: apiEndpoint ?? this.apiEndpoint,
       apiModel: apiModel ?? this.apiModel,
@@ -52,6 +56,7 @@ class AiConfig {
     'ollamaHost': ollamaHost,
     'ollamaPort': ollamaPort,
     'ollamaModel': ollamaModel,
+    if (ollamaModelsPath != null) 'ollamaModelsPath': ollamaModelsPath,
     'apiEndpoint': apiEndpoint,
     'apiModel': apiModel,
     // API key is NOT serialised — stored securely separately
@@ -68,6 +73,7 @@ class AiConfig {
       ollamaHost: json['ollamaHost'] as String? ?? 'localhost',
       ollamaPort: json['ollamaPort'] as int? ?? 11434,
       ollamaModel: json['ollamaModel'] as String? ?? 'llama3.2:latest',
+      ollamaModelsPath: json['ollamaModelsPath'] as String?,
       apiEndpoint:
           json['apiEndpoint'] as String? ??
           'https://api.openai.com/v1/chat/completions',

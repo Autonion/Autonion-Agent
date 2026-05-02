@@ -3,6 +3,8 @@ import '../../../core/services/logging_service.dart';
 import '../models/automation_tier.dart';
 import '../services/desktop_agent_service.dart';
 import '../services/python_bridge_service.dart';
+import '../../../core/di/service_locator.dart';
+import '../../ai/providers/ai_provider_notifier.dart';
 
 /// Provider for managing desktop automation state.
 class DesktopAutomationProvider extends ChangeNotifier {
@@ -31,12 +33,14 @@ class DesktopAutomationProvider extends ChangeNotifier {
       case AgentStatus.complete:
         return 'Completed';
       case AgentStatus.error:
-        return 'Error';
+        return _agent.lastError ?? 'Error';
     }
   }
 
   bool get isRunning => _agent.status == AgentStatus.running;
   bool get isBridgeReady => _bridge.isReady;
+  bool get hasError => _agent.status == AgentStatus.error;
+  String? get lastError => _agent.lastError;
   PythonBridgeService get bridge => _bridge;
 
   void setTier(AutomationTier t) {
@@ -59,6 +63,9 @@ class DesktopAutomationProvider extends ChangeNotifier {
       await initBridge();
       if (!isBridgeReady) return;
     }
+
+    final aiNotifier = getIt<AiProviderNotifier>();
+    await aiNotifier.ensureOllamaRunning();
 
     notifyListeners(); // status -> running
     await _agent.runTask(goal, tier: _tier, onProgress: onProgress);

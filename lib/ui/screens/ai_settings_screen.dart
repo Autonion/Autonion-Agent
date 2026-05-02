@@ -19,6 +19,7 @@ class _AiSettingsScreenState extends State<AiSettingsScreen> {
   final _ollamaHostCtrl = TextEditingController();
   final _ollamaPortCtrl = TextEditingController();
   final _ollamaModelCtrl = TextEditingController();
+  final _ollamaModelsPathCtrl = TextEditingController();
 
   final _apiKeyCtrl = TextEditingController();
   final _apiEndpointCtrl = TextEditingController();
@@ -39,6 +40,7 @@ class _AiSettingsScreenState extends State<AiSettingsScreen> {
     _ollamaHostCtrl.dispose();
     _ollamaPortCtrl.dispose();
     _ollamaModelCtrl.dispose();
+    _ollamaModelsPathCtrl.dispose();
     _apiKeyCtrl.dispose();
     _apiEndpointCtrl.dispose();
     _apiModelCtrl.dispose();
@@ -54,6 +56,7 @@ class _AiSettingsScreenState extends State<AiSettingsScreen> {
     _ollamaHostCtrl.text = config.ollamaHost;
     _ollamaPortCtrl.text = config.ollamaPort.toString();
     _ollamaModelCtrl.text = config.ollamaModel;
+    _ollamaModelsPathCtrl.text = config.ollamaModelsPath ?? '';
 
     _apiKeyCtrl.text = config.apiKey ?? '';
     _apiEndpointCtrl.text = config.apiEndpoint;
@@ -309,30 +312,20 @@ class _AiSettingsScreenState extends State<AiSettingsScreen> {
             ],
 
             const SizedBox(height: 16),
-            Row(
-              children: [
-                Icon(
-                  _aiProvider.ollamaAvailable
-                      ? Icons.check_circle
-                      : Icons.error,
-                  color: _aiProvider.ollamaAvailable
-                      ? AppColors.success
-                      : AppColors.error,
-                  size: 16,
-                ),
-                const SizedBox(width: 8),
-                Text(
-                  _aiProvider.ollamaAvailable
-                      ? 'Ollama instance reachable'
-                      : 'Ollama not reachable',
-                  style: TextStyle(
-                    color: _aiProvider.ollamaAvailable
-                        ? AppColors.success
-                        : AppColors.error,
-                    fontSize: 12,
-                  ),
-                ),
-              ],
+            _buildOllamaStatusRow(),
+
+            const Divider(height: 32),
+
+            TextFormField(
+              controller: _ollamaModelsPathCtrl,
+              decoration: const InputDecoration(
+                labelText: 'Models Directory (optional)',
+                hintText: r'e.g. D:\Ollama\Models',
+                helperText: 'Set this if your Ollama models are stored in a custom location',
+              ),
+              onChanged: (val) {
+                _aiProvider.updateOllamaModelsPath(val.trim());
+              },
             ),
           ],
         ),
@@ -373,14 +366,56 @@ class _AiSettingsScreenState extends State<AiSettingsScreen> {
             ),
             const SizedBox(height: 16),
 
-            TextFormField(
-              controller: _apiModelCtrl,
-              decoration: const InputDecoration(
-                labelText: 'Model Name',
-                hintText: 'gpt-4o-mini, gemini-1.5-pro, etc.',
-              ),
-              onChanged: (_) => _saveApiKey(),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                Expanded(
+                  child: TextFormField(
+                    controller: _apiModelCtrl,
+                    decoration: const InputDecoration(
+                      labelText: 'Model Name',
+                      hintText: 'gpt-4o-mini, gemini-1.5-pro, etc.',
+                    ),
+                    onChanged: (_) => _saveApiKey(),
+                  ),
+                ),
+                if (_apiEndpointCtrl.text.toLowerCase().contains('ollama.com')) ...[
+                  const SizedBox(width: 16),
+                  IconButton(
+                    tooltip: 'Refresh Models',
+                    icon: const Icon(Icons.refresh),
+                    onPressed: () async {
+                      await _aiProvider.refreshApiModels();
+                      if (mounted) setState(() {});
+                    },
+                  ),
+                ],
+              ],
             ),
+
+            if (_apiEndpointCtrl.text.toLowerCase().contains('ollama.com') && _aiProvider.apiModels.isNotEmpty) ...[
+              const SizedBox(height: 16),
+              const Text(
+                'Available Models:',
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: _aiProvider.apiModels
+                    .map(
+                      (model) => ActionChip(
+                        label: Text(model),
+                        onPressed: () {
+                          _apiModelCtrl.text = model;
+                          _saveApiKey();
+                        },
+                      ),
+                    )
+                    .toList(),
+              ),
+            ],
           ],
         ),
       ),
@@ -413,10 +448,57 @@ class _AiSettingsScreenState extends State<AiSettingsScreen> {
               style: TextStyle(
                 color: _aiProvider.testResult!.contains('✅')
                     ? AppColors.success
-                    : AppColors.error,
+                    : _aiProvider.testResult!.contains('⚠️')
+                        ? AppColors.warning
+                        : AppColors.error,
               ),
             ),
           ),
+      ],
+    );
+  }
+
+  Widget _buildOllamaStatusRow() {
+    final available = _aiProvider.ollamaAvailable;
+    final models = _aiProvider.ollamaModels;
+    final hasModels = models.isNotEmpty;
+
+    if (!available) {
+      return Row(
+        children: [
+          const Icon(Icons.error, color: AppColors.error, size: 16),
+          const SizedBox(width: 8),
+          Text(
+            'Ollama not reachable',
+            style: TextStyle(color: AppColors.error, fontSize: 12),
+          ),
+        ],
+      );
+    }
+
+    if (!hasModels) {
+      return Row(
+        children: [
+          const Icon(Icons.warning_amber, color: AppColors.warning, size: 16),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              'Ollama is running but no models found — check Models Directory below',
+              style: TextStyle(color: AppColors.warning, fontSize: 12),
+            ),
+          ),
+        ],
+      );
+    }
+
+    return Row(
+      children: [
+        const Icon(Icons.check_circle, color: AppColors.success, size: 16),
+        const SizedBox(width: 8),
+        Text(
+          'Ollama reachable — ${models.length} model(s) found',
+          style: TextStyle(color: AppColors.success, fontSize: 12),
+        ),
       ],
     );
   }

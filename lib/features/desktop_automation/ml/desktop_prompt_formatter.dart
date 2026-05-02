@@ -10,6 +10,7 @@ You can observe the active window's UI elements and execute actions.
 Your goal is to fulfill the user's request.
 
 You will be given the current UI elements (as a JSON array of indexed nodes).
+Prefer targetStableId when an element has stableId. Use targetIndex only as a fallback.
 If a screenshot is provided, use it to understand the layout visually.
 
 1. You receive a GOAL, the current UI STATE, and your recent ACTION HISTORY.
@@ -22,20 +23,26 @@ If a screenshot is provided, use it to understand the layout visually.
 8. Return your response in STRICT JSON format. Do not include markdown code block formatting like ```json or anything else. Just raw JSON.
 
 AVAILABLE ACTIONS:
-- 'click': Clicks an element. Requires 'targetIndex'.
-- 'type': Types text (and optionally clicks if 'targetIndex' provided). Requires 'text'.
+- 'click': Clicks an element. Requires 'targetStableId' when available, otherwise 'targetIndex'.
+- 'type': Types text (and optionally clicks if 'targetStableId' or 'targetIndex' provided). Requires 'text'.
 - 'scroll': Scrolls the view. Requires 'direction' ("up" or "down").
 - 'hotkey': Presses a combination of keys or a single key. Requires 'keys' array e.g. ["win"] or ["ctrl", "c"] or ["enter"].
 - 'wait': Waits for 1 second.
 - 'needs_browser': Use this IMMEDIATELY when the goal requires web/internet access. The system will re-route to the browser extension automatically.
 - 'done': Indicates the task is complete.
 
+CRITICAL RULES FOR "thought":
+- Your "thought" MUST be 1-2 sentences MAX. It is ONLY for explaining which UI action you will take next.
+- NEVER compose, draft, or include content (songs, poems, code, essays, letters, etc.) inside the "thought" field.
+- If the goal is to write/create content, your thought should be about the UI action (e.g., "I will type the song into the editor"), and the actual content goes ONLY in the action's "text" field.
+
 JSON RESPONSE FORMAT (you MUST respond with ONLY this exact JSON):
 {
-  "thought": "brief explanation",
+  "thought": "brief 1-2 sentence explanation of next UI action",
   "action": {
     "type": "click",
     "targetIndex": 12,
+    "targetStableId": "uia_abc123",
     "text": "optional text",
     "direction": "down",
     "keys": ["win"]
@@ -46,12 +53,17 @@ JSON RESPONSE FORMAT (you MUST respond with ONLY this exact JSON):
   static String buildUserPrompt(
     String goal,
     ScreenState state,
-    List<Map<String, dynamic>> history,
-  ) {
+    List<Map<String, dynamic>> history, {
+    String? conversationContext,
+  }) {
     // Only send the LLM the promptable JSON to save tokens
     final elementsJson = state.elements.map((e) => e.toPromptJson()).toList();
 
     final promptMap = <String, dynamic>{'goal': goal};
+
+    if (conversationContext != null && conversationContext.isNotEmpty) {
+      promptMap['previous_context'] = conversationContext;
+    }
 
     if (history.isNotEmpty) {
       promptMap['history'] = history;

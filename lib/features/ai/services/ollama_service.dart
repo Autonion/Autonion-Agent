@@ -33,7 +33,7 @@ class OllamaService extends AiService {
       'model': _config.ollamaModel,
       'messages': messages.map((m) => m.toOllamaJson()).toList(),
       'stream': false,
-      'options': {'temperature': 0.1, 'num_predict': 512},
+      'options': {'temperature': 0.1, 'num_predict': 2048},
     };
 
     // Structured JSON output via Ollama's `format` parameter
