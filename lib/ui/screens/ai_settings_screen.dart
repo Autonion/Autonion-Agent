@@ -366,14 +366,56 @@ class _AiSettingsScreenState extends State<AiSettingsScreen> {
             ),
             const SizedBox(height: 16),
 
-            TextFormField(
-              controller: _apiModelCtrl,
-              decoration: const InputDecoration(
-                labelText: 'Model Name',
-                hintText: 'gpt-4o-mini, gemini-1.5-pro, etc.',
-              ),
-              onChanged: (_) => _saveApiKey(),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                Expanded(
+                  child: TextFormField(
+                    controller: _apiModelCtrl,
+                    decoration: const InputDecoration(
+                      labelText: 'Model Name',
+                      hintText: 'gpt-4o-mini, gemini-1.5-pro, etc.',
+                    ),
+                    onChanged: (_) => _saveApiKey(),
+                  ),
+                ),
+                if (_apiEndpointCtrl.text.toLowerCase().contains('ollama.com')) ...[
+                  const SizedBox(width: 16),
+                  IconButton(
+                    tooltip: 'Refresh Models',
+                    icon: const Icon(Icons.refresh),
+                    onPressed: () async {
+                      await _aiProvider.refreshApiModels();
+                      if (mounted) setState(() {});
+                    },
+                  ),
+                ],
+              ],
             ),
+
+            if (_apiEndpointCtrl.text.toLowerCase().contains('ollama.com') && _aiProvider.apiModels.isNotEmpty) ...[
+              const SizedBox(height: 16),
+              const Text(
+                'Available Models:',
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: _aiProvider.apiModels
+                    .map(
+                      (model) => ActionChip(
+                        label: Text(model),
+                        onPressed: () {
+                          _apiModelCtrl.text = model;
+                          _saveApiKey();
+                        },
+                      ),
+                    )
+                    .toList(),
+              ),
+            ],
           ],
         ),
       ),

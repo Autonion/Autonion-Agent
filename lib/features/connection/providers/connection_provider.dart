@@ -783,12 +783,13 @@ class ConnectionProvider extends ChangeNotifier {
         }
       }
 
-      // If loop ends without explicit done, send completion
+      // If loop ends without explicit done, report failure instead of a false
+      // completion. The next agent layer can retry or explain the timeout.
       if (!_completedTransactions.contains(transactionId)) {
         _sendPromptResponse(
           transactionId,
-          'completed',
-          'Browser task completed (${actionHistory.length} steps).',
+          'failed',
+          'Browser task did not reach a verified completion after ${actionHistory.length} steps.',
         );
         _completedTransactions.add(transactionId);
       }

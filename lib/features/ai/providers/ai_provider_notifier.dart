@@ -29,6 +29,9 @@ class AiProviderNotifier extends ChangeNotifier {
   List<String> _ollamaModels = [];
   List<String> get ollamaModels => _ollamaModels;
 
+  List<String> _apiModels = [];
+  List<String> get apiModels => _apiModels;
+
   bool _testing = false;
   bool get testing => _testing;
 
@@ -93,6 +96,8 @@ class AiProviderNotifier extends ChangeNotifier {
 
       // Auto-detect Ollama availability
       _checkOllamaAvailability();
+      // Auto-fetch API models if configured
+      refreshApiModels();
     } catch (e) {
       _log.error('AiProvider', 'Failed to load AI config: $e');
     }
@@ -120,6 +125,9 @@ class AiProviderNotifier extends ChangeNotifier {
     _apiKeyService.updateConfig(_config);
     await _saveConfig();
     _testResult = null;
+    if (type == AiProviderType.apiKey) {
+      refreshApiModels();
+    }
     notifyListeners();
   }
 
@@ -173,6 +181,12 @@ class AiProviderNotifier extends ChangeNotifier {
   /// Manually refresh Ollama models.
   Future<void> refreshOllamaModels() async {
     await _checkOllamaAvailability();
+  }
+
+  /// Manually refresh API models.
+  Future<void> refreshApiModels() async {
+    _apiModels = await _apiKeyService.listModels();
+    notifyListeners();
   }
 
   /// Update Ollama models directory path.

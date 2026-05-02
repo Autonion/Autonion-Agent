@@ -115,8 +115,80 @@ class ApiKeyService extends AiService {
   Future<bool> isAvailable() async {
     if (_apiKey == null || _apiKey!.isEmpty) return false;
 
-    // We can't easily validate all API providers with a "ping".
-    // If we have a key configured, assume available.
-    return true;
+    try {
+      final url = Uri.parse(_config.apiEndpoint);
+      final body = {
+        'model': _config.apiModel,
+        'messages': [
+          {'role': 'user', 'content': 'Hi'}
+        ],
+        'max_tokens': 5,
+        'temperature': 0.0,
+      };
+      final response = await http
+          .post(
+            url,
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': 'Bearer $_apiKey',
+            },
+            body: jsonEncode(body),
+          )
+          .timeout(const Duration(seconds: 10));
+
+      if (response.statusCode == 200) {
+        final json = jsonDecode(response.body) as Map<String, dynamic>;
+        // Some providers return 200 with an error object
+        if (json.containsKey('error')) return false;
+        // Verify actual choices exist
+        final choices = json['choices'] as List<dynamic>?;
+        return choices != null && choices.isNotEmpty;
+      }
+      _log.warn(
+        'ApiKeyService',
+        'isAvailable check failed: HTTP ${response.statusCode}',
+      );
+      return false;
+    } catch (e) {
+      _log.warn('ApiKeyService', 'isAvailable check failed: $e');
+      return false;
+    }
+  }
+
+  @override
+  Future<List<String>> listModels() async {
+    if (_apiKey == null || _apiKey!.isEmpty) return [];
+    if (!_config.apiEndpoint.toLowerCase().contains('ollama.com')) return [];
+
+    try {
+      final url = Uri.parse(_config.apiEndpoint);
+      final modelsUrl = url.replace(path: url.path.replaceAll('/chat/completions', '/models'));
+      
+      final response = await http.get(
+        modelsUrl,
+        headers: {
+          'Authorization': 'Bearer $_apiKey',
+        },
+      ).timeout(const Duration(seconds: 10));
+
+      if (response.statusCode == 200) {
+        final json = jsonDecode(response.body) as Map<String, dynamic>;
+        final data = json['data'] as List<dynamic>?;
+        if (data != null) {
+          final models = data
+              .map((e) => (e as Map<String, dynamic>)['id'] as String?)
+              .where((id) => id != null && id.isNotEmpty)
+              .cast<String>()
+              .toList();
+          _log.info('ApiKeyService', 'Fetched ${models.length} models from Ollama Cloud');
+          return models;
+        }
+      } else {
+        _log.warn('ApiKeyService', 'listModels failed: HTTP ${response.statusCode}');
+      }
+    } catch (e) {
+      _log.warn('ApiKeyService', 'listModels check failed: $e');
+    }
+    return [];
   }
 }

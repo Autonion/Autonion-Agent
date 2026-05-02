@@ -172,6 +172,9 @@ class DesktopAgentService {
                 "targetIndex": {
                   "type": ["integer", "null"],
                 },
+                "targetStableId": {
+                  "type": ["string", "null"],
+                },
                 "text": {
                   "type": ["string", "null"],
                 },

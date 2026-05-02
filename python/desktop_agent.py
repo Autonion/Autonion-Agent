@@ -3,6 +3,7 @@ import json
 import base64
 import time
 import io
+import hashlib
 import uiautomation as auto
 import pyautogui
 from mss import mss
@@ -14,7 +15,7 @@ def eprint(*args, **kwargs):
 class DesktopAgent:
     def __init__(self):
         auto.SetGlobalSearchTimeout(1.0)
-        pyautogui.FAILSAFE = False
+        pyautogui.FAILSAFE = True
         self.node_cache = {}
 
     def run(self):
@@ -75,25 +76,27 @@ class DesktopAgent:
         })
 
     def handle_execute_action(self, command):
-        action_type = command.get("payload", {}).get("type")
-        target_index = command.get("payload", {}).get("targetIndex")
+        payload = command.get("payload", {})
+        action_type = payload.get("type")
+        target_index = payload.get("targetIndex")
+        target_stable_id = payload.get("targetStableId") or payload.get("stableId")
         
         try:
             if action_type == "wait":
                 time.sleep(1)
             elif action_type == "click":
-                self._click_element(target_index)
+                self._click_element(target_index, target_stable_id)
             elif action_type == "type":
-                text = command.get("payload", {}).get("text") or ""
-                if target_index is not None:
-                    self._click_element(target_index)
+                text = payload.get("text") or ""
+                if target_index is not None or target_stable_id:
+                    self._click_element(target_index, target_stable_id)
                 pyautogui.write(str(text), interval=0.01)
             elif action_type == "scroll":
-                direction = command.get("payload", {}).get("direction") or "down"
+                direction = payload.get("direction") or "down"
                 amount = -500 if direction == "down" else 500
                 pyautogui.scroll(amount)
             elif action_type == "hotkey":
-                keys = command.get("payload", {}).get("keys") or []
+                keys = payload.get("keys") or []
                 if keys:
                     pyautogui.hotkey(*keys)
             elif action_type == "done":
@@ -101,7 +104,12 @@ class DesktopAgent:
             else:
                 raise ValueError(f"Unsupported action: {action_type}")
                 
-            self.send_response(command.get("id"), success=True, data={"status": "executed"})
+            self.send_response(command.get("id"), success=True, data={
+                "status": "executed",
+                "action": action_type,
+                "targetIndex": target_index,
+                "targetStableId": target_stable_id
+            })
         except Exception as e:
             eprint(f"Action execution error: {e}")
             self.send_response(command.get("id"), success=False, error=str(e))
@@ -129,7 +137,7 @@ class DesktopAgent:
         if not fg_win:
             fg_win = root
 
-        def walk(control, depth):
+        def walk(control, depth, path="0"):
             nonlocal node_id_counter
             if depth > 14 or not control:
                 return
@@ -175,14 +183,34 @@ class DesktopAgent:
                     if name or value or is_clickable or is_focusable:
                         node_id = f"node_{node_id_counter}"
                         node_id_counter += 1
+                        automation_id = self._safe_attr(control, "AutomationId")
+                        class_name = self._safe_attr(control, "ClassName")
+                        framework_id = self._safe_attr(control, "FrameworkId")
+                        process_id = self._safe_attr(control, "ProcessId", 0)
+                        stable_id = self._stable_id(
+                            control=control,
+                            rect=rect,
+                            path=path,
+                            name=name,
+                            value=value,
+                            automation_id=automation_id,
+                            class_name=class_name,
+                        )
                         
                         self.node_cache[node_id] = control
+                        self.node_cache[stable_id] = control
                         
                         elements.append({
                             "id": node_id,
+                            "stableId": stable_id,
                             "name": name,
                             "role": self._get_role_name(control_type),
                             "type": str(control_type),
+                            "automationId": automation_id,
+                            "className": class_name,
+                            "frameworkId": framework_id,
+                            "processId": process_id,
+                            "hierarchyPath": path,
                             "boundingBox": {
                                 "x": rect.left,
                                 "y": rect.top,
@@ -191,6 +219,9 @@ class DesktopAgent:
                             },
                             "isClickable": is_clickable,
                             "isKeyboardFocusable": is_focusable,
+                            "isEnabled": bool(self._safe_attr(control, "IsEnabled", True)),
+                            "isFocused": bool(self._safe_attr(control, "HasKeyboardFocus", False)),
+                            "isOffscreen": bool(self._safe_attr(control, "IsOffscreen", False)),
                             "value": value
                         })
             except Exception:
@@ -203,8 +234,8 @@ class DesktopAgent:
                 # If COM hangs or fails on GetChildren, skip this branch gracefully
                 children = []
 
-            for child in children:
-                walk(child, depth + 1)
+            for index, child in enumerate(children):
+                walk(child, depth + 1, f"{path}/{index}")
 
         walk(fg_win, 0)
         return elements
@@ -213,8 +244,34 @@ class DesktopAgent:
         type_str = str(control_type)
         return type_str.replace("ControlType", "").replace("Control", "")
 
-    def _click_element(self, target_index):
-        node_id = f"node_{target_index}"
+    def _safe_attr(self, control, attr_name, default=""):
+        try:
+            value = getattr(control, attr_name)
+            if value is None:
+                return default
+            return value
+        except Exception:
+            return default
+
+    def _stable_id(self, control, rect, path, name, value, automation_id, class_name):
+        control_type = self._safe_attr(control, "ControlType")
+        process_id = self._safe_attr(control, "ProcessId", "")
+        framework_id = self._safe_attr(control, "FrameworkId")
+        bucketed_bounds = f"{rect.left // 8},{rect.top // 8},{rect.width() // 8},{rect.height() // 8}"
+        raw = "|".join([
+            str(process_id),
+            str(framework_id),
+            str(automation_id),
+            str(class_name),
+            str(control_type),
+            str(name or value or ""),
+            bucketed_bounds,
+            path,
+        ])
+        return "uia_" + hashlib.sha1(raw.encode("utf-8", errors="ignore")).hexdigest()[:16]
+
+    def _click_element(self, target_index, stable_id=None):
+        node_id = stable_id or f"node_{target_index}"
         control = self.node_cache.get(node_id)
         if control:
             # Move mouse and click using pyautogui or UIA
