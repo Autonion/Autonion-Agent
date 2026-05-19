@@ -8,7 +8,7 @@
 PRODUCT_NAME = autonion_cross_device
 
 // The application's bundle identifier
-PRODUCT_BUNDLE_IDENTIFIER = com.example.autonionCrossDevice
+PRODUCT_BUNDLE_IDENTIFIER = com.autonion.crossDevice
 
 // The copyright displayed in application information
-PRODUCT_COPYRIGHT = Copyright © 2026 com.example. All rights reserved.
+PRODUCT_COPYRIGHT = Copyright © 2026 Autonion. All rights reserved.

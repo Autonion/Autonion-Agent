@@ -49,18 +49,37 @@ void main(List<String> args) async {
     await startupService.init();
   }
 
-  // ── 3. Auto-start connection services ───────────────────
-  final connectionProvider = getIt<ConnectionProvider>();
-  await connectionProvider.startServices();
+  // ── 3. Start connection services & python bridge ────────
+  // When launched at system boot (--startup), defer heavy work
+  // so Windows finishes booting first. This reduces the startup
+  // impact rating shown in Task Manager.
+  if (isStartup) {
+    Future.delayed(const Duration(seconds: 8), () async {
+      log.info('APP', 'Deferred init: starting connection services...');
+      final connectionProvider = getIt<ConnectionProvider>();
+      await connectionProvider.startServices();
 
-  // ── Auto-start python bridge ────────────────────────────
-  if (PlatformConfig.isDesktop) {
-    try {
-      final desktopAutomationProvider = getIt<DesktopAutomationProvider>();
-      // Don't await it so we don't block the UI from showing up
-      desktopAutomationProvider.initBridge();
-    } catch (e) {
-      log.error('APP', 'Failed to auto-init Python bridge: $e');
+      if (PlatformConfig.isDesktop) {
+        try {
+          final desktopAutomationProvider = getIt<DesktopAutomationProvider>();
+          desktopAutomationProvider.initBridge();
+        } catch (e) {
+          log.error('APP', 'Failed to auto-init Python bridge: $e');
+        }
+      }
+    });
+  } else {
+    final connectionProvider = getIt<ConnectionProvider>();
+    await connectionProvider.startServices();
+
+    if (PlatformConfig.isDesktop) {
+      try {
+        final desktopAutomationProvider = getIt<DesktopAutomationProvider>();
+        // Don't await it so we don't block the UI from showing up
+        desktopAutomationProvider.initBridge();
+      } catch (e) {
+        log.error('APP', 'Failed to auto-init Python bridge: $e');
+      }
     }
   }
 
