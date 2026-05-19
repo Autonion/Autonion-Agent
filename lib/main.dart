@@ -7,6 +7,7 @@ import 'core/services/logging_service.dart';
 import 'features/connection/providers/connection_provider.dart';
 import 'features/system/services/startup_service.dart';
 import 'features/system/services/system_tray_service.dart';
+import 'features/system/services/update_service.dart';
 import 'features/system/services/window_manager_service.dart';
 import 'features/desktop_automation/providers/desktop_automation_provider.dart';
 
@@ -49,25 +50,49 @@ void main(List<String> args) async {
     await startupService.init();
   }
 
-  // ── 3. Auto-start connection services ───────────────────
-  final connectionProvider = getIt<ConnectionProvider>();
-  await connectionProvider.startServices();
+  // ── 3. Start connection services & python bridge ────────
+  // When launched at system boot (--startup), defer heavy work
+  // so Windows finishes booting first. This reduces the startup
+  // impact rating shown in Task Manager.
+  if (isStartup) {
+    Future.delayed(const Duration(seconds: 8), () async {
+      log.info('APP', 'Deferred init: starting connection services...');
+      final connectionProvider = getIt<ConnectionProvider>();
+      await connectionProvider.startServices();
 
-  // ── Auto-start python bridge ────────────────────────────
-  if (PlatformConfig.isDesktop) {
-    try {
-      final desktopAutomationProvider = getIt<DesktopAutomationProvider>();
-      // Don't await it so we don't block the UI from showing up
-      desktopAutomationProvider.initBridge();
-    } catch (e) {
-      log.error('APP', 'Failed to auto-init Python bridge: $e');
+      if (PlatformConfig.isDesktop) {
+        try {
+          final desktopAutomationProvider = getIt<DesktopAutomationProvider>();
+          desktopAutomationProvider.initBridge();
+        } catch (e) {
+          log.error('APP', 'Failed to auto-init Python bridge: $e');
+        }
+      }
+    });
+  } else {
+    final connectionProvider = getIt<ConnectionProvider>();
+    await connectionProvider.startServices();
+
+    if (PlatformConfig.isDesktop) {
+      try {
+        final desktopAutomationProvider = getIt<DesktopAutomationProvider>();
+        // Don't await it so we don't block the UI from showing up
+        desktopAutomationProvider.initBridge();
+      } catch (e) {
+        log.error('APP', 'Failed to auto-init Python bridge: $e');
+      }
     }
   }
 
   // ── 4. Run the app ──────────────────────────────────────
   runApp(const AutonionApp());
 
-  // ── 5. Re-enforce hidden state after Flutter renders ────
+  // ── 5. Check for updates (non-blocking) ─────────────────
+  final updateService = getIt<UpdateService>();
+  updateService.setLoggingService(log);
+  updateService.checkForUpdate();
+
+  // ── 6. Re-enforce hidden state after Flutter renders ────
   // Flutter's rendering pipeline can briefly flash the window;
   // this ensures it stays hidden when launched via --startup.
   if (isStartup && windowService != null) {

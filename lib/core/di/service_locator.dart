@@ -15,6 +15,7 @@ import '../../features/desktop_automation/services/input_simulation_service.dart
 import '../../features/desktop_automation/services/python_bridge_service.dart';
 import '../../features/system/services/startup_service.dart';
 import '../../features/system/services/system_tray_service.dart';
+import '../../features/system/services/update_service.dart';
 import '../../features/system/services/window_manager_service.dart';
 import '../../features/triggers/services/trigger_rule_service.dart';
 
@@ -27,6 +28,7 @@ final getIt = GetIt.instance;
 Future<void> setupServiceLocator() async {
   // ── Core (always registered) ────────────────────────────
   getIt.registerLazySingleton<LoggingService>(() => LoggingService());
+  getIt.registerLazySingleton<UpdateService>(() => UpdateService());
   final log = getIt<LoggingService>();
 
   // ── Connection (always active) ──────────────────────────
