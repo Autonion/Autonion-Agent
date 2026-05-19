@@ -7,6 +7,7 @@ import 'screens/logs_screen.dart';
 import 'screens/settings_screen.dart';
 import 'theme/app_colors.dart';
 import 'widgets/nav_rail.dart';
+import 'widgets/update_banner.dart';
 
 /// Root app shell with navigation rail and content area.
 class AppShell extends StatefulWidget {
@@ -66,26 +67,35 @@ class _AppShellState extends State<AppShell> {
     return Scaffold(
       body: Container(
         decoration: const BoxDecoration(gradient: AppColors.backgroundGradient),
-        child: Row(
+        child: Column(
           children: [
-            AppNavRail(
-              selectedIndex: _selectedIndex,
-              onDestinationSelected: (index) {
-                setState(() => _selectedIndex = index);
-              },
-              destinations: _destinations,
-            ),
-            const VerticalDivider(width: 1),
+            // ── Update notification banner ─────────────
+            const UpdateBanner(),
+            // ── Main content ──────────────────────────
             Expanded(
-              child: AnimatedSwitcher(
-                duration: const Duration(milliseconds: 250),
-                transitionBuilder: (child, animation) {
-                  return FadeTransition(opacity: animation, child: child);
-                },
-                child: KeyedSubtree(
-                  key: ValueKey(_selectedIndex),
-                  child: _screens[_selectedIndex],
-                ),
+              child: Row(
+                children: [
+                  AppNavRail(
+                    selectedIndex: _selectedIndex,
+                    onDestinationSelected: (index) {
+                      setState(() => _selectedIndex = index);
+                    },
+                    destinations: _destinations,
+                  ),
+                  const VerticalDivider(width: 1),
+                  Expanded(
+                    child: AnimatedSwitcher(
+                      duration: const Duration(milliseconds: 250),
+                      transitionBuilder: (child, animation) {
+                        return FadeTransition(opacity: animation, child: child);
+                      },
+                      child: KeyedSubtree(
+                        key: ValueKey(_selectedIndex),
+                        child: _screens[_selectedIndex],
+                      ),
+                    ),
+                  ),
+                ],
               ),
             ),
           ],
@@ -94,3 +104,4 @@ class _AppShellState extends State<AppShell> {
     );
   }
 }
+

@@ -7,6 +7,7 @@ import 'core/services/logging_service.dart';
 import 'features/connection/providers/connection_provider.dart';
 import 'features/system/services/startup_service.dart';
 import 'features/system/services/system_tray_service.dart';
+import 'features/system/services/update_service.dart';
 import 'features/system/services/window_manager_service.dart';
 import 'features/desktop_automation/providers/desktop_automation_provider.dart';
 
@@ -86,7 +87,12 @@ void main(List<String> args) async {
   // ── 4. Run the app ──────────────────────────────────────
   runApp(const AutonionApp());
 
-  // ── 5. Re-enforce hidden state after Flutter renders ────
+  // ── 5. Check for updates (non-blocking) ─────────────────
+  final updateService = getIt<UpdateService>();
+  updateService.setLoggingService(log);
+  updateService.checkForUpdate();
+
+  // ── 6. Re-enforce hidden state after Flutter renders ────
   // Flutter's rendering pipeline can briefly flash the window;
   // this ensures it stays hidden when launched via --startup.
   if (isStartup && windowService != null) {
