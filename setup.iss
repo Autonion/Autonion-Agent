@@ -1,6 +1,6 @@
 [Setup]
 AppName=Autonion Agent
-AppVersion=2.0.3
+AppVersion=2.0.4
 DefaultDirName={autopf}\Autonion Agent
 DefaultGroupName=Autonion
 OutputBaseFilename=Autonion Agent
