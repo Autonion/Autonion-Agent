@@ -26,6 +26,8 @@ class TaskDecomposerService {
     r'\s+after\s+that\s+',
     r'\s+then\s+',
     r'\s+next\s+',
+    r'\s+finally\s+',
+    r';\s*',
     r',\s+then\s+',
     r',\s+and\s+',
     r',\s*(?=[a-z])',
@@ -33,18 +35,19 @@ class TaskDecomposerService {
 
   static const _actionVerbs = {
     'open', 'launch', 'start',
+    'create', 'make', 'compose',
     'search', 'find', 'look',
     'go', 'navigate', 'switch',
-    'click', 'tap', 'press', 'select',
+    'click', 'tap', 'press', 'select', 'choose', 'pick',
     'type', 'write', 'enter', 'input',
-    'delete', 'remove', 'clear',
+    'delete', 'remove', 'clear', 'rename',
     'play', 'pause', 'stop', 'resume',
-    'close', 'exit', 'quit',
+    'close', 'exit', 'quit', 'maximize', 'minimize',
     'save', 'download', 'upload',
-    'send', 'share', 'forward',
-    'scroll', 'swipe',
-    'enable', 'disable', 'turn', 'toggle',
-    'copy', 'paste', 'cut',
+    'send', 'share', 'forward', 'attach',
+    'scroll', 'swipe', 'drag', 'drop',
+    'enable', 'disable', 'turn', 'toggle', 'set', 'change',
+    'copy', 'paste', 'cut', 'move',
   };
 
   static const _nonBoundaryPredecessors = {
@@ -84,9 +87,15 @@ class TaskDecomposerService {
   }
 
   List<String> _splitByConjunctions(String command) {
+    final protected = _protectQuotedText(command);
     for (final pattern in _conjunctionPatterns) {
       final regex = RegExp(pattern, caseSensitive: false);
-      final parts = command.split(regex).map((s) => s.trim()).where((s) => s.isNotEmpty).toList();
+      final parts = protected.text
+          .split(regex)
+          .map(protected.restore)
+          .map((s) => s.trim())
+          .where((s) => s.isNotEmpty)
+          .toList();
       if (parts.length > 1) return parts;
     }
     return [command];
@@ -123,5 +132,47 @@ class TaskDecomposerService {
     return text.toLowerCase().split(RegExp(r'\s+')).any((word) =>
       _actionVerbs.contains(word.replaceAll(RegExp(r'[,\.!?]$'), '')),
     );
+  }
+
+  _ProtectedText _protectQuotedText(String text) {
+    final spans = <String>[];
+    final buffer = StringBuffer();
+    var i = 0;
+    while (i < text.length) {
+      final quote = text[i];
+      if (quote != '"' && quote != "'") {
+        buffer.write(quote);
+        i++;
+        continue;
+      }
+
+      final start = i;
+      i++;
+      while (i < text.length && text[i] != quote) {
+        i++;
+      }
+      if (i < text.length) i++;
+
+      final token = '__QUOTE_${spans.length}__';
+      spans.add(text.substring(start, i));
+      buffer.write(token);
+    }
+
+    return _ProtectedText(buffer.toString(), spans);
+  }
+}
+
+class _ProtectedText {
+  final String text;
+  final List<String> spans;
+
+  const _ProtectedText(this.text, this.spans);
+
+  String restore(String value) {
+    var restored = value;
+    for (var i = 0; i < spans.length; i++) {
+      restored = restored.replaceAll('__QUOTE_${i}__', spans[i]);
+    }
+    return restored;
   }
 }

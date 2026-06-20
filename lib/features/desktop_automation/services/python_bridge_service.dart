@@ -128,6 +128,7 @@ class PythonBridgeService {
       'pyautogui',
       'mss',
       'Pillow',
+      'pyperclip',
     ]);
 
     if (pipResult.exitCode != 0) {

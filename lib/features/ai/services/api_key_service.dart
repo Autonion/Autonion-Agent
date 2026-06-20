@@ -41,6 +41,16 @@ class ApiKeyService extends AiService {
     }
 
     final url = Uri.parse(_config.apiEndpoint);
+    final hasImage = messages.any((m) => m.base64Image != null);
+    return _chat(url, messages, jsonSchema: jsonSchema, allowImageRetry: hasImage);
+  }
+
+  Future<AiResponse> _chat(
+    Uri url,
+    List<AiMessage> messages, {
+    Map<String, dynamic>? jsonSchema,
+    bool allowImageRetry = false,
+  }) async {
     final body = <String, dynamic>{
       'model': _config.apiModel,
       'messages': messages.map((m) => m.toOpenAiJson()).toList(),
@@ -100,6 +110,19 @@ class ApiKeyService extends AiService {
       } else {
         final errorMsg =
             'API error ${response.statusCode}: ${response.body.length > 200 ? response.body.substring(0, 200) : response.body}';
+        if (allowImageRetry &&
+            _isUnsupportedImageInputError(response.statusCode, response.body)) {
+          _log.warn(
+            'ApiKeyService',
+            'Model rejected image input; retrying without screenshot payload.',
+          );
+          return _chat(
+            url,
+            messages.map((m) => m.withoutImage()).toList(),
+            jsonSchema: jsonSchema,
+            allowImageRetry: false,
+          );
+        }
         _log.error('ApiKeyService', errorMsg);
         return AiResponse.failure(errorMsg);
       }
@@ -109,6 +132,14 @@ class ApiKeyService extends AiService {
       _log.error('ApiKeyService', errorMsg);
       return AiResponse.failure(errorMsg);
     }
+  }
+
+  bool _isUnsupportedImageInputError(int statusCode, String body) {
+    if (statusCode != 400 && statusCode != 422) return false;
+    final normalized = body.toLowerCase();
+    return normalized.contains('does not support image') ||
+        normalized.contains('image input') ||
+        normalized.contains('vision') && normalized.contains('not support');
   }
 
   @override

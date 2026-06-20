@@ -5,6 +5,7 @@ import '../../ai/models/ai_message.dart';
 import '../../ai/models/ai_response.dart';
 import '../models/automation_tier.dart';
 import '../models/desktop_action.dart';
+import '../models/screen_state.dart';
 import '../ml/desktop_prompt_formatter.dart';
 import 'accessibility_tree_service.dart';
 import 'automation_memory_service.dart';
@@ -69,6 +70,17 @@ class DesktopAgentService {
     _lastError = null;
     _history.clear();
 
+    if (await _tryRunDeterministicScreenshotCommand(goal, onProgress)) {
+      final success = _status != AgentStatus.error;
+      if (success) _status = AgentStatus.complete;
+      _memory.recordGoalOutcome(
+        goal,
+        success ? 'completed screenshot shortcut' : 'screenshot shortcut failed',
+        success,
+      );
+      return;
+    }
+
     // Decompose compound commands
     final subGoals = _decomposer.decompose(goal);
     _memory.recordGoalStart(goal);
@@ -114,8 +126,13 @@ class DesktopAgentService {
     void Function(String)? onProgress,
   }) async {
     int steps = 0;
-    const maxSteps = 15;
+    const maxSteps = 25;
     const maxAiRetries = 3;
+    String? lastObservationSignature;
+    final observationTier =
+        tier == AutomationTier.accessibilityOnly && _needsVisualFeedback(goal)
+        ? AutomationTier.treeWithThumbnail
+        : tier;
 
     try {
       while (steps < maxSteps && !_stopRequested) {
@@ -123,12 +140,47 @@ class DesktopAgentService {
         _log.info('DesktopAgent', '--- Step $steps ---');
 
         // 1. Observe Screen
-        final screenState = await _a11y.getScreenState(tier);
+        final screenState = await _a11y.getScreenState(observationTier);
         if (screenState.elements.isEmpty) {
           _log.warn(
             'DesktopAgent',
             'No UI elements found. Proceeding with empty UI state...',
           );
+        }
+
+        final currentObservationSignature = screenState.compactSignature;
+        if (_history.isNotEmpty && lastObservationSignature != null) {
+          final last = _history.last;
+          final existingResult = last['result'];
+          final result = existingResult is Map<String, dynamic>
+              ? Map<String, dynamic>.from(existingResult)
+              : <String, dynamic>{};
+          final previousAction = last['action'];
+          final previousActionType = previousAction is Map
+              ? previousAction['type']?.toString()
+              : null;
+          final pixelOnlyAction = {
+            'click',
+            'double_click',
+            'right_click',
+            'drag',
+          }.contains(previousActionType);
+          final cannotVerifyPixels =
+              pixelOnlyAction && screenState.screenshotHash == null;
+          final screenChanged =
+              currentObservationSignature != lastObservationSignature;
+          result['screenChangedAfterAction'] = cannotVerifyPixels
+              ? null
+              : screenChanged;
+          result['nextObservationSignature'] = currentObservationSignature;
+          if (cannotVerifyPixels) {
+            result['observationNote'] =
+                'Pixel-level screen changes cannot be verified because screenshots are disabled; do not repeat the same canvas drag unless the user-visible goal is clearly incomplete.';
+          } else if (!screenChanged) {
+            result['observationNote'] =
+                'The next observation looked unchanged; avoid repeating the same action unless waiting is intentional.';
+          }
+          last['result'] = result;
         }
 
         // 2. Build Prompt
@@ -152,17 +204,22 @@ class DesktopAgentService {
         // Schema for structured JSON output
         final schema = {
           "type": "object",
+          "additionalProperties": false,
           "properties": {
             "thought": {"type": "string"},
             "action": {
               "type": "object",
+              "additionalProperties": false,
               "properties": {
                 "type": {
                   "type": "string",
                   "enum": [
                     "click",
+                    "double_click",
+                    "right_click",
                     "type",
                     "scroll",
+                    "drag",
                     "hotkey",
                     "wait",
                     "needs_browser",
@@ -175,18 +232,74 @@ class DesktopAgentService {
                 "targetStableId": {
                   "type": ["string", "null"],
                 },
+                "endTargetIndex": {
+                  "type": ["integer", "null"],
+                },
+                "endTargetStableId": {
+                  "type": ["string", "null"],
+                },
+                "x": {
+                  "type": ["number", "null"],
+                },
+                "y": {
+                  "type": ["number", "null"],
+                },
+                "endX": {
+                  "type": ["number", "null"],
+                },
+                "endY": {
+                  "type": ["number", "null"],
+                },
+                "path": {
+                  "type": ["array", "null"],
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "x": {"type": "number"},
+                      "y": {"type": "number"},
+                    },
+                    "required": ["x", "y"],
+                  },
+                },
                 "text": {
                   "type": ["string", "null"],
                 },
                 "direction": {
                   "type": ["string", "null"],
                 },
+                "amount": {
+                  "type": ["integer", "null"],
+                },
                 "keys": {
                   "type": ["array", "null"],
                   "items": {"type": "string"},
                 },
+                "durationMs": {
+                  "type": ["integer", "null"],
+                },
+                "button": {
+                  "type": ["string", "null"],
+                },
               },
-              "required": ["type"],
+              "required": [
+                "type",
+                "targetIndex",
+                "targetStableId",
+                "endTargetIndex",
+                "endTargetStableId",
+                "x",
+                "y",
+                "endX",
+                "endY",
+                "path",
+                "text",
+                "direction",
+                "amount",
+                "keys",
+                "durationMs",
+                "button",
+              ],
             },
           },
           "required": ["thought", "action"],
@@ -305,7 +418,7 @@ class DesktopAgentService {
         _history.add({
           'step': steps,
           'thought': parsed['thought'],
-          'action': actionMap,
+          'action': action.toJson(),
         });
 
         // 5. Execute Action
@@ -327,14 +440,37 @@ class DesktopAgentService {
           );
         }
 
+        final validationError = _validateAction(action, screenState);
+        if (validationError != null) {
+          _log.warn('DesktopAgent', 'Rejected invalid action: $validationError');
+          _history.last['result'] = {
+            'status': 'rejected',
+            'error': validationError,
+          };
+          onProgress?.call('Action rejected: $validationError');
+          lastObservationSignature = currentObservationSignature;
+          await Future.delayed(const Duration(milliseconds: 200));
+          continue;
+        }
+
         try {
-          await _input.execute(action);
+          final result = await _input.execute(action);
+          _history.last['result'] = {
+            'status': 'executed',
+            ...result,
+          };
         } catch (e) {
           _log.error('DesktopAgent', 'Action execution failed: $e');
+          _history.last['result'] = {
+            'status': 'failed',
+            'error': _firstLine(e.toString()),
+          };
           onProgress?.call('⚠️ Action failed: ${_firstLine(e.toString())} — continuing...');
           // Don't crash the whole loop — the LLM will re-observe the screen
           // and try a different approach on the next step
         }
+
+        lastObservationSignature = currentObservationSignature;
 
         // Wait a bit for UI to settle
         await Future.delayed(const Duration(milliseconds: 500));
@@ -360,6 +496,246 @@ class DesktopAgentService {
       onProgress?.call('❌ Agent error: $errMsg');
       _status = AgentStatus.error;
       _lastError = errMsg;
+    }
+  }
+
+  String? _validateAction(DesktopAction action, ScreenState state) {
+    const allowed = {
+      'click',
+      'double_click',
+      'right_click',
+      'type',
+      'scroll',
+      'drag',
+      'hotkey',
+      'wait',
+      'needs_browser',
+      'done',
+    };
+
+    if (!allowed.contains(action.type)) {
+      return 'Unsupported action type "${action.type}".';
+    }
+
+    switch (action.type) {
+      case 'click':
+      case 'double_click':
+      case 'right_click':
+        return _validateStartPoint(action, state);
+      case 'type':
+        if (action.text == null) return 'Type action requires text.';
+        return _hasAnyStartPoint(action)
+            ? _validateStartPoint(action, state)
+            : null;
+      case 'scroll':
+        final direction = action.direction?.toLowerCase();
+        if (direction == null ||
+            !{'up', 'down', 'left', 'right'}.contains(direction)) {
+          return 'Scroll action requires direction up, down, left, or right.';
+        }
+        return null;
+      case 'drag':
+        if (action.path != null) return _validatePath(action, state);
+        final startError = _validateStartPoint(action, state);
+        if (startError != null) return 'Drag start invalid: $startError';
+        return _validateEndPoint(action, state);
+      case 'hotkey':
+        if (action.keys == null || action.keys!.isEmpty) {
+          return 'Hotkey action requires at least one key.';
+        }
+        return null;
+      default:
+        return null;
+    }
+  }
+
+  String? _validateStartPoint(DesktopAction action, ScreenState state) {
+    if (!_hasAnyStartPoint(action)) {
+      return 'Action requires targetStableId, targetIndex, or x/y coordinates.';
+    }
+    if (action.targetStableId != null &&
+        !_hasStableId(state, action.targetStableId!)) {
+      return 'targetStableId "${action.targetStableId}" is not in the current UI elements.';
+    }
+    if (action.targetIndex != null &&
+        !_hasTargetIndex(state, action.targetIndex!)) {
+      return 'targetIndex ${action.targetIndex} is not in the current UI elements.';
+    }
+    if ((action.x == null) != (action.y == null)) {
+      return 'Both x and y coordinates are required together.';
+    }
+    if (action.x != null && !_isCoordinateInScreen(action.x!, action.y!, state)) {
+      return 'Coordinates (${action.x}, ${action.y}) are outside the visible screen.';
+    }
+    return null;
+  }
+
+  String? _validatePath(DesktopAction action, ScreenState state) {
+    final path = action.path;
+    if (path == null || path.length < 2) {
+      return 'Drag path requires at least two points.';
+    }
+    for (final point in path) {
+      final x = point['x'];
+      final y = point['y'];
+      if (x == null || y == null) {
+        return 'Every drag path point requires x and y.';
+      }
+      if (!_isCoordinateInScreen(x, y, state)) {
+        return 'Drag path point ($x, $y) is outside the visible screen.';
+      }
+    }
+    return null;
+  }
+
+  String? _validateEndPoint(DesktopAction action, ScreenState state) {
+    final hasEndElement =
+        action.endTargetStableId != null || action.endTargetIndex != null;
+    final hasEndCoords = action.endX != null || action.endY != null;
+    if (!hasEndElement && !hasEndCoords) {
+      return 'Drag requires endTargetStableId, endTargetIndex, or endX/endY coordinates.';
+    }
+    if (action.endTargetStableId != null &&
+        !_hasStableId(state, action.endTargetStableId!)) {
+      return 'endTargetStableId "${action.endTargetStableId}" is not in the current UI elements.';
+    }
+    if (action.endTargetIndex != null &&
+        !_hasTargetIndex(state, action.endTargetIndex!)) {
+      return 'endTargetIndex ${action.endTargetIndex} is not in the current UI elements.';
+    }
+    if ((action.endX == null) != (action.endY == null)) {
+      return 'Both endX and endY coordinates are required together.';
+    }
+    if (action.endX != null &&
+        !_isCoordinateInScreen(action.endX!, action.endY!, state)) {
+      return 'Drag end coordinates (${action.endX}, ${action.endY}) are outside the visible screen.';
+    }
+    return null;
+  }
+
+  bool _hasAnyStartPoint(DesktopAction action) {
+    return action.targetStableId != null ||
+        action.targetIndex != null ||
+        (action.x != null && action.y != null);
+  }
+
+  bool _hasStableId(ScreenState state, String stableId) {
+    return state.elements.any((e) => e.stableId == stableId);
+  }
+
+  bool _hasTargetIndex(ScreenState state, int index) {
+    return state.elements.any((e) => e.id == 'node_$index');
+  }
+
+  bool _isCoordinateInScreen(double x, double y, ScreenState state) {
+    final left = state.screenLeft.toDouble();
+    final top = state.screenTop.toDouble();
+    final right = left + state.screenWidth;
+    final bottom = top + state.screenHeight;
+    return x >= left && y >= top && x <= right && y <= bottom;
+  }
+
+  bool _needsVisualFeedback(String goal) {
+    final normalized = goal.toLowerCase();
+    const visualTerms = {
+      'paint',
+      'canvas',
+      'draw',
+      'sketch',
+      'drag',
+      'drop',
+      'slider',
+      'resize',
+      'crop',
+      'screenshot',
+      'screen shot',
+      'select area',
+      'freehand',
+    };
+    return visualTerms.any(normalized.contains);
+  }
+
+  Future<bool> _tryRunDeterministicScreenshotCommand(
+    String goal,
+    void Function(String)? onProgress,
+  ) async {
+    final normalized = goal.toLowerCase().replaceAll(RegExp(r'\s+'), ' ');
+    final mentionsScreenshot = normalized.contains('screenshot') ||
+        normalized.contains('screen shot') ||
+        normalized.contains('snip') ||
+        normalized.contains('snipping') ||
+        normalized.contains('win+shift+s') ||
+        normalized.contains('won+shift+s') ||
+        normalized.contains('win shift s') ||
+        normalized.contains('won shift s') ||
+        normalized.contains('windows+shift+s') ||
+        normalized.contains('windows shift s');
+
+    if (!mentionsScreenshot) return false;
+
+      final wantsSnippingShortcut = normalized.contains('win+shift+s') ||
+        normalized.contains('won+shift+s') ||
+        normalized.contains('win shift s') ||
+        normalized.contains('won shift s') ||
+        normalized.contains('windows+shift+s') ||
+        normalized.contains('windows shift s') ||
+        normalized.contains('snip') ||
+        normalized.contains('snipping') ||
+        normalized.contains('select area') ||
+        normalized.contains('drag');
+
+    final wantsDragSelection = normalized.contains('drag') ||
+        normalized.contains('select area') ||
+        normalized.contains('top start') ||
+        normalized.contains('top corner') ||
+        normalized.contains('bottom end') ||
+        normalized.contains('bottom corner');
+
+    try {
+      if (!wantsSnippingShortcut) {
+        onProgress?.call('Taking a full-screen screenshot to clipboard.');
+        await _input.execute(const DesktopAction(
+          type: 'hotkey',
+          keys: ['printscreen'],
+        ));
+        return true;
+      }
+
+      final screenState = await _a11y.getScreenState(AutomationTier.accessibilityOnly);
+      final left = screenState.screenLeft.toDouble();
+      final top = screenState.screenTop.toDouble();
+      final right = left + screenState.screenWidth - 1;
+      final bottom = top + screenState.screenHeight - 1;
+
+      onProgress?.call('Opening Windows snipping overlay.');
+      await _input.execute(const DesktopAction(
+        type: 'hotkey',
+        keys: ['win', 'shift', 's'],
+      ));
+      await Future.delayed(const Duration(milliseconds: 900));
+
+      if (wantsDragSelection) {
+        final inset = 12.0;
+        onProgress?.call('Selecting the requested screenshot area.');
+        await _input.execute(DesktopAction(
+          type: 'drag',
+          x: left + inset,
+          y: top + inset,
+          endX: right - inset,
+          endY: bottom - inset,
+          durationMs: 900,
+          button: 'left',
+        ));
+      }
+
+      return true;
+    } catch (e) {
+      final errMsg = _firstLine(e.toString());
+      _log.error('DesktopAgent', 'Deterministic screenshot command failed: $e');
+      onProgress?.call('Screenshot shortcut failed: $errMsg');
+      _status = AgentStatus.error;
+      _lastError = errMsg;
+      return true;
     }
   }
 
@@ -429,7 +805,16 @@ class DesktopAgentService {
     final typeMatch = RegExp(r'"type"\s*:\s*"(\w+)"').firstMatch(raw);
     final textMatch = RegExp(r'"text"\s*:\s*"((?:[^"\\]|\\.)*)"').firstMatch(raw);
     final indexMatch = RegExp(r'"targetIndex"\s*:\s*(\d+)').firstMatch(raw);
+    final stableIdMatch = RegExp(r'"targetStableId"\s*:\s*"([^"]+)"').firstMatch(raw);
+    final endIndexMatch = RegExp(r'"endTargetIndex"\s*:\s*(\d+)').firstMatch(raw);
+    final endStableIdMatch = RegExp(r'"endTargetStableId"\s*:\s*"([^"]+)"').firstMatch(raw);
     final directionMatch = RegExp(r'"direction"\s*:\s*"(\w+)"').firstMatch(raw);
+    final xMatch = RegExp(r'"x"\s*:\s*(-?\d+(?:\.\d+)?)').firstMatch(raw);
+    final yMatch = RegExp(r'"y"\s*:\s*(-?\d+(?:\.\d+)?)').firstMatch(raw);
+    final endXMatch = RegExp(r'"endX"\s*:\s*(-?\d+(?:\.\d+)?)').firstMatch(raw);
+    final endYMatch = RegExp(r'"endY"\s*:\s*(-?\d+(?:\.\d+)?)').firstMatch(raw);
+    final amountMatch = RegExp(r'"amount"\s*:\s*(\d+)').firstMatch(raw);
+    final durationMatch = RegExp(r'"durationMs"\s*:\s*(\d+)').firstMatch(raw);
     // Extract keys array values
     final keysMatch = RegExp(r'"keys"\s*:\s*\[(.*?)\]').firstMatch(raw);
 
@@ -437,7 +822,16 @@ class DesktopAgentService {
     if (typeMatch != null) action['type'] = typeMatch.group(1);
     if (textMatch != null) action['text'] = textMatch.group(1)!.replaceAll(r'\"', '"');
     if (indexMatch != null) action['targetIndex'] = int.tryParse(indexMatch.group(1)!);
+    if (stableIdMatch != null) action['targetStableId'] = stableIdMatch.group(1);
+    if (endIndexMatch != null) action['endTargetIndex'] = int.tryParse(endIndexMatch.group(1)!);
+    if (endStableIdMatch != null) action['endTargetStableId'] = endStableIdMatch.group(1);
     if (directionMatch != null) action['direction'] = directionMatch.group(1);
+    if (xMatch != null) action['x'] = double.tryParse(xMatch.group(1)!);
+    if (yMatch != null) action['y'] = double.tryParse(yMatch.group(1)!);
+    if (endXMatch != null) action['endX'] = double.tryParse(endXMatch.group(1)!);
+    if (endYMatch != null) action['endY'] = double.tryParse(endYMatch.group(1)!);
+    if (amountMatch != null) action['amount'] = int.tryParse(amountMatch.group(1)!);
+    if (durationMatch != null) action['durationMs'] = int.tryParse(durationMatch.group(1)!);
     if (keysMatch != null) {
       final keysStr = keysMatch.group(1)!;
       action['keys'] = RegExp(r'"(\w+)"').allMatches(keysStr).map((m) => m.group(1)!).toList();
