@@ -62,6 +62,7 @@ class DesktopAgentService {
     String goal, {
     AutomationTier tier = AutomationTier.accessibilityOnly,
     void Function(String)? onProgress,
+    String? conversationContext,
   }) async {
     if (_status == AgentStatus.running) return;
 
@@ -70,46 +71,101 @@ class DesktopAgentService {
     _lastError = null;
     _history.clear();
 
-    if (await _tryRunDeterministicScreenshotCommand(goal, onProgress)) {
-      final success = _status != AgentStatus.error;
-      if (success) _status = AgentStatus.complete;
-      _memory.recordGoalOutcome(
-        goal,
-        success ? 'completed screenshot shortcut' : 'screenshot shortcut failed',
-        success,
-      );
-      return;
+    // Inject Android conversation context into memory so the LLM
+    // can resolve references like "it", "the same one", etc.
+    if (conversationContext != null) {
+      _memory.setConversationContext(conversationContext);
     }
 
-    // Decompose compound commands
+    // Decompose compound commands FIRST — before any deterministic shortcuts.
+    // This prevents shortcuts like the screenshot shortcut from swallowing
+    // compound prompts (e.g., "open paint and draw a line, then screenshot it").
     final subGoals = _decomposer.decompose(goal);
     _memory.recordGoalStart(goal);
 
     _log.info('DesktopAgent', 'Starting task: "$goal" [Tier: ${tier.name}] (${subGoals.length} sub-goals)');
 
     if (subGoals.length <= 1) {
-      // Simple command — run directly
+      // Single goal — try deterministic shortcuts first
+      if (await _tryRunDeterministicScreenshotCommand(goal, onProgress)) {
+        final success = _status != AgentStatus.error;
+        if (success) _status = AgentStatus.complete;
+        _memory.recordGoalOutcome(
+          goal,
+          success ? 'completed screenshot shortcut' : 'screenshot shortcut failed',
+          success,
+        );
+        return;
+      }
+
+      // No shortcut matched — run the agentic loop
       await _runScreenLoop(goal, tier: tier, onProgress: onProgress);
       final success = _status == AgentStatus.complete;
       _memory.recordGoalOutcome(goal, success ? 'completed' : 'failed', success);
       return;
     }
 
-    // Multi-step: execute sub-goals sequentially
+    // Multi-step: execute sub-goals sequentially.
+    // IMPORTANT: We no longer clear _history between sub-goals.
+    // Instead, we insert a boundary marker so the LLM knows a sub-goal
+    // completed, but retains full context of what happened before.
+    final completedSubGoals = <SubGoal>[];
     for (final subGoal in subGoals) {
       if (_stopRequested) break;
 
       _log.info('DesktopAgent', '── Sub-goal ${subGoal.stepNumber}/${subGoals.length}: ${subGoal.description} ──');
       onProgress?.call('Step ${subGoal.stepNumber}/${subGoals.length}: ${subGoal.description}');
-      _history.clear();
 
-      await _runScreenLoop(subGoal.description, tier: tier, onProgress: onProgress);
+      // Insert a boundary marker instead of clearing history
+      if (completedSubGoals.isNotEmpty) {
+        _history.add({
+          'type': 'sub_goal_boundary',
+          'completed_step': completedSubGoals.last.stepNumber,
+          'completed_description': completedSubGoals.last.description,
+          'next_step': subGoal.stepNumber,
+          'total_steps': subGoals.length,
+          'result': {'status': 'boundary_marker'},
+        });
+      }
+
+      // For screenshot sub-goals, use the deterministic shortcut directly.
+      // Screenshots produce no visible UI confirmation, so the agentic loop
+      // would spin forever waiting for evidence that never comes.
+      if (_isScreenshotGoal(subGoal.description)) {
+        _log.info('DesktopAgent', 'Screenshot sub-goal detected — using deterministic shortcut.');
+        final shortcutHandled = await _tryRunDeterministicScreenshotCommand(
+          subGoal.description, onProgress,
+        );
+        if (shortcutHandled) {
+          _status = (_status == AgentStatus.error)
+              ? AgentStatus.error
+              : AgentStatus.complete;
+        } else {
+          // Shortcut didn't match (unlikely) — fall back to agentic loop
+          await _runScreenLoop(
+            subGoal.description,
+            tier: tier,
+            onProgress: onProgress,
+            fullGoalContext: goal,
+            completedSubGoals: completedSubGoals,
+          );
+        }
+      } else {
+        await _runScreenLoop(
+          subGoal.description,
+          tier: tier,
+          onProgress: onProgress,
+          fullGoalContext: goal,
+          completedSubGoals: completedSubGoals,
+        );
+      }
 
       if (_status != AgentStatus.complete) {
         _memory.recordGoalOutcome(goal, 'failed at step ${subGoal.stepNumber}', false);
         return;
       }
 
+      completedSubGoals.add(subGoal);
       _memory.recordAgentTurn(subGoal.description, 'completed');
       _status = AgentStatus.running; // Reset for next sub-goal
       await Future.delayed(const Duration(milliseconds: 500));
@@ -119,16 +175,39 @@ class DesktopAgentService {
     _memory.recordGoalOutcome(goal, 'completed all steps', true);
   }
 
+  /// Returns true if a sub-goal description is primarily about taking a screenshot.
+  bool _isScreenshotGoal(String description) {
+    final lower = description.toLowerCase();
+    return lower.contains('screenshot') ||
+        lower.contains('screen shot') ||
+        lower.contains('snip') ||
+        lower.contains('snipping') ||
+        lower.contains('win+shift+s') ||
+        lower.contains('win shift s') ||
+        lower.contains('printscreen') ||
+        lower.contains('print screen');
+  }
+
   /// The core screen interaction loop for a single goal/sub-goal.
   Future<void> _runScreenLoop(
     String goal, {
     AutomationTier tier = AutomationTier.accessibilityOnly,
     void Function(String)? onProgress,
+    String? fullGoalContext,
+    List<SubGoal>? completedSubGoals,
   }) async {
     int steps = 0;
     const maxSteps = 25;
     const maxAiRetries = 3;
     String? lastObservationSignature;
+    // Track repeated identical actions for stale-loop detection.
+    // If the LLM emits the same action type N times in a row with an
+    // unchanged screen, the action likely succeeded but has no visible
+    // confirmation (e.g., screenshot hotkey). Auto-complete to avoid
+    // burning through 25 steps pointlessly.
+    String? lastActionFingerprint;
+    int consecutiveRepeats = 0;
+    const maxConsecutiveRepeats = 2; // auto-complete after 2 identical actions
     final observationTier =
         tier == AutomationTier.accessibilityOnly && _needsVisualFeedback(goal)
         ? AutomationTier.treeWithThumbnail
@@ -190,6 +269,8 @@ class DesktopAgentService {
           screenState,
           _history,
           conversationContext: _memory.buildContextSummary(),
+          fullGoalContext: fullGoalContext,
+          completedSubGoals: completedSubGoals,
         );
 
         final messages = [
@@ -470,6 +551,27 @@ class DesktopAgentService {
           // and try a different approach on the next step
         }
 
+        // ── Stale-loop detection ──────────────────────────────
+        // Build a fingerprint from the action type + key fields so we
+        // can detect when the LLM keeps emitting the exact same action.
+        final fingerprint = _actionFingerprint(action);
+        final screenUnchanged =
+            currentObservationSignature == lastObservationSignature;
+        if (fingerprint == lastActionFingerprint && screenUnchanged) {
+          consecutiveRepeats++;
+          if (consecutiveRepeats >= maxConsecutiveRepeats) {
+            _log.info('DesktopAgent',
+              'Detected $consecutiveRepeats consecutive identical actions '
+              'with unchanged screen — auto-completing sub-goal.');
+            onProgress?.call('✅ Action appears successful (no further changes detected).');
+            _status = AgentStatus.complete;
+            return;
+          }
+        } else {
+          consecutiveRepeats = 0;
+        }
+        lastActionFingerprint = fingerprint;
+
         lastObservationSignature = currentObservationSignature;
 
         // Wait a bit for UI to settle
@@ -673,6 +775,24 @@ class DesktopAgentService {
 
     if (!mentionsScreenshot) return false;
 
+    // Safety net: reject if the prompt clearly contains other action verbs,
+    // which signals it is a compound command even if the decomposer returned
+    // a single sub-goal (e.g., edge cases it couldn't split).
+    const nonScreenshotVerbs = {
+      'open', 'launch', 'start', 'create', 'make', 'draw', 'write',
+      'type', 'enter', 'compose', 'search', 'find', 'navigate', 'go',
+      'click', 'tap', 'press', 'select', 'play', 'pause', 'close',
+      'save', 'download', 'send', 'share', 'copy', 'paste', 'delete',
+      'rename', 'move', 'scroll', 'drag', 'enable', 'disable', 'set',
+    };
+    final words = normalized.split(RegExp(r'[\s,\.;!?]+'));
+    final hasOtherVerbs = words.any((w) => nonScreenshotVerbs.contains(w));
+    if (hasOtherVerbs) {
+      _log.info('DesktopAgent',
+        'Screenshot shortcut skipped — prompt contains other action verbs, deferring to agentic loop.');
+      return false;
+    }
+
       final wantsSnippingShortcut = normalized.contains('win+shift+s') ||
         normalized.contains('won+shift+s') ||
         normalized.contains('win shift s') ||
@@ -737,6 +857,19 @@ class DesktopAgentService {
       _lastError = errMsg;
       return true;
     }
+  }
+
+  /// Builds a compact fingerprint string for a [DesktopAction] to detect
+  /// repeated identical actions in the stale-loop detector.
+  String _actionFingerprint(DesktopAction action) {
+    final parts = <String>[action.type];
+    if (action.keys != null) parts.add('keys=${action.keys!.join('+')}');
+    if (action.targetStableId != null) parts.add('sid=${action.targetStableId}');
+    if (action.targetIndex != null) parts.add('idx=${action.targetIndex}');
+    if (action.x != null && action.y != null) parts.add('xy=${action.x},${action.y}');
+    if (action.text != null) parts.add('text=${action.text}');
+    if (action.direction != null) parts.add('dir=${action.direction}');
+    return parts.join('|');
   }
 
   /// Returns the first line of a potentially multi-line string.

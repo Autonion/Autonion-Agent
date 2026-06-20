@@ -58,7 +58,11 @@ class DesktopAutomationProvider extends ChangeNotifier {
     }
   }
 
-  Future<void> runGoal(String goal, {void Function(String)? onProgress}) async {
+  Future<void> runGoal(
+    String goal, {
+    void Function(String)? onProgress,
+    String? conversationContext,
+  }) async {
     if (!isBridgeReady) {
       await initBridge();
       if (!isBridgeReady) return;
@@ -68,7 +72,12 @@ class DesktopAutomationProvider extends ChangeNotifier {
     await aiNotifier.ensureOllamaRunning();
 
     notifyListeners(); // status -> running
-    await _agent.runTask(goal, tier: _tier, onProgress: onProgress);
+    await _agent.runTask(
+      goal,
+      tier: _tier,
+      onProgress: onProgress,
+      conversationContext: conversationContext,
+    );
     notifyListeners(); // status -> completed/error
   }
 

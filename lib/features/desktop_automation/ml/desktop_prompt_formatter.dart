@@ -1,5 +1,6 @@
 import 'dart:convert';
 import '../models/screen_state.dart';
+import '../services/task_decomposer_service.dart';
 
 /// Prepares the prompt for the LLM based on the desktop screen state.
 /// Mirrors `UIPromptFormatter` from Android but tailored for Windows UIA.
@@ -71,11 +72,28 @@ JSON RESPONSE FORMAT (you MUST respond with ONLY this exact JSON):
     ScreenState state,
     List<Map<String, dynamic>> history, {
     String? conversationContext,
+    String? fullGoalContext,
+    List<SubGoal>? completedSubGoals,
   }) {
     // Only send the LLM the promptable JSON to save tokens
     final elementsJson = state.elements.map((e) => e.toPromptJson()).toList();
 
     final promptMap = <String, dynamic>{'goal': goal};
+
+    // Compound goal context: when running a sub-goal, tell the LLM
+    // the full original command and which steps are already done.
+    if (fullGoalContext != null && fullGoalContext != goal) {
+      promptMap['compound_goal'] = fullGoalContext;
+      promptMap['note'] =
+          'This is a step in a multi-step task. The full user command is '
+          'shown in "compound_goal". Focus on the current "goal" but use '
+          'the compound_goal for context about what the user ultimately wants.';
+      if (completedSubGoals != null && completedSubGoals.isNotEmpty) {
+        promptMap['completed_steps'] = completedSubGoals
+            .map((s) => 'Step ${s.stepNumber}: ${s.description} ✓')
+            .toList();
+      }
+    }
 
     if (conversationContext != null && conversationContext.isNotEmpty) {
       promptMap['previous_context'] = conversationContext;

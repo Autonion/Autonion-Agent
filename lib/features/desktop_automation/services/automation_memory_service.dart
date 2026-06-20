@@ -46,7 +46,24 @@ class AutomationMemoryService {
   final List<GoalRecord> _goalHistory = [];
   final List<Map<String, String>> _sessionTurns = [];
 
+  /// Cross-device conversation context from Android.
+  /// Set when a prompt arrives with prior conversation history.
+  String? _androidConversationContext;
+
+  /// Structured conversation history from Android (user/assistant turns).
+  List<Map<String, String>>? _androidConversationHistory;
+
   AutomationMemoryService();
+
+  /// Set the conversation summary from Android for cross-device awareness.
+  void setConversationContext(String? context) {
+    _androidConversationContext = context;
+  }
+
+  /// Set the structured conversation history from Android.
+  void setConversationHistory(List<Map<String, String>>? history) {
+    _androidConversationHistory = history;
+  }
 
   /// Initialize by loading persisted history.
   Future<void> init() async {
@@ -93,29 +110,59 @@ class AutomationMemoryService {
   }
 
   /// Builds a concise context summary for LLM prompt injection.
+  ///
+  /// Combines Android conversation context (cross-device awareness)
+  /// with local goal history so the LLM has full context.
   String? buildContextSummary() {
-    if (_goalHistory.isEmpty) return null;
-
-    final recent = _goalHistory.length > 3
-        ? _goalHistory.sublist(_goalHistory.length - 3)
-        : _goalHistory;
-
     final parts = <String>[];
-    for (int i = 0; i < recent.length; i++) {
-      final r = recent[i];
-      final status = r.success ? 'completed' : 'failed: ${r.outcome}';
-      final appInfo = r.appUsed != null ? ' on ${r.appUsed}' : '';
-      final prefix = i == recent.length - 1
-          ? 'Most recent'
-          : (i == recent.length - 2 ? 'Before that' : 'Earlier');
-      parts.add('$prefix: "${r.command}"$appInfo ($status)');
+
+    // 1. Android conversation context (cross-device awareness)
+    if (_androidConversationContext != null &&
+        _androidConversationContext!.isNotEmpty) {
+      parts.add('CONVERSATION CONTEXT FROM MOBILE:\n$_androidConversationContext');
     }
 
-    var summary = parts.join('. ');
-    if (summary.length > _maxContextChars) {
-      summary = '${summary.substring(0, _maxContextChars - 3)}...';
+    // 1b. Structured conversation history (richer than summary)
+    if (_androidConversationHistory != null &&
+        _androidConversationHistory!.isNotEmpty) {
+      final historyLines = _androidConversationHistory!
+          .map((turn) => '${turn['role']}: ${turn['content']}')
+          .join('\n');
+      // Only add if we didn't already add the summary above
+      if (_androidConversationContext == null ||
+          _androidConversationContext!.isEmpty) {
+        parts.add('CONVERSATION HISTORY FROM MOBILE:\n$historyLines');
+      }
     }
-    return summary.isEmpty ? null : summary;
+
+    // 2. Local goal history
+    if (_goalHistory.isNotEmpty) {
+      final recent = _goalHistory.length > 3
+          ? _goalHistory.sublist(_goalHistory.length - 3)
+          : _goalHistory;
+
+      final goalParts = <String>[];
+      for (int i = 0; i < recent.length; i++) {
+        final r = recent[i];
+        final status = r.success ? 'completed' : 'failed: ${r.outcome}';
+        final appInfo = r.appUsed != null ? ' on ${r.appUsed}' : '';
+        final prefix = i == recent.length - 1
+            ? 'Most recent'
+            : (i == recent.length - 2 ? 'Before that' : 'Earlier');
+        goalParts.add('$prefix: "${r.command}"$appInfo ($status)');
+      }
+      parts.add(goalParts.join('. '));
+    }
+
+    if (parts.isEmpty) return null;
+
+    var summary = parts.join('\n\n');
+    // Allow more context chars to accommodate conversation history
+    const maxChars = 1200;
+    if (summary.length > maxChars) {
+      summary = '${summary.substring(0, maxChars - 3)}...';
+    }
+    return summary;
   }
 
   void clearSession() => _sessionTurns.clear();
@@ -123,6 +170,8 @@ class AutomationMemoryService {
   void clearAll() {
     _sessionTurns.clear();
     _goalHistory.clear();
+    _androidConversationContext = null;
+    _androidConversationHistory = null;
     _persistHistory();
   }
 

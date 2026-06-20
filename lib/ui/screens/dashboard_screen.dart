@@ -368,37 +368,39 @@ class _RecentLogsCard extends StatelessWidget {
       padding: const EdgeInsets.all(16),
       child: recentEntries.isEmpty
           ? Text('No logs yet', style: Theme.of(context).textTheme.bodySmall)
-          : Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: recentEntries.reversed.map((entry) {
-                return Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 2),
-                  child: Row(
-                    children: [
-                      _logLevelDot(entry.level),
-                      const SizedBox(width: 8),
-                      Text(
-                        entry.timeString,
-                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: AppColors.textMuted,
-                          fontFamily: 'monospace',
-                          fontSize: 11,
+          : SelectionArea(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: recentEntries.reversed.map((entry) {
+                  return Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 2),
+                    child: Row(
+                      children: [
+                        _logLevelDot(entry.level),
+                        const SizedBox(width: 8),
+                        Text(
+                          entry.timeString,
+                          style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color: AppColors.textMuted,
+                            fontFamily: 'monospace',
+                            fontSize: 11,
+                          ),
                         ),
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          entry.message,
-                          style: Theme.of(context).textTheme.bodySmall
-                              ?.copyWith(fontFamily: 'monospace', fontSize: 11),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            entry.message,
+                            style: Theme.of(context).textTheme.bodySmall
+                                ?.copyWith(fontFamily: 'monospace', fontSize: 11),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
                         ),
-                      ),
-                    ],
-                  ),
-                );
-              }).toList(),
+                      ],
+                    ),
+                  );
+                }).toList(),
+              ),
             ),
     );
   }

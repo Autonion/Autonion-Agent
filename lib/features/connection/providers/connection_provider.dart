@@ -230,6 +230,13 @@ class ConnectionProvider extends ChangeNotifier {
     final prompt = command['prompt']?.toString() ?? '';
     final transactionId = command['transactionId']?.toString() ?? '';
 
+    // Extract conversation context from Android payload.
+    // The Android app sends this via AgentRequest.agentContext.conversationSummary
+    // and/or AgentRequest.context.
+    final agentContext = command['agentContext'] as Map<String, dynamic>?;
+    final conversationContext = agentContext?['conversationSummary']?.toString()
+        ?? command['context']?.toString();
+
     // Deduplication: skip if this transaction was already processed
     if (transactionId.isNotEmpty &&
         _processedTransactions.contains(transactionId)) {
@@ -459,6 +466,7 @@ class ConnectionProvider extends ChangeNotifier {
           onProgress: (msg) {
             _sendPromptResponse(transactionId, 'in_progress', msg);
           },
+          conversationContext: conversationContext,
         );
         // Check if the agent actually succeeded
         if (desktopProvider.hasError) {
