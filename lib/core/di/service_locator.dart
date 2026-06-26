@@ -13,6 +13,8 @@ import '../../features/desktop_automation/services/accessibility_tree_service.da
 import '../../features/desktop_automation/services/desktop_agent_service.dart';
 import '../../features/desktop_automation/services/input_simulation_service.dart';
 import '../../features/desktop_automation/services/python_bridge_service.dart';
+import '../../features/desktop_automation/services/flow_storage_service.dart';
+import '../../features/desktop_automation/services/flow_execution_service.dart';
 import '../../features/system/services/startup_service.dart';
 import '../../features/system/services/system_tray_service.dart';
 import '../../features/system/services/update_service.dart';
@@ -87,6 +89,17 @@ Future<void> setupServiceLocator() async {
       agent: desktopAgent,
     );
     getIt.registerSingleton<DesktopAutomationProvider>(desktopProvider);
+
+    // ── Flow System (desktop-only) ────────────────────────
+    final flowStorage = FlowStorageService(log: log);
+    getIt.registerSingleton<FlowStorageService>(flowStorage);
+
+    final flowExecution = FlowExecutionService(
+      input: inputSim,
+      a11y: a11y,
+      log: log,
+    );
+    getIt.registerSingleton<FlowExecutionService>(flowExecution);
   }
 
   // ── Providers ───────────────────────────────────────────

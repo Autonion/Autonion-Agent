@@ -3,6 +3,7 @@ import 'screens/ai_settings_screen.dart';
 import 'screens/automation_screen.dart';
 import 'screens/connections_screen.dart';
 import 'screens/dashboard_screen.dart';
+import 'screens/flows_screen.dart';
 import 'screens/logs_screen.dart';
 import 'screens/settings_screen.dart';
 import 'theme/app_colors.dart';
@@ -24,6 +25,7 @@ class _AppShellState extends State<AppShell> {
     const DashboardScreen(),
     const ConnectionsScreen(),
     const AutomationScreen(),
+    const FlowsScreen(),
     const AiSettingsScreen(),
     const LogsScreen(),
     const SettingsScreen(),
@@ -44,6 +46,11 @@ class _AppShellState extends State<AppShell> {
       icon: Icon(Icons.smart_toy_outlined),
       selectedIcon: Icon(Icons.smart_toy),
       label: Text('Automate'),
+    ),
+    NavigationRailDestination(
+      icon: Icon(Icons.account_tree_outlined),
+      selectedIcon: Icon(Icons.account_tree),
+      label: Text('Flows'),
     ),
     NavigationRailDestination(
       icon: Icon(Icons.psychology_outlined),

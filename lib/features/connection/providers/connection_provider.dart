@@ -18,6 +18,8 @@ import '../../desktop_automation/services/desktop_agent_service.dart';
 import '../../ai/models/ai_message.dart';
 import '../../ai/providers/ai_provider_notifier.dart';
 import '../../ai/models/ai_provider_type.dart';
+import '../../desktop_automation/services/flow_storage_service.dart';
+import '../../desktop_automation/services/flow_execution_service.dart';
 
 /// Orchestrates all connection-related services and exposes reactive state.
 ///
@@ -165,6 +167,17 @@ class ConnectionProvider extends ChangeNotifier {
 
     if (command['type'] == 'kill_switch') {
       _handleKillSwitch(command);
+      return;
+    }
+
+    // ── Flow System ──────────────────────────────────────
+    if (command['type'] == 'trigger_flow') {
+      await _handleFlowTrigger(command);
+      return;
+    }
+
+    if (command['type'] == 'list_flows') {
+      await _handleListFlows(command);
       return;
     }
 
@@ -1210,6 +1223,12 @@ RULES:
       _log.error('CMD', 'Failed to stop DesktopAutomationProvider: $e');
     }
 
+    // Stop any running flow
+    try {
+      final flowExec = getIt<FlowExecutionService>();
+      flowExec.stopFlow();
+    } catch (_) {}
+
     // Forward to extension
     _ws.sendToExtension({'type': 'kill_switch'});
 
@@ -1222,6 +1241,122 @@ RULES:
         'Automation stopped by user.',
       );
     }
+  }
+
+  // ═══════════════════════════════════════════════════════════
+  //  FLOW SYSTEM HANDLERS
+  // ═══════════════════════════════════════════════════════════
+
+  /// Handle a trigger_flow request from Android.
+  /// Looks up the flow by ID, executes it, and streams progress back.
+  Future<void> _handleFlowTrigger(Map<String, dynamic> command) async {
+    final transactionId = command['transactionId']?.toString() ?? '';
+    final flowId = command['flowId']?.toString() ?? '';
+
+    if (flowId.isEmpty) {
+      _sendFlowResponse(transactionId, flowId, 'failed', 'No flowId provided');
+      return;
+    }
+
+    _log.info('CMD', 'Flow trigger request: $flowId (txn=$transactionId)');
+
+    try {
+      final storage = getIt<FlowStorageService>();
+      final flow = await storage.loadFlow(flowId);
+
+      if (flow == null) {
+        _sendFlowResponse(
+          transactionId, flowId, 'failed', 'Flow not found: $flowId',
+        );
+        return;
+      }
+
+      _sendFlowResponse(
+        transactionId, flowId, 'started', 'Running flow: ${flow.name}',
+      );
+
+      final execution = getIt<FlowExecutionService>();
+      final result = await execution.executeFlow(
+        flow,
+        onProgress: (progress) {
+          _sendFlowResponse(
+            transactionId,
+            flowId,
+            progress.status,
+            progress.message,
+            step: progress.currentStep,
+            total: progress.totalSteps,
+            nodeLabel: progress.nodeLabel,
+          );
+        },
+      );
+
+      _sendFlowResponse(
+        transactionId,
+        flowId,
+        result.success ? 'completed' : 'failed',
+        result.success
+            ? 'Flow completed (${result.stepsExecuted} steps, ${result.elapsed.inMilliseconds}ms)'
+            : 'Flow failed: ${result.errorMessage}',
+        step: result.stepsExecuted,
+      );
+    } catch (e) {
+      _log.error('CMD', 'Flow trigger error: $e');
+      _sendFlowResponse(transactionId, flowId, 'failed', 'Error: $e');
+    }
+  }
+
+  /// Handle a list_flows request from Android.
+  /// Returns lightweight manifests for all saved flows.
+  Future<void> _handleListFlows(Map<String, dynamic> command) async {
+    final transactionId = command['transactionId']?.toString() ?? '';
+
+    try {
+      final storage = getIt<FlowStorageService>();
+      final manifests = await storage.listFlowManifests();
+
+      _ws.broadcastEvent({
+        'type': 'flow_list_response',
+        'transactionId': transactionId,
+        'flows': manifests.map((m) => m.toJson()).toList(),
+        'timestamp': DateTime.now().toIso8601String(),
+      });
+
+      _log.info('CMD', 'Sent flow list (${manifests.length} flows)');
+    } catch (e) {
+      _log.error('CMD', 'Failed to list flows: $e');
+      _ws.broadcastEvent({
+        'type': 'flow_list_response',
+        'transactionId': transactionId,
+        'flows': <Map<String, dynamic>>[],
+        'error': '$e',
+        'timestamp': DateTime.now().toIso8601String(),
+      });
+    }
+  }
+
+  /// Send a flow-specific response back to Android.
+  void _sendFlowResponse(
+    String transactionId,
+    String flowId,
+    String status,
+    String message, {
+    int? step,
+    int? total,
+    String? nodeLabel,
+  }) {
+    if (transactionId.isEmpty) return;
+    _ws.broadcastEvent({
+      'type': 'flow_trigger_response',
+      'transactionId': transactionId,
+      'flowId': flowId,
+      'status': status,
+      'message': message,
+      if (step != null) 'currentStep': step,
+      if (total != null) 'totalSteps': total,
+      if (nodeLabel != null) 'nodeLabel': nodeLabel,
+      'timestamp': DateTime.now().toIso8601String(),
+    });
   }
 
   @override
