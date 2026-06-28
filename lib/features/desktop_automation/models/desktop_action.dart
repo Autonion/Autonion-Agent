@@ -11,6 +11,8 @@ class DesktopAction {
   final double? endY; // Optional absolute drag destination y coordinate
   final List<Map<String, double>>? path; // Optional drag path points
   final String? text; // Text to type
+  final String? appName; // Application display name for launch actions
+  final String? appPath; // Shortcut/executable path for launch actions
   final String? direction; // up/down for scroll
   final int? amount; // Scroll amount or wheel clicks
   final List<String>? keys; // Array of keys for hotkey
@@ -29,6 +31,8 @@ class DesktopAction {
     this.endY,
     this.path,
     this.text,
+    this.appName,
+    this.appPath,
     this.direction,
     this.amount,
     this.keys,
@@ -50,6 +54,8 @@ class DesktopAction {
       endY: _asDouble(json['endY']),
       path: _asPath(json['path']),
       text: json['text'] as String?,
+      appName: json['appName'] as String?,
+      appPath: json['appPath'] as String?,
       direction: json['direction'] as String?,
       amount: json['amount'] as int?,
       keys: (json['keys'] as List?)?.cast<String>(),
@@ -70,6 +76,8 @@ class DesktopAction {
     'endY': endY,
     'path': path,
     'text': text,
+    'appName': appName,
+    'appPath': appPath,
     'direction': direction,
     'amount': amount,
     'keys': keys,

@@ -2,9 +2,14 @@ import 'package:flutter/foundation.dart';
 
 
 import '../../../core/services/logging_service.dart';
+import '../models/automation_tier.dart';
 import '../models/desktop_flow_models.dart';
+import '../models/screen_state.dart';
+import '../models/system_app_info.dart';
+import '../services/accessibility_tree_service.dart';
 import '../services/flow_execution_service.dart';
 import '../services/flow_storage_service.dart';
+import '../services/python_bridge_service.dart';
 
 /// State management for the flow builder canvas and flow list.
 ///
@@ -13,14 +18,20 @@ import '../services/flow_storage_service.dart';
 class FlowBuilderProvider extends ChangeNotifier {
   final FlowStorageService _storage;
   final FlowExecutionService _execution;
+  final AccessibilityTreeService _a11y;
+  final PythonBridgeService _bridge;
   final LoggingService _log;
 
   FlowBuilderProvider({
     required FlowStorageService storage,
     required FlowExecutionService execution,
+    required AccessibilityTreeService a11y,
+    required PythonBridgeService bridge,
     required LoggingService log,
   })  : _storage = storage,
         _execution = execution,
+        _a11y = a11y,
+        _bridge = bridge,
         _log = log;
 
   // ── State ──────────────────────────────────────────────
@@ -55,6 +66,16 @@ class FlowBuilderProvider extends ChangeNotifier {
   /// Last execution result.
   FlowExecutionResult? _lastResult;
   FlowExecutionResult? get lastResult => _lastResult;
+
+  /// Cached installed apps for Launch App nodes.
+  List<SystemAppInfo> _availableApps = [];
+  List<SystemAppInfo> get availableApps => List.unmodifiable(_availableApps);
+
+  bool _isLoadingApps = false;
+  bool get isLoadingApps => _isLoadingApps;
+
+  String? _appLoadError;
+  String? get appLoadError => _appLoadError;
 
   /// Whether the builder panel is showing (vs the list).
   bool _isBuilderOpen = false;
@@ -121,8 +142,13 @@ class FlowBuilderProvider extends ChangeNotifier {
     );
 
     // Set default configs for certain types
-    if (type == DesktopFlowNodeType.keyboard) {
+    if (type == DesktopFlowNodeType.keyboard ||
+        type == DesktopFlowNodeType.hotkey) {
       node.keyboardConfig = const KeyboardNodeConfig(keys: []);
+    } else if (type == DesktopFlowNodeType.typeText) {
+      node.autoDetectInput = true;
+    } else if (type == DesktopFlowNodeType.conditional) {
+      node.conditionOperator = 'element_exists';
     } else if (type == DesktopFlowNodeType.delay) {
       node.delayMs = 1000;
     } else if (type == DesktopFlowNodeType.scroll) {
@@ -181,9 +207,14 @@ class FlowBuilderProvider extends ChangeNotifier {
 
   // ── Edge CRUD ──────────────────────────────────────────
 
+  /// The label for the pending connection ("success" or "failure").
+  String? _connectingEdgeLabel;
+  String? get connectingEdgeLabel => _connectingEdgeLabel;
+
   /// Begin connecting from a node's output port.
-  void startConnecting(String nodeId) {
+  void startConnecting(String nodeId, {String? label}) {
     _connectingFromNodeId = nodeId;
+    _connectingEdgeLabel = label;
     notifyListeners();
   }
 
@@ -193,32 +224,46 @@ class FlowBuilderProvider extends ChangeNotifier {
     if (_connectingFromNodeId == toNodeId) {
       // Can't connect to self
       _connectingFromNodeId = null;
+      _connectingEdgeLabel = null;
       notifyListeners();
       return;
     }
 
-    // Check for duplicate edge
+    // Check for duplicate edge with same label
     final exists = _currentFlow!.edges.any(
       (e) =>
-          e.fromNodeId == _connectingFromNodeId && e.toNodeId == toNodeId,
+          e.fromNodeId == _connectingFromNodeId &&
+          e.toNodeId == toNodeId &&
+          e.label == _connectingEdgeLabel,
     );
 
     if (!exists) {
+      if (_connectingEdgeLabel != null) {
+        _currentFlow!.edges.removeWhere(
+          (e) =>
+              e.fromNodeId == _connectingFromNodeId &&
+              e.label == _connectingEdgeLabel,
+        );
+      }
+
       final edge = DesktopFlowEdge.create(
         fromNodeId: _connectingFromNodeId!,
         toNodeId: toNodeId,
+        label: _connectingEdgeLabel,
       );
       _currentFlow!.edges.add(edge);
       _isDirty = true;
     }
 
     _connectingFromNodeId = null;
+    _connectingEdgeLabel = null;
     notifyListeners();
   }
 
   /// Cancel an in-progress connection.
   void cancelConnection() {
     _connectingFromNodeId = null;
+    _connectingEdgeLabel = null;
     notifyListeners();
   }
 
@@ -242,6 +287,45 @@ class FlowBuilderProvider extends ChangeNotifier {
   DesktopFlowNode? get selectedNode {
     if (_selectedNodeId == null || _currentFlow == null) return null;
     return _currentFlow!.findNode(_selectedNodeId!);
+  }
+
+  // -- Desktop helpers --------------------------------------
+
+  Future<ScreenState> captureTargetScreen() {
+    return _a11y.getScreenState(AutomationTier.treeWithFullScreenshot);
+  }
+
+  Future<void> loadAvailableApps({bool force = false}) async {
+    if (_isLoadingApps) return;
+    if (!force && _availableApps.isNotEmpty) return;
+
+    _isLoadingApps = true;
+    _appLoadError = null;
+    notifyListeners();
+
+    try {
+      final response = await _bridge.sendCommand('list_apps');
+      final rawApps = response is List
+          ? response
+          : response is Map
+              ? response['apps'] as List<dynamic>? ?? const []
+              : const [];
+
+      _availableApps = rawApps
+          .whereType<Map>()
+          .map((raw) => SystemAppInfo.fromJson(
+                raw.map((key, value) => MapEntry(key.toString(), value)),
+              ))
+          .where((app) => app.name.trim().isNotEmpty && app.path.trim().isNotEmpty)
+          .toList()
+        ..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+    } catch (e) {
+      _appLoadError = e.toString();
+      _log.error('FlowBuilder', 'Failed to load installed apps: $e');
+    } finally {
+      _isLoadingApps = false;
+      notifyListeners();
+    }
   }
 
   // ── Flow Metadata ──────────────────────────────────────

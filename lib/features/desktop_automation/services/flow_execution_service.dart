@@ -6,6 +6,7 @@ import 'input_simulation_service.dart';
 import 'accessibility_tree_service.dart';
 import '../models/automation_tier.dart';
 import '../models/desktop_action.dart';
+import '../models/ui_element.dart';
 
 // ═══════════════════════════════════════════════════════════════════
 //  PROGRESS & RESULT MODELS
@@ -176,23 +177,17 @@ class FlowExecutionService {
               'Node "${currentNode.label}" failed: $e',
             );
 
-            // Check for failure edge
-            if (currentNode.onFailureEdgeId != null) {
-              final failEdge = flow.findEdge(currentNode.onFailureEdgeId!);
-              if (failEdge != null) {
-                final failTarget = flow.findNode(failEdge.toNodeId);
-                if (failTarget != null) {
-                  _log.info(
-                    'FlowExec',
-                    'Following failure edge to: ${failTarget.label}',
-                  );
-                  currentNode = failTarget;
-                  continue;
-                }
-              }
+            final failureTarget = _resolveFailureBranch(currentNode, flow);
+            if (failureTarget != null) {
+              _log.info(
+                'FlowExec',
+                'Following failure edge to: ${failureTarget.label}',
+              );
+              currentNode = failureTarget;
+              continue;
             }
 
-            // No failure edge — stop
+            // No failure edge - stop
             throw FlowExecutionException(
               'Node "${currentNode.label}" failed: $e',
             );
@@ -231,8 +226,7 @@ class FlowExecutionService {
               break;
             }
           } else {
-            // Standard: follow the first outgoing edge
-            currentNode = nextNodes.first;
+            currentNode = _resolveSuccessBranch(currentNode, flow) ?? nextNodes.first;
           }
         }
 
@@ -386,9 +380,58 @@ class FlowExecutionService {
     }
   }
 
+  DesktopFlowNode? _resolveSuccessBranch(
+    DesktopFlowNode node,
+    DesktopFlow flow,
+  ) {
+    return _resolveLabeledBranch(node, flow, const ['success', 'true']) ??
+        _resolveUnlabeledBranch(node, flow);
+  }
+
+  DesktopFlowNode? _resolveFailureBranch(
+    DesktopFlowNode node,
+    DesktopFlow flow,
+  ) {
+    if (node.onFailureEdgeId != null) {
+      final explicitEdge = flow.findEdge(node.onFailureEdgeId!);
+      final explicitTarget = explicitEdge == null
+          ? null
+          : flow.findNode(explicitEdge.toNodeId);
+      if (explicitTarget != null) return explicitTarget;
+    }
+    return _resolveLabeledBranch(node, flow, const ['failure', 'false']);
+  }
+
+  DesktopFlowNode? _resolveLabeledBranch(
+    DesktopFlowNode node,
+    DesktopFlow flow,
+    List<String> labels,
+  ) {
+    for (final edge in flow.outgoingEdges(node.id)) {
+      final label = edge.label?.toLowerCase();
+      if (label != null && labels.contains(label)) {
+        final target = flow.findNode(edge.toNodeId);
+        if (target != null) return target;
+      }
+    }
+    return null;
+  }
+
+  DesktopFlowNode? _resolveUnlabeledBranch(
+    DesktopFlowNode node,
+    DesktopFlow flow,
+  ) {
+    for (final edge in flow.outgoingEdges(node.id)) {
+      if (edge.label == null || edge.label!.isEmpty) {
+        final target = flow.findNode(edge.toNodeId);
+        if (target != null) return target;
+      }
+    }
+    return null;
+  }
+
   /// Resolve click coordinates from a UITargetSelector.
-  /// For UIA attribute mode, queries the accessibility tree to find
-  /// the element and extracts its bounding box center.
+  /// For UIA modes, queries the accessibility tree and uses the element center.
   Future<Map<String, dynamic>> _resolveTarget(UITargetSelector? target) async {
     if (target == null) {
       throw FlowExecutionException('No target specified for action');
@@ -396,19 +439,21 @@ class FlowExecutionService {
 
     switch (target.mode) {
       case UITargetMode.coordinate:
-        if (target.x == null || target.y == null) {
+        final x = target.centerX ?? target.x;
+        final y = target.centerY ?? target.y;
+        if (x == null || y == null) {
           throw FlowExecutionException('Coordinates not set');
         }
-        return {'x': target.x, 'y': target.y};
+        return {'x': x, 'y': y};
 
       case UITargetMode.stableId:
         if (target.stableId == null) {
           throw FlowExecutionException('Stable ID not set');
         }
+        await _a11y.getScreenState(AutomationTier.accessibilityOnly);
         return {'targetStableId': target.stableId};
 
       case UITargetMode.uiaAttribute:
-        // Query the accessibility tree for a matching element
         return await _findElementByAttributes(target);
     }
   }
@@ -417,53 +462,175 @@ class FlowExecutionService {
   Future<Map<String, dynamic>> _findElementByAttributes(
     UITargetSelector target,
   ) async {
-    // Get current screen state from the accessibility tree
-    final screenState = await _a11y.getScreenState(AutomationTier.accessibilityOnly);
+    final screenState = await _a11y.getScreenState(
+      AutomationTier.accessibilityOnly,
+    );
+    final element = _findElementInList(screenState.elements, target);
+    if (element == null) {
+      throw FlowExecutionException(
+        'Element not found matching: ${target.summary}',
+      );
+    }
+    return _targetParamsForElement(element);
+  }
 
-    // Search elements for a match
-    for (final element in screenState.elements) {
-      bool matches = true;
+  Future<UIElement?> _findCurrentElement(
+    UITargetSelector? target, {
+    bool requireEditable = false,
+  }) async {
+    final screenState = await _a11y.getScreenState(
+      AutomationTier.accessibilityOnly,
+    );
+    if (target == null) {
+      return _bestElement(screenState.elements, requireEditable: requireEditable);
+    }
+    return _findElementInList(
+      screenState.elements,
+      target,
+      requireEditable: requireEditable,
+    );
+  }
 
-      if (target.automationId != null && target.automationId!.isNotEmpty) {
-        if (element.automationId != target.automationId) matches = false;
-      }
-      if (target.className != null && target.className!.isNotEmpty) {
-        if (element.className != target.className) matches = false;
-      }
-      if (target.name != null && target.name!.isNotEmpty) {
-        if (!element.name.toLowerCase().contains(
-              target.name!.toLowerCase(),
-            )) {
-          matches = false;
-        }
-      }
-      if (target.role != null && target.role!.isNotEmpty) {
-        if (element.role.toLowerCase() != target.role!.toLowerCase()) {
-          matches = false;
-        }
-      }
-      if (target.controlType != null && target.controlType!.isNotEmpty) {
-        if (element.type.toLowerCase() != target.controlType!.toLowerCase()) {
-          matches = false;
-        }
-      }
+  UIElement? _findElementInList(
+    List<UIElement> elements,
+    UITargetSelector target, {
+    bool requireEditable = false,
+  }) {
+    final candidates = elements.where((element) {
+      if (element.isOffscreen || !element.isEnabled) return false;
+      if (requireEditable && !_isEditableElement(element)) return false;
 
-      if (matches) {
-        // Found it — use the bounding box center or stableId
-        if (element.stableId != null) {
-          return {'targetStableId': element.stableId};
-        }
-        final bbox = element.boundingBox;
-        final cx = (bbox['x'] as num? ?? 0) + (bbox['width'] as num? ?? 0) / 2;
-        final cy =
-            (bbox['y'] as num? ?? 0) + (bbox['height'] as num? ?? 0) / 2;
-        return {'x': cx, 'y': cy};
+      switch (target.mode) {
+        case UITargetMode.stableId:
+          return target.stableId != null && element.stableId == target.stableId;
+        case UITargetMode.uiaAttribute:
+          return _matchesAttributes(element, target);
+        case UITargetMode.coordinate:
+          return _matchesCoordinateTarget(element, target);
+      }
+    }).toList();
+
+    return _bestElement(candidates, requireEditable: requireEditable);
+  }
+
+  UIElement? _bestElement(
+    List<UIElement> elements, {
+    bool requireEditable = false,
+  }) {
+    final candidates = elements.where((element) {
+      if (element.isOffscreen || !element.isEnabled) return false;
+      if (requireEditable && !_isEditableElement(element)) return false;
+      return !requireEditable || element.isKeyboardFocusable || element.isFocused;
+    }).toList();
+
+    if (candidates.isEmpty) return null;
+    candidates.sort((a, b) {
+      if (a.isFocused != b.isFocused) return a.isFocused ? -1 : 1;
+      final aEditable = _isEditableElement(a);
+      final bEditable = _isEditableElement(b);
+      if (aEditable != bEditable) return aEditable ? -1 : 1;
+      return _elementArea(a).compareTo(_elementArea(b));
+    });
+    return candidates.first;
+  }
+
+  bool _matchesAttributes(UIElement element, UITargetSelector target) {
+    if (target.automationId != null && target.automationId!.isNotEmpty) {
+      if (element.automationId != target.automationId) return false;
+    }
+    if (target.className != null && target.className!.isNotEmpty) {
+      if (element.className != target.className) return false;
+    }
+    if (target.name != null && target.name!.isNotEmpty) {
+      if (!element.name.toLowerCase().contains(target.name!.toLowerCase())) {
+        return false;
       }
     }
+    if (target.role != null && target.role!.isNotEmpty) {
+      if (element.role.toLowerCase() != target.role!.toLowerCase()) {
+        return false;
+      }
+    }
+    if (target.controlType != null && target.controlType!.isNotEmpty) {
+      if (element.type.toLowerCase() != target.controlType!.toLowerCase()) {
+        return false;
+      }
+    }
+    return true;
+  }
 
-    throw FlowExecutionException(
-      'Element not found matching: ${target.summary}',
-    );
+  bool _matchesCoordinateTarget(UIElement element, UITargetSelector target) {
+    if (target.x == null || target.y == null) return false;
+    if (target.hasRegion) {
+      return _elementIntersectsRect(
+        element,
+        target.x!,
+        target.y!,
+        target.width!,
+        target.height!,
+      );
+    }
+    return _elementContainsPoint(element, target.x!, target.y!);
+  }
+
+  Map<String, dynamic> _targetParamsForElement(UIElement element) {
+    if (element.stableId != null && element.stableId!.isNotEmpty) {
+      return {'targetStableId': element.stableId};
+    }
+    final bbox = element.boundingBox;
+    final cx = _asDouble(bbox['x']) + _asDouble(bbox['width']) / 2;
+    final cy = _asDouble(bbox['y']) + _asDouble(bbox['height']) / 2;
+    return {'x': cx, 'y': cy};
+  }
+
+  bool _isEditableElement(UIElement element) {
+    final role = element.role.toLowerCase();
+    final type = element.type.toLowerCase();
+    final className = (element.className ?? '').toLowerCase();
+    return role.contains('edit') ||
+        role.contains('text') ||
+        role.contains('combo') ||
+        type.contains('edit') ||
+        type.contains('combobox') ||
+        type.contains('document') ||
+        className.contains('edit') ||
+        element.isFocused;
+  }
+
+  bool _elementContainsPoint(UIElement element, double x, double y) {
+    final bbox = element.boundingBox;
+    final left = _asDouble(bbox['x']);
+    final top = _asDouble(bbox['y']);
+    final width = _asDouble(bbox['width']);
+    final height = _asDouble(bbox['height']);
+    return x >= left && x <= left + width && y >= top && y <= top + height;
+  }
+
+  bool _elementIntersectsRect(
+    UIElement element,
+    double x,
+    double y,
+    double width,
+    double height,
+  ) {
+    final bbox = element.boundingBox;
+    final left = _asDouble(bbox['x']);
+    final top = _asDouble(bbox['y']);
+    final right = left + _asDouble(bbox['width']);
+    final bottom = top + _asDouble(bbox['height']);
+    final targetRight = x + width;
+    final targetBottom = y + height;
+    return left < targetRight && right > x && top < targetBottom && bottom > y;
+  }
+
+  double _elementArea(UIElement element) {
+    final bbox = element.boundingBox;
+    return _asDouble(bbox['width']) * _asDouble(bbox['height']);
+  }
+
+  double _asDouble(dynamic value) {
+    if (value is num) return value.toDouble();
+    return double.tryParse(value?.toString() ?? '') ?? 0;
   }
 
   Future<void> _executeClickAction(DesktopFlowNode node, String clickType) async {
@@ -489,21 +656,41 @@ class FlowExecutionService {
   }
 
   Future<void> _executeTypeText(DesktopFlowNode node) async {
-    // If there's a target, click it first to focus
-    if (node.target != null) {
+    var focused = false;
+
+    if (node.autoDetectInput) {
+      final editable = await _findCurrentElement(
+        node.target,
+        requireEditable: true,
+      );
+      if (editable != null) {
+        await _clickTarget(_targetParamsForElement(editable));
+        focused = true;
+      }
+    }
+
+    if (!focused && node.target != null) {
       final targetParams = await _resolveTarget(node.target);
-      await _input.execute(DesktopAction(
-        type: 'click',
-        x: targetParams['x'] as double?,
-        y: targetParams['y'] as double?,
-        targetStableId: targetParams['targetStableId'] as String?,
-      ));
+      await _clickTarget(targetParams);
+      focused = true;
+    }
+
+    if (focused) {
       await Future.delayed(const Duration(milliseconds: 150));
     }
 
     await _input.execute(DesktopAction(
       type: 'type',
       text: node.text ?? '',
+    ));
+  }
+
+  Future<void> _clickTarget(Map<String, dynamic> targetParams) {
+    return _input.execute(DesktopAction(
+      type: 'click',
+      x: targetParams['x'] as double?,
+      y: targetParams['y'] as double?,
+      targetStableId: targetParams['targetStableId'] as String?,
     ));
   }
 
@@ -565,29 +752,29 @@ class FlowExecutionService {
 
   Future<void> _executeLaunchApp(DesktopFlowNode node) async {
     final app = node.appName ?? '';
-    if (app.isEmpty) {
-      throw FlowExecutionException('No app name specified');
+    final appPath = node.appPath;
+    if (app.isEmpty && (appPath == null || appPath.isEmpty)) {
+      throw FlowExecutionException('No app specified');
     }
 
-    // Press Win to open Start Menu
-    await _input.execute(const DesktopAction(
-      type: 'hotkey',
-      keys: ['win'],
-    ));
-    await Future.delayed(const Duration(milliseconds: 600));
+    try {
+      await _input.execute(DesktopAction(
+        type: 'launch_app',
+        appName: app,
+        appPath: appPath,
+      ));
+    } catch (e) {
+      if (appPath == null || appPath.isEmpty || app.isEmpty) rethrow;
+      _log.warn(
+        'FlowExec',
+        'Direct app launch failed, falling back to search: $e',
+      );
+      await _input.execute(DesktopAction(
+        type: 'launch_app',
+        appName: app,
+      ));
+    }
 
-    // Type the app name
-    await _input.execute(DesktopAction(
-      type: 'type',
-      text: app,
-    ));
-    await Future.delayed(const Duration(milliseconds: 800));
-
-    // Press Enter to launch
-    await _input.execute(const DesktopAction(
-      type: 'hotkey',
-      keys: ['enter'],
-    ));
     await Future.delayed(const Duration(milliseconds: 500));
   }
 
@@ -612,37 +799,23 @@ class FlowExecutionService {
     ));
   }
 
-  /// For conditional nodes, check if the target element exists
-  /// and return the appropriate branch node.
+  /// For conditional nodes, evaluate the configured condition and return
+  /// the branch target connected to true/false.
   Future<DesktopFlowNode> _resolveConditionalBranch(
     DesktopFlowNode condNode,
     DesktopFlow flow,
   ) async {
     final outEdges = flow.outgoingEdges(condNode.id);
+    final conditionMet = await _evaluateCondition(condNode);
 
-    bool conditionMet = false;
-    try {
-      if (condNode.target != null) {
-        await _resolveTarget(condNode.target);
-        conditionMet = true; // Element exists
-      }
-    } catch (_) {
-      conditionMet = false; // Element not found
-    }
-
-    // Find the "true" or "false" labeled edge, or fall back to order
     DesktopFlowEdge? trueEdge;
     DesktopFlowEdge? falseEdge;
-
     for (final edge in outEdges) {
-      if (edge.label?.toLowerCase() == 'true') {
-        trueEdge = edge;
-      } else if (edge.label?.toLowerCase() == 'false') {
-        falseEdge = edge;
-      }
+      final label = edge.label?.toLowerCase();
+      if (label == 'true' || label == 'success') trueEdge = edge;
+      if (label == 'false' || label == 'failure') falseEdge = edge;
     }
 
-    // Fall back: first edge = true, second = false
     trueEdge ??= outEdges.isNotEmpty ? outEdges.first : null;
     falseEdge ??= outEdges.length > 1 ? outEdges[1] : null;
 
@@ -662,10 +835,52 @@ class FlowExecutionService {
 
     _log.info(
       'FlowExec',
-      'Conditional "${condNode.label}": ${conditionMet ? "TRUE" : "FALSE"} → ${targetNode.label}',
+      'Conditional "${condNode.label}": ${conditionMet ? "TRUE" : "FALSE"} -> ${targetNode.label}',
     );
 
     return targetNode;
+  }
+
+  Future<bool> _evaluateCondition(DesktopFlowNode node) async {
+    final operator = node.conditionOperator ?? node.conditionAttribute ?? 'element_exists';
+    final element = await _findCurrentElement(node.target);
+
+    switch (operator) {
+      case 'element_exists':
+        return element != null;
+      case 'element_missing':
+        return element == null;
+      case 'name_contains':
+        return element != null &&
+            element.name.toLowerCase().contains(_conditionNeedle(node));
+      case 'name_equals':
+        return element != null &&
+            element.name.toLowerCase() == _conditionNeedle(node);
+      case 'value_contains':
+        return element != null &&
+            (element.value ?? '').toLowerCase().contains(_conditionNeedle(node));
+      case 'value_equals':
+        return element != null &&
+            (element.value ?? '').toLowerCase() == _conditionNeedle(node);
+      case 'role_equals':
+        return element != null &&
+            element.role.toLowerCase() == _conditionNeedle(node);
+      case 'class_contains':
+        return element != null &&
+            (element.className ?? '').toLowerCase().contains(
+                  _conditionNeedle(node),
+                );
+      case 'enabled':
+        return element?.isEnabled ?? false;
+      case 'focused':
+        return element?.isFocused ?? false;
+      default:
+        return element != null;
+    }
+  }
+
+  String _conditionNeedle(DesktopFlowNode node) {
+    return (node.conditionValue ?? '').trim().toLowerCase();
   }
 }
 

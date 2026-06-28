@@ -27,6 +27,8 @@ class InputSimulationService {
       'endY': action.endY,
       'path': action.path,
       'text': action.text,
+      'appName': action.appName,
+      'appPath': action.appPath,
       'direction': action.direction,
       'amount': action.amount,
       'keys': action.keys,

@@ -1,4 +1,6 @@
+import 'dart:convert';
 import 'dart:math' as math;
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 
@@ -20,6 +22,13 @@ class FlowBuilderScreen extends StatefulWidget {
 class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
   final TransformationController _transformCtrl = TransformationController();
   String? _draggingNodeId;
+
+  static const double _canvasSize = 20000.0;
+
+  // ── Edge connection drag state ──
+  Offset? _pendingEdgeStart; // Canvas-space start of rubber-band
+  Offset? _pendingEdgeEnd;   // Canvas-space end of rubber-band (follows cursor)
+  String? _pendingEdgeLabel; // "success" or "failure"
 
   @override
   void dispose() {
@@ -213,7 +222,9 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
     // Exclude start and done — they are auto-placed
     final types = DesktopFlowNodeType.values
         .where((t) =>
-            t != DesktopFlowNodeType.start && t != DesktopFlowNodeType.done)
+            t != DesktopFlowNodeType.start &&
+            t != DesktopFlowNodeType.done &&
+            t != DesktopFlowNodeType.hotkey)
         .toList();
 
     return Container(
@@ -246,11 +257,15 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
                 return _PaletteItem(
                   type: type,
                   onTap: () {
-                    // Add node at a reasonable position
+                    final sceneCenter = _transformCtrl.toScene(
+                      const Offset(520, 280),
+                    );
                     final r = math.Random();
-                    final x = 250.0 + r.nextDouble() * 300;
-                    final y = 150.0 + r.nextDouble() * 300;
-                    provider.addNode(type, x, y);
+                    provider.addNode(
+                      type,
+                      sceneCenter.dx + r.nextDouble() * 80,
+                      sceneCenter.dy + r.nextDouble() * 80,
+                    );
                   },
                 );
               },
@@ -272,34 +287,46 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
         provider.selectNode(null);
         provider.cancelConnection();
       },
-      child: Container(
-        color: AppColors.background,
-        child: InteractiveViewer(
-          transformationController: _transformCtrl,
-          boundaryMargin: const EdgeInsets.all(2000),
-          minScale: 0.3,
-          maxScale: 3.0,
-          child: SizedBox(
-            width: 4000,
-            height: 4000,
-            child: CustomPaint(
-              painter: _GridPainter(),
-              child: Stack(
-                children: [
-                  // ── Edges (drawn behind nodes) ──
-                  CustomPaint(
-                    painter: _EdgePainter(
-                      nodes: flow.nodes,
-                      edges: flow.edges,
-                      executingNodeId: provider.executingNodeId,
+      child: ClipRect(
+        child: Container(
+          color: AppColors.background,
+          child: InteractiveViewer(
+            transformationController: _transformCtrl,
+            boundaryMargin: const EdgeInsets.all(100000),
+            constrained: false,
+            clipBehavior: Clip.hardEdge,
+            minScale: 0.3,
+            maxScale: 3.0,
+            child: SizedBox(
+              width: _canvasSize,
+              height: _canvasSize,
+              child: CustomPaint(
+                painter: _GridPainter(),
+                child: Stack(
+                  clipBehavior: Clip.none,
+                  children: [
+                    // ── Edges (drawn behind nodes) ──
+                    CustomPaint(
+                      painter: _EdgePainter(
+                        nodes: flow.nodes,
+                        edges: flow.edges,
+                        executingNodeId: provider.executingNodeId,
+                        pendingEdgeStart: _pendingEdgeStart,
+                        pendingEdgeEnd: _pendingEdgeEnd,
+                        pendingEdgeLabel: _pendingEdgeLabel,
+                      ),
+                      size: const Size(_canvasSize, _canvasSize),
                     ),
-                    size: const Size(4000, 4000),
-                  ),
-                  // ── Nodes ──
-                  ...flow.nodes.map(
-                    (node) => _buildNodeWidget(provider, node),
-                  ),
-                ],
+                    // ── Edge cut targets (between edges and nodes) ──
+                    ...flow.edges.map(
+                      (edge) => _buildEdgeCutTarget(provider, flow, edge),
+                    ),
+                    // ── Nodes ──
+                    ...flow.nodes.map(
+                      (node) => _buildNodeWidget(provider, node),
+                    ),
+                  ],
+                ),
               ),
             ),
           ),
@@ -308,48 +335,260 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
     );
   }
 
+  // Node dimensions (must match _NodeCard / _EdgePainter)
+  static const double _nodeWidth = 170.0;
+  static const double _nodeHeight = 80.0; // approximate min height
+
   Widget _buildNodeWidget(FlowBuilderProvider provider, DesktopFlowNode node) {
     final isSelected = provider.selectedNodeId == node.id;
     final isExecuting = provider.executingNodeId == node.id;
     final isConnecting = provider.connectingFromNodeId != null;
+    final isConnectionSource = provider.connectingFromNodeId == node.id;
 
     return Positioned(
       left: node.x,
       top: node.y,
-      child: GestureDetector(
-        onTap: () {
-          if (isConnecting) {
-            provider.completeConnection(node.id);
-          } else {
-            provider.selectNode(node.id);
-          }
-        },
-        onPanStart: (details) {
-          _draggingNodeId = node.id;
-        },
-        onPanUpdate: (details) {
-          if (_draggingNodeId == node.id) {
-            // Account for canvas scale
-            final scale = _transformCtrl.value.getMaxScaleOnAxis();
-            provider.moveNode(
-              node.id,
-              node.x + details.delta.dx / scale,
-              node.y + details.delta.dy / scale,
-            );
-          }
-        },
-        onPanEnd: (_) => _draggingNodeId = null,
-        child: _NodeCard(
-          node: node,
-          isSelected: isSelected,
-          isExecuting: isExecuting,
-          isConnecting: isConnecting,
-          onConnect: () => provider.startConnecting(node.id),
-          onDelete: node.nodeType != DesktopFlowNodeType.start &&
-                  node.nodeType != DesktopFlowNodeType.done
-              ? () => provider.removeNode(node.id)
-              : null,
+      child: SizedBox(
+        width: _nodeWidth,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // ── Input port (top-center) ──
+            if (node.nodeType != DesktopFlowNodeType.start)
+              GestureDetector(
+                onTap: () {
+                  if (isConnecting) {
+                    provider.completeConnection(node.id);
+                    setState(() {
+                      _pendingEdgeStart = null;
+                      _pendingEdgeEnd = null;
+                      _pendingEdgeLabel = null;
+                    });
+                  }
+                },
+                child: _PortDot(
+                  color: isConnecting && !isConnectionSource
+                      ? AppColors.secondary
+                      : AppColors.textMuted,
+                  isInput: true,
+                  pulsing: isConnecting && !isConnectionSource,
+                ),
+              )
+            else
+              const SizedBox(height: 12),
+
+            // ── The node card body (draggable) ──
+            GestureDetector(
+              onTap: () {
+                if (isConnecting) {
+                  provider.completeConnection(node.id);
+                  setState(() {
+                    _pendingEdgeStart = null;
+                    _pendingEdgeEnd = null;
+                    _pendingEdgeLabel = null;
+                  });
+                } else {
+                  provider.selectNode(node.id);
+                }
+              },
+              onPanStart: (details) {
+                _draggingNodeId = node.id;
+              },
+              onPanUpdate: (details) {
+                if (_draggingNodeId == node.id) {
+                  final scale = _transformCtrl.value.getMaxScaleOnAxis();
+                  provider.moveNode(
+                    node.id,
+                    node.x + details.delta.dx / scale,
+                    node.y + details.delta.dy / scale,
+                  );
+                }
+              },
+              onPanEnd: (_) => _draggingNodeId = null,
+              child: _NodeCard(
+                node: node,
+                isSelected: isSelected,
+                isExecuting: isExecuting,
+                isConnecting: isConnecting,
+                onDelete: node.nodeType != DesktopFlowNodeType.start &&
+                        node.nodeType != DesktopFlowNodeType.done
+                    ? () => provider.removeNode(node.id)
+                    : null,
+              ),
+            ),
+
+            if (node.nodeType != DesktopFlowNodeType.done)
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  _buildOutputPort(
+                    provider: provider,
+                    node: node,
+                    label: node.nodeType == DesktopFlowNodeType.conditional
+                        ? 'true'
+                        : 'success',
+                    color: AppColors.success,
+                    isConnectionSource: isConnectionSource,
+                    portOffsetX: _nodeWidth / 2 - 16,
+                  ),
+                  const SizedBox(width: 8),
+                  _buildOutputPort(
+                    provider: provider,
+                    node: node,
+                    label: node.nodeType == DesktopFlowNodeType.conditional
+                        ? 'false'
+                        : 'failure',
+                    color: AppColors.error,
+                    isConnectionSource: isConnectionSource,
+                    portOffsetX: _nodeWidth / 2 + 16,
+                  ),
+                ],
+              )
+            else
+              const SizedBox(height: 12),
+          ],
         ),
+      ),
+    );
+  }
+
+  /// Build a single output port with drag-to-connect behavior.
+  Widget _buildOutputPort({
+    required FlowBuilderProvider provider,
+    required DesktopFlowNode node,
+    required String label,
+    required Color color,
+    required bool isConnectionSource,
+    required double portOffsetX,
+  }) {
+    return GestureDetector(
+      onPanStart: (_) {
+        provider.startConnecting(node.id, label: label);
+        setState(() {
+          _pendingEdgeStart = Offset(
+            node.x + portOffsetX,
+            node.y + _nodeHeight + 14,
+          );
+          _pendingEdgeEnd = _pendingEdgeStart;
+          _pendingEdgeLabel = label;
+        });
+      },
+      onPanUpdate: (details) {
+        if (_pendingEdgeEnd != null) {
+          final scale = _transformCtrl.value.getMaxScaleOnAxis();
+          setState(() {
+            _pendingEdgeEnd = Offset(
+              _pendingEdgeEnd!.dx + details.delta.dx / scale,
+              _pendingEdgeEnd!.dy + details.delta.dy / scale,
+            );
+          });
+        }
+      },
+      onPanEnd: (_) {
+        if (_pendingEdgeEnd != null && provider.connectingFromNodeId != null) {
+          final flow = provider.currentFlow;
+          if (flow != null) {
+            for (final target in flow.nodes) {
+              if (target.id == node.id) continue;
+              final targetRect = Rect.fromLTWH(
+                target.x - 20, target.y - 20,
+                _nodeWidth + 40, _nodeHeight + 40,
+              );
+              if (targetRect.contains(_pendingEdgeEnd!)) {
+                provider.completeConnection(target.id);
+                break;
+              }
+            }
+          }
+        }
+        provider.cancelConnection();
+        setState(() {
+          _pendingEdgeStart = null;
+          _pendingEdgeEnd = null;
+          _pendingEdgeLabel = null;
+        });
+      },
+      child: Tooltip(
+        message: '$label — drag to connect',
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _PortDot(
+              color: isConnectionSource && provider.connectingEdgeLabel == label
+                  ? color
+                  : color.withValues(alpha: 0.5),
+              isInput: false,
+              pulsing: false,
+            ),
+            Text(
+              _portSymbol(label),
+              style: TextStyle(
+                fontSize: 8,
+                color: color.withValues(alpha: 0.7),
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ═══════════════════════════════════════════════════════
+  bool _isFailureLabel(String? label) {
+    return label == 'failure' || label == 'false';
+  }
+
+  String _portSymbol(String label) {
+    switch (label) {
+      case 'success':
+      case 'true':
+        return String.fromCharCode(0x2713);
+      case 'failure':
+      case 'false':
+        return String.fromCharCode(0x2717);
+      default:
+        return '-';
+    }
+  }
+
+  //  EDGE CUT TARGETS
+  // ═══════════════════════════════════════════════════════
+
+  Widget _buildEdgeCutTarget(
+    FlowBuilderProvider provider,
+    DesktopFlow flow,
+    DesktopFlowEdge edge,
+  ) {
+    final fromNode = flow.findNode(edge.fromNodeId);
+    final toNode = flow.findNode(edge.toNodeId);
+    if (fromNode == null || toNode == null) return const SizedBox.shrink();
+
+    // Calculate midpoint (same logic as EdgePainter)
+    const nodeWidth = 170.0;
+    const nodeHeight = 80.0;
+    final portOffsetX = _isFailureLabel(edge.label)
+        ? nodeWidth / 2 + 16
+        : nodeWidth / 2 - 16;
+
+    final fromX = fromNode.x + portOffsetX;
+    final fromY = fromNode.y + nodeHeight + 14;
+    final toX = toNode.x + nodeWidth / 2;
+    final toY = toNode.y;
+
+    final midX = (fromX + toX) / 2;
+    final midY = (fromY + toY) / 2;
+
+    final edgeColor = _isFailureLabel(edge.label)
+        ? AppColors.error
+        : AppColors.success;
+
+    return Positioned(
+      left: midX - 14,
+      top: midY - 14,
+      child: _EdgeCutButton(
+        color: edgeColor,
+        onCut: () => provider.removeEdge(edge.id),
       ),
     );
   }
@@ -367,50 +606,56 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
         color: AppColors.surface,
         border: Border(left: BorderSide(color: AppColors.border)),
       ),
-      child: SingleChildScrollView(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // Header
-            Row(
-              children: [
-                Icon(
-                  _nodeIcon(node.nodeType),
-                  color: AppColors.accent,
-                  size: 20,
-                ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    node.nodeType.displayName,
-                    style: const TextStyle(
-                      color: AppColors.textPrimary,
-                      fontSize: 16,
-                      fontWeight: FontWeight.w600,
-                    ),
+      child: Column(
+        children: [
+          Expanded(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // Header
+                  Row(
+                    children: [
+                      Icon(
+                        _nodeIcon(node.nodeType),
+                        color: AppColors.accent,
+                        size: 20,
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          node.nodeType.displayName,
+                          style: const TextStyle(
+                            color: AppColors.textPrimary,
+                            fontSize: 16,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 16),
-            const Divider(color: AppColors.divider),
-            const SizedBox(height: 12),
+                  const SizedBox(height: 16),
+                  const Divider(color: AppColors.divider),
+                  const SizedBox(height: 12),
 
-            // Label
-            _configField(
-              'Label',
-              node.label,
-              (val) {
-                node.label = val;
-                provider.updateNode(node);
-              },
-            ),
+                  // Label
+                  _configField(
+                    'Label',
+                    node.label,
+                    (val) {
+                      node.label = val;
+                      provider.updateNode(node);
+                    },
+                  ),
 
-            // Type-specific fields
-            ..._buildTypeSpecificFields(provider, node),
-          ],
-        ),
+                  // Type-specific fields
+                  ..._buildTypeSpecificFields(provider, node),
+                ],
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -429,19 +674,7 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
         break;
 
       case DesktopFlowNodeType.typeText:
-        widgets.add(_buildTargetSection(provider, node));
-        widgets.add(const SizedBox(height: 12));
-        widgets.add(
-          _configField(
-            'Text to type',
-            node.text ?? '',
-            (val) {
-              node.text = val;
-              provider.updateNode(node);
-            },
-            maxLines: 3,
-          ),
-        );
+        widgets.add(_buildTypeTextSection(provider, node));
         break;
 
       case DesktopFlowNodeType.keyboard:
@@ -450,17 +683,7 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
         break;
 
       case DesktopFlowNodeType.launchApp:
-        widgets.add(
-          _configField(
-            'Application name',
-            node.appName ?? '',
-            (val) {
-              node.appName = val;
-              provider.updateNode(node);
-            },
-            hintText: 'e.g. notepad, calculator, chrome',
-          ),
-        );
+        widgets.add(_buildLaunchAppSection(provider, node));
         break;
 
       case DesktopFlowNodeType.delay:
@@ -496,12 +719,7 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
         break;
 
       case DesktopFlowNodeType.conditional:
-        widgets.add(_buildTargetSection(provider, node));
-        widgets.add(const SizedBox(height: 8));
-        widgets.add(const Text(
-          'The flow branches based on whether the target element exists on screen.',
-          style: TextStyle(color: AppColors.textMuted, fontSize: 12),
-        ));
+        widgets.add(_buildConditionalSection(provider, node));
         break;
 
       default:
@@ -511,10 +729,149 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
     return widgets;
   }
 
-  Widget _buildTargetSection(
+  Widget _buildTypeTextSection(
     FlowBuilderProvider provider,
     DesktopFlowNode node,
   ) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SwitchListTile(
+          value: node.autoDetectInput,
+          contentPadding: EdgeInsets.zero,
+          activeColor: AppColors.primary,
+          title: const Text(
+            'Auto detect input field',
+            style: TextStyle(color: AppColors.textPrimary, fontSize: 13),
+          ),
+          onChanged: (value) {
+            node.autoDetectInput = value;
+            provider.updateNode(node);
+          },
+        ),
+        _buildTargetSection(
+          provider,
+          node,
+          title: node.autoDetectInput ? 'LIMIT / FALLBACK AREA' : 'TARGET',
+        ),
+        const SizedBox(height: 12),
+        _configField(
+          'Text to type',
+          node.text ?? '',
+          (val) {
+            node.text = val;
+            provider.updateNode(node);
+          },
+          maxLines: 3,
+        ),
+      ],
+    );
+  }
+
+  Widget _buildLaunchAppSection(
+    FlowBuilderProvider provider,
+    DesktopFlowNode node,
+  ) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: _configField(
+                'Application name',
+                node.appName ?? '',
+                (val) {
+                  node.appName = val;
+                  node.appPath = null;
+                  provider.updateNode(node);
+                },
+                hintText: 'e.g. notepad, calculator, chrome',
+              ),
+            ),
+            const SizedBox(width: 8),
+            Padding(
+              padding: const EdgeInsets.only(bottom: 10),
+              child: IconButton.filledTonal(
+                onPressed: () => _showAppPicker(provider, node),
+                icon: const Icon(Icons.apps, size: 18),
+                tooltip: 'Select installed app',
+              ),
+            ),
+          ],
+        ),
+        if ((node.appPath ?? '').isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 10),
+            child: Text(
+              node.appPath!,
+              style: const TextStyle(color: AppColors.textMuted, fontSize: 11),
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+      ],
+    );
+  }
+
+  Widget _buildConditionalSection(
+    FlowBuilderProvider provider,
+    DesktopFlowNode node,
+  ) {
+    final operator = node.conditionOperator ?? node.conditionAttribute ?? 'element_exists';
+    final needsValue = <String>{
+      'name_contains',
+      'name_equals',
+      'value_contains',
+      'value_equals',
+      'role_equals',
+      'class_contains',
+    }.contains(operator);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _buildDropdown<String>(
+          label: 'Condition',
+          value: operator,
+          items: const [
+            DropdownMenuItem(value: 'element_exists', child: Text('Target exists')),
+            DropdownMenuItem(value: 'element_missing', child: Text('Target missing')),
+            DropdownMenuItem(value: 'name_contains', child: Text('Name contains')),
+            DropdownMenuItem(value: 'name_equals', child: Text('Name equals')),
+            DropdownMenuItem(value: 'value_contains', child: Text('Value contains')),
+            DropdownMenuItem(value: 'value_equals', child: Text('Value equals')),
+            DropdownMenuItem(value: 'role_equals', child: Text('Role equals')),
+            DropdownMenuItem(value: 'class_contains', child: Text('Class contains')),
+            DropdownMenuItem(value: 'enabled', child: Text('Enabled')),
+            DropdownMenuItem(value: 'focused', child: Text('Focused')),
+          ],
+          onChanged: (value) {
+            if (value == null) return;
+            node.conditionOperator = value;
+            node.conditionAttribute = value;
+            provider.updateNode(node);
+          },
+        ),
+        if (needsValue)
+          _configField(
+            'Compare value',
+            node.conditionValue ?? '',
+            (val) {
+              node.conditionValue = val;
+              provider.updateNode(node);
+            },
+          ),
+        _buildTargetSection(provider, node),
+      ],
+    );
+  }
+
+  Widget _buildTargetSection(
+    FlowBuilderProvider provider,
+    DesktopFlowNode node, {
+    String title = 'TARGET',
+  }) {
     final target = node.target;
     final mode = target?.mode ?? UITargetMode.coordinate;
 
@@ -522,9 +879,9 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const SizedBox(height: 8),
-        const Text(
-          'TARGET',
-          style: TextStyle(
+        Text(
+          title,
+          style: const TextStyle(
             color: AppColors.textMuted,
             fontSize: 11,
             fontWeight: FontWeight.w600,
@@ -532,6 +889,15 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
           ),
         ),
         const SizedBox(height: 8),
+        SizedBox(
+          width: double.infinity,
+          child: OutlinedButton.icon(
+            onPressed: () => _selectTargetOnScreen(provider, node),
+            icon: const Icon(Icons.control_camera, size: 16),
+            label: const Text('Select on screen'),
+          ),
+        ),
+        const SizedBox(height: 10),
 
         // Target mode selector
         SegmentedButton<UITargetMode>(
@@ -574,9 +940,11 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
                   'X',
                   (target?.x ?? 0).toInt().toString(),
                   (val) {
-                    node.target = UITargetSelector.coordinate(
+                    node.target = UITargetSelector.region(
                       double.tryParse(val) ?? 0,
                       target?.y ?? 0,
+                      target?.width ?? 0,
+                      target?.height ?? 0,
                     );
                     provider.updateNode(node);
                   },
@@ -589,8 +957,47 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
                   'Y',
                   (target?.y ?? 0).toInt().toString(),
                   (val) {
-                    node.target = UITargetSelector.coordinate(
+                    node.target = UITargetSelector.region(
                       target?.x ?? 0,
+                      double.tryParse(val) ?? 0,
+                      target?.width ?? 0,
+                      target?.height ?? 0,
+                    );
+                    provider.updateNode(node);
+                  },
+                  isNumber: true,
+                ),
+              ),
+            ],
+          ),
+          Row(
+            children: [
+              Expanded(
+                child: _configField(
+                  'W',
+                  (target?.width ?? 0).toInt().toString(),
+                  (val) {
+                    node.target = UITargetSelector.region(
+                      target?.x ?? 0,
+                      target?.y ?? 0,
+                      double.tryParse(val) ?? 0,
+                      target?.height ?? 0,
+                    );
+                    provider.updateNode(node);
+                  },
+                  isNumber: true,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: _configField(
+                  'H',
+                  (target?.height ?? 0).toInt().toString(),
+                  (val) {
+                    node.target = UITargetSelector.region(
+                      target?.x ?? 0,
+                      target?.y ?? 0,
+                      target?.width ?? 0,
                       double.tryParse(val) ?? 0,
                     );
                     provider.updateNode(node);
@@ -923,6 +1330,180 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
   }
 
   // ═══════════════════════════════════════════════════════
+  Future<void> _selectTargetOnScreen(
+    FlowBuilderProvider provider,
+    DesktopFlowNode node,
+  ) async {
+    try {
+      final screen = await provider.captureTargetScreen();
+      final encoded = screen.screenshotBase64;
+      if (!mounted) return;
+      if (encoded == null || encoded.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(screen.screenshotError ?? 'Screenshot unavailable')),
+        );
+        return;
+      }
+
+      final selection = await showDialog<_ScreenTargetSelection>(
+        context: context,
+        builder: (ctx) => _TargetPickerDialog(
+          imageBytes: base64Decode(encoded),
+          imageWidth: screen.screenshotWidth ?? screen.screenWidth,
+          imageHeight: screen.screenshotHeight ?? screen.screenHeight,
+          screenLeft: screen.screenLeft,
+          screenTop: screen.screenTop,
+          screenWidth: screen.screenWidth,
+          screenHeight: screen.screenHeight,
+          initialTarget: node.target,
+        ),
+      );
+
+      if (selection == null || !mounted) return;
+      node.target = selection.hasArea
+          ? UITargetSelector.region(
+              selection.x,
+              selection.y,
+              selection.width,
+              selection.height,
+            )
+          : UITargetSelector.coordinate(selection.x, selection.y);
+      provider.updateNode(node);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Target capture failed: $e')),
+      );
+    }
+  }
+
+  Future<void> _showAppPicker(
+    FlowBuilderProvider provider,
+    DesktopFlowNode node,
+  ) async {
+    await provider.loadAvailableApps();
+    if (!mounted) return;
+
+    final searchCtrl = TextEditingController();
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) {
+          final query = searchCtrl.text.trim().toLowerCase();
+          final apps = provider.availableApps.where((app) {
+            if (query.isEmpty) return true;
+            return app.name.toLowerCase().contains(query) ||
+                app.path.toLowerCase().contains(query);
+          }).take(250).toList();
+
+          return AlertDialog(
+            backgroundColor: AppColors.surface,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(14),
+              side: const BorderSide(color: AppColors.border),
+            ),
+            title: const Text(
+              'Select App',
+              style: TextStyle(color: AppColors.textPrimary),
+            ),
+            content: SizedBox(
+              width: 520,
+              height: 520,
+              child: Column(
+                children: [
+                  TextField(
+                    controller: searchCtrl,
+                    autofocus: true,
+                    style: const TextStyle(color: AppColors.textPrimary),
+                    decoration: _inputDecoration(
+                      label: 'Search apps',
+                      hintText: 'Type app name',
+                    ),
+                    onChanged: (_) => setDialogState(() {}),
+                  ),
+                  const SizedBox(height: 12),
+                  if (provider.appLoadError != null)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: Text(
+                        provider.appLoadError!,
+                        style: const TextStyle(color: AppColors.error, fontSize: 12),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  Expanded(
+                    child: apps.isEmpty
+                        ? const Center(
+                            child: Text(
+                              'No apps found',
+                              style: TextStyle(color: AppColors.textMuted),
+                            ),
+                          )
+                        : ListView.separated(
+                            itemCount: apps.length,
+                            separatorBuilder: (_, __) => const Divider(
+                              color: AppColors.divider,
+                              height: 1,
+                            ),
+                            itemBuilder: (context, index) {
+                              final app = apps[index];
+                              return ListTile(
+                                dense: true,
+                                leading: const Icon(
+                                  Icons.apps,
+                                  color: AppColors.success,
+                                ),
+                                title: Text(
+                                  app.name,
+                                  style: const TextStyle(
+                                    color: AppColors.textPrimary,
+                                    fontSize: 13,
+                                  ),
+                                ),
+                                subtitle: Text(
+                                  app.path,
+                                  style: const TextStyle(
+                                    color: AppColors.textMuted,
+                                    fontSize: 11,
+                                  ),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                                onTap: () {
+                                  node.appName = app.name;
+                                  node.appPath = app.path;
+                                  provider.updateNode(node);
+                                  Navigator.pop(ctx);
+                                },
+                              );
+                            },
+                          ),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () async {
+                  await provider.loadAvailableApps(force: true);
+                  setDialogState(() {});
+                },
+                child: const Text('Refresh'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('Close'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+    searchCtrl.dispose();
+  }
+
+
   //  EXECUTION LOG
   // ═══════════════════════════════════════════════════════
 
@@ -1159,37 +1740,63 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
   }) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 10),
-      child: TextFormField(
+      child: _ConfigTextField(
+        label: label,
         initialValue: initialValue,
-        style: const TextStyle(color: AppColors.textPrimary, fontSize: 13),
+        onChanged: onChanged,
+        hintText: hintText,
+        isNumber: isNumber,
         maxLines: maxLines,
-        keyboardType: isNumber ? TextInputType.number : TextInputType.text,
-        decoration: InputDecoration(
-          labelText: label,
-          labelStyle: const TextStyle(color: AppColors.textSecondary),
-          hintText: hintText,
-          hintStyle: const TextStyle(color: AppColors.textMuted),
-          filled: true,
-          fillColor: AppColors.surfaceVariant,
-          contentPadding:
-              const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-          border: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(8),
-            borderSide: const BorderSide(color: AppColors.border),
-          ),
-          enabledBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(8),
-            borderSide: const BorderSide(color: AppColors.border),
-          ),
-          focusedBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(8),
-            borderSide: const BorderSide(color: AppColors.primary),
-          ),
-        ),
+      ),
+    );
+  }
+
+  Widget _buildDropdown<T>({
+    required String label,
+    required T value,
+    required List<DropdownMenuItem<T>> items,
+    required ValueChanged<T?> onChanged,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: DropdownButtonFormField<T>(
+        value: value,
+        dropdownColor: AppColors.surfaceElevated,
+        style: const TextStyle(color: AppColors.textPrimary, fontSize: 13),
+        decoration: _inputDecoration(label: label),
+        items: items,
         onChanged: onChanged,
       ),
     );
   }
+
+  InputDecoration _inputDecoration({
+    required String label,
+    String? hintText,
+  }) {
+    return InputDecoration(
+      labelText: label,
+      labelStyle: const TextStyle(color: AppColors.textSecondary),
+      hintText: hintText,
+      hintStyle: const TextStyle(color: AppColors.textMuted),
+      filled: true,
+      fillColor: AppColors.surfaceVariant,
+      contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      border: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(8),
+        borderSide: const BorderSide(color: AppColors.border),
+      ),
+      enabledBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(8),
+        borderSide: const BorderSide(color: AppColors.border),
+      ),
+      focusedBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(8),
+        borderSide: const BorderSide(color: AppColors.primary),
+      ),
+    );
+  }
+
 
   IconData _nodeIcon(DesktopFlowNodeType type) {
     switch (type) {
@@ -1224,6 +1831,303 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
     }
   }
 }
+
+class _ConfigTextField extends StatefulWidget {
+  final String label;
+  final String initialValue;
+  final ValueChanged<String> onChanged;
+  final String? hintText;
+  final bool isNumber;
+  final int maxLines;
+
+  const _ConfigTextField({
+    required this.label,
+    required this.initialValue,
+    required this.onChanged,
+    this.hintText,
+    this.isNumber = false,
+    this.maxLines = 1,
+  });
+
+  @override
+  State<_ConfigTextField> createState() => _ConfigTextFieldState();
+}
+
+class _ConfigTextFieldState extends State<_ConfigTextField> {
+  late final TextEditingController _controller;
+  late final FocusNode _focusNode;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController(text: widget.initialValue);
+    _focusNode = FocusNode();
+  }
+
+  @override
+  void didUpdateWidget(covariant _ConfigTextField oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.initialValue != _controller.text && !_focusNode.hasFocus) {
+      _controller.text = widget.initialValue;
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    _focusNode.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return TextFormField(
+      controller: _controller,
+      focusNode: _focusNode,
+      style: const TextStyle(color: AppColors.textPrimary, fontSize: 13),
+      maxLines: widget.maxLines,
+      keyboardType: widget.isNumber ? TextInputType.number : TextInputType.text,
+      decoration: InputDecoration(
+        labelText: widget.label,
+        labelStyle: const TextStyle(color: AppColors.textSecondary),
+        hintText: widget.hintText,
+        hintStyle: const TextStyle(color: AppColors.textMuted),
+        filled: true,
+        fillColor: AppColors.surfaceVariant,
+        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(8),
+          borderSide: const BorderSide(color: AppColors.border),
+        ),
+        enabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(8),
+          borderSide: const BorderSide(color: AppColors.border),
+        ),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(8),
+          borderSide: const BorderSide(color: AppColors.primary),
+        ),
+      ),
+      onChanged: widget.onChanged,
+    );
+  }
+}
+
+class _ScreenTargetSelection {
+  final double x;
+  final double y;
+  final double width;
+  final double height;
+
+  const _ScreenTargetSelection({
+    required this.x,
+    required this.y,
+    required this.width,
+    required this.height,
+  });
+
+  bool get hasArea => width > 3 && height > 3;
+}
+
+class _TargetPickerDialog extends StatefulWidget {
+  final Uint8List imageBytes;
+  final int imageWidth;
+  final int imageHeight;
+  final int screenLeft;
+  final int screenTop;
+  final int screenWidth;
+  final int screenHeight;
+  final UITargetSelector? initialTarget;
+
+  const _TargetPickerDialog({
+    required this.imageBytes,
+    required this.imageWidth,
+    required this.imageHeight,
+    required this.screenLeft,
+    required this.screenTop,
+    required this.screenWidth,
+    required this.screenHeight,
+    this.initialTarget,
+  });
+
+  @override
+  State<_TargetPickerDialog> createState() => _TargetPickerDialogState();
+}
+
+class _TargetPickerDialogState extends State<_TargetPickerDialog> {
+  Offset? _start;
+  Offset? _end;
+
+  @override
+  void initState() {
+    super.initState();
+    final target = widget.initialTarget;
+    if (target?.mode == UITargetMode.coordinate && target?.x != null && target?.y != null) {
+      final x = _screenToImageX(target!.x!);
+      final y = _screenToImageY(target.y!);
+      _start = Offset(x, y);
+      _end = target.hasRegion
+          ? Offset(_screenToImageX(target.x! + target.width!), _screenToImageY(target.y! + target.height!))
+          : _start;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      backgroundColor: AppColors.surface,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(14),
+        side: const BorderSide(color: AppColors.border),
+      ),
+      title: const Text(
+        'Select Target',
+        style: TextStyle(color: AppColors.textPrimary),
+      ),
+      content: SizedBox(
+        width: 920,
+        height: 620,
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final scale = math.min(
+              constraints.maxWidth / widget.imageWidth,
+              constraints.maxHeight / widget.imageHeight,
+            );
+            final displayWidth = widget.imageWidth * scale;
+            final displayHeight = widget.imageHeight * scale;
+            final left = (constraints.maxWidth - displayWidth) / 2;
+            final top = (constraints.maxHeight - displayHeight) / 2;
+            final imageRect = Rect.fromLTWH(left, top, displayWidth, displayHeight);
+            final selectionRect = _selectionDisplayRect(imageRect, scale);
+
+            return GestureDetector(
+              onTapDown: (details) => _setPoint(details.localPosition, imageRect, scale),
+              onPanStart: (details) => _setPoint(details.localPosition, imageRect, scale),
+              onPanUpdate: (details) => _setEnd(details.localPosition, imageRect, scale),
+              child: MouseRegion(
+                cursor: SystemMouseCursors.precise,
+                child: Stack(
+                  children: [
+                    Positioned.fromRect(
+                      rect: imageRect,
+                      child: Image.memory(widget.imageBytes, fit: BoxFit.fill),
+                    ),
+                    if (selectionRect != null)
+                      Positioned.fromRect(
+                        rect: selectionRect,
+                        child: IgnorePointer(
+                          child: DecoratedBox(
+                            decoration: BoxDecoration(
+                              color: AppColors.primary.withValues(alpha: 0.16),
+                              border: Border.all(color: AppColors.primary, width: 2),
+                            ),
+                          ),
+                        ),
+                      ),
+                    if (_start != null && (_end == null || (_start! - _end!).distance <= 3))
+                      Positioned(
+                        left: imageRect.left + _start!.dx * scale - 8,
+                        top: imageRect.top + _start!.dy * scale - 8,
+                        child: IgnorePointer(
+                          child: Container(
+                            width: 16,
+                            height: 16,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              color: AppColors.primary.withValues(alpha: 0.25),
+                              border: Border.all(color: AppColors.primary, width: 2),
+                            ),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            );
+          },
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: _start == null ? null : () => Navigator.pop(context, _buildSelection()),
+          child: const Text('Save Target'),
+        ),
+      ],
+    );
+  }
+
+  Rect? _selectionDisplayRect(Rect imageRect, double scale) {
+    if (_start == null || _end == null || (_start! - _end!).distance <= 3) return null;
+    final rect = Rect.fromPoints(_start!, _end!);
+    return Rect.fromLTWH(
+      imageRect.left + rect.left * scale,
+      imageRect.top + rect.top * scale,
+      rect.width * scale,
+      rect.height * scale,
+    );
+  }
+
+  void _setPoint(Offset local, Rect imageRect, double scale) {
+    if (!imageRect.contains(local)) return;
+    final point = _displayToImage(local, imageRect, scale);
+    setState(() {
+      _start = point;
+      _end = point;
+    });
+  }
+
+  void _setEnd(Offset local, Rect imageRect, double scale) {
+    if (_start == null) return;
+    setState(() => _end = _displayToImage(local, imageRect, scale));
+  }
+
+  Offset _displayToImage(Offset local, Rect imageRect, double scale) {
+    final x = ((local.dx - imageRect.left) / scale).clamp(0, widget.imageWidth.toDouble()).toDouble();
+    final y = ((local.dy - imageRect.top) / scale).clamp(0, widget.imageHeight.toDouble()).toDouble();
+    return Offset(x, y);
+  }
+
+  _ScreenTargetSelection _buildSelection() {
+    final start = _start!;
+    final end = _end ?? _start!;
+    final imageRect = Rect.fromPoints(start, end);
+    if (imageRect.width <= 3 || imageRect.height <= 3) {
+      return _ScreenTargetSelection(
+        x: _imageToScreenX(start.dx),
+        y: _imageToScreenY(start.dy),
+        width: 0,
+        height: 0,
+      );
+    }
+    return _ScreenTargetSelection(
+      x: _imageToScreenX(imageRect.left),
+      y: _imageToScreenY(imageRect.top),
+      width: imageRect.width * widget.screenWidth / widget.imageWidth,
+      height: imageRect.height * widget.screenHeight / widget.imageHeight,
+    );
+  }
+
+  double _imageToScreenX(double x) {
+    return widget.screenLeft + x * widget.screenWidth / widget.imageWidth;
+  }
+
+  double _imageToScreenY(double y) {
+    return widget.screenTop + y * widget.screenHeight / widget.imageHeight;
+  }
+
+  double _screenToImageX(double x) {
+    return (x - widget.screenLeft) * widget.imageWidth / widget.screenWidth;
+  }
+
+  double _screenToImageY(double y) {
+    return (y - widget.screenTop) * widget.imageHeight / widget.screenHeight;
+  }
+}
+
 
 // ═══════════════════════════════════════════════════════════════════
 //  PALETTE ITEM
@@ -1336,7 +2240,6 @@ class _NodeCard extends StatelessWidget {
   final bool isSelected;
   final bool isExecuting;
   final bool isConnecting;
-  final VoidCallback onConnect;
   final VoidCallback? onDelete;
 
   const _NodeCard({
@@ -1344,7 +2247,6 @@ class _NodeCard extends StatelessWidget {
     required this.isSelected,
     required this.isExecuting,
     required this.isConnecting,
-    required this.onConnect,
     this.onDelete,
   });
 
@@ -1430,28 +2332,7 @@ class _NodeCard extends StatelessWidget {
             ),
           ),
 
-          // Connect button
-          const SizedBox(height: 6),
-          Align(
-            alignment: Alignment.centerRight,
-            child: InkWell(
-              onTap: onConnect,
-              borderRadius: BorderRadius.circular(10),
-              child: Container(
-                padding: const EdgeInsets.all(3),
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: AppColors.surfaceVariant,
-                  border: Border.all(color: AppColors.border),
-                ),
-                child: const Icon(
-                  Icons.arrow_forward,
-                  size: 10,
-                  color: AppColors.textMuted,
-                ),
-              ),
-            ),
-          ),
+
         ],
       ),
     );
@@ -1552,101 +2433,162 @@ class _EdgePainter extends CustomPainter {
   final List<DesktopFlowNode> nodes;
   final List<DesktopFlowEdge> edges;
   final String? executingNodeId;
+  final Offset? pendingEdgeStart;
+  final Offset? pendingEdgeEnd;
+  final String? pendingEdgeLabel;
 
   _EdgePainter({
     required this.nodes,
     required this.edges,
     this.executingNodeId,
+    this.pendingEdgeStart,
+    this.pendingEdgeEnd,
+    this.pendingEdgeLabel,
   });
 
   @override
   void paint(Canvas canvas, Size size) {
+    const nodeWidth = 170.0;
+    const nodeHeight = 80.0;
+    // Port X offsets (must match _buildOutputPort portOffsetX)
+    const successPortOffsetX = nodeWidth / 2 - 16;
+    const failurePortOffsetX = nodeWidth / 2 + 16;
+
     for (final edge in edges) {
       final fromNode = _findNode(edge.fromNodeId);
       final toNode = _findNode(edge.toNodeId);
       if (fromNode == null || toNode == null) continue;
 
-      // Calculate connection points (right side of from, left side of to)
-      const nodeWidth = 170.0;
-      const nodeHeight = 70.0;
+      // Choose start X based on edge label
+      final portOffsetX = _isFailureLabel(edge.label)
+          ? failurePortOffsetX
+          : successPortOffsetX;
 
       final from = Offset(
-        fromNode.x + nodeWidth,
-        fromNode.y + nodeHeight / 2,
+        fromNode.x + portOffsetX,
+        fromNode.y + nodeHeight + 14,
       );
-      final to = Offset(toNode.x, toNode.y + nodeHeight / 2);
+      final to = Offset(
+        toNode.x + nodeWidth / 2,
+        toNode.y, // above input port
+      );
 
-      // Determine color
-      Color edgeColor = AppColors.textMuted.withValues(alpha: 0.4);
-      if (executingNodeId != null) {
-        if (edge.toNodeId == executingNodeId) {
-          edgeColor = AppColors.warning;
-        }
+      // Color by label
+      Color edgeColor;
+      if (executingNodeId != null && edge.toNodeId == executingNodeId) {
+        edgeColor = AppColors.warning;
+      } else if (_isFailureLabel(edge.label)) {
+        edgeColor = AppColors.error.withValues(alpha: 0.7);
+      } else {
+        edgeColor = AppColors.success.withValues(alpha: 0.7);
       }
 
-      final paint = Paint()
-        ..color = edgeColor
-        ..strokeWidth = 2
-        ..style = PaintingStyle.stroke;
+      _drawBezierEdge(canvas, from, to, edgeColor);
 
-      // Draw Bézier curve
-      final dx = (to.dx - from.dx).abs() * 0.5;
-      final path = Path()
-        ..moveTo(from.dx, from.dy)
-        ..cubicTo(
-          from.dx + dx,
-          from.dy,
-          to.dx - dx,
-          to.dy,
-          to.dx,
-          to.dy,
-        );
-
-      canvas.drawPath(path, paint);
-
-      // Draw arrowhead
-      final arrowPaint = Paint()
-        ..color = edgeColor
-        ..style = PaintingStyle.fill;
-
-      final angle = math.atan2(to.dy - from.dy, to.dx - from.dx);
-      const arrowSize = 8.0;
-
-      final arrowPath = Path()
-        ..moveTo(to.dx, to.dy)
-        ..lineTo(
-          to.dx - arrowSize * math.cos(angle - 0.5),
-          to.dy - arrowSize * math.sin(angle - 0.5),
-        )
-        ..lineTo(
-          to.dx - arrowSize * math.cos(angle + 0.5),
-          to.dy - arrowSize * math.sin(angle + 0.5),
-        )
-        ..close();
-
-      canvas.drawPath(arrowPath, arrowPaint);
-
-      // Draw edge label if present
+      // Draw label on the midpoint
       if (edge.label != null && edge.label!.isNotEmpty) {
         final midX = (from.dx + to.dx) / 2;
         final midY = (from.dy + to.dy) / 2;
         final textPainter = TextPainter(
           text: TextSpan(
-            text: edge.label,
+            text: _edgeSymbol(edge.label),
             style: TextStyle(
-              color: AppColors.textMuted,
-              fontSize: 10,
-              fontWeight: FontWeight.w500,
+              color: edgeColor,
+              fontSize: 12,
+              fontWeight: FontWeight.bold,
             ),
           ),
           textDirection: TextDirection.ltr,
         )..layout();
+        // Draw a small background pill
+        final bgRect = RRect.fromRectAndRadius(
+          Rect.fromCenter(
+            center: Offset(midX, midY),
+            width: textPainter.width + 8,
+            height: textPainter.height + 4,
+          ),
+          const Radius.circular(4),
+        );
+        canvas.drawRRect(
+          bgRect,
+          Paint()..color = AppColors.surface.withValues(alpha: 0.9),
+        );
         textPainter.paint(
           canvas,
-          Offset(midX - textPainter.width / 2, midY - textPainter.height - 4),
+          Offset(midX - textPainter.width / 2, midY - textPainter.height / 2),
         );
       }
     }
+
+    // Draw rubber-band (pending) edge
+    if (pendingEdgeStart != null && pendingEdgeEnd != null) {
+      final rubberColor = _isFailureLabel(pendingEdgeLabel)
+          ? AppColors.error.withValues(alpha: 0.6)
+          : AppColors.success.withValues(alpha: 0.6);
+      _drawBezierEdge(
+        canvas,
+        pendingEdgeStart!,
+        pendingEdgeEnd!,
+        rubberColor,
+        isDashed: true,
+      );
+    }
+  }
+
+  void _drawBezierEdge(
+    Canvas canvas,
+    Offset from,
+    Offset to,
+    Color color, {
+    bool isDashed = false,
+  }) {
+    final paint = Paint()
+      ..color = color
+      ..strokeWidth = 2
+      ..style = PaintingStyle.stroke;
+
+    // Vertical Bézier — control points offset vertically
+    final dy = (to.dy - from.dy).abs() * 0.5;
+    final path = Path()
+      ..moveTo(from.dx, from.dy)
+      ..cubicTo(
+        from.dx,
+        from.dy + dy,
+        to.dx,
+        to.dy - dy,
+        to.dx,
+        to.dy,
+      );
+
+    canvas.drawPath(path, paint);
+
+    // Arrowhead
+    final arrowPaint = Paint()
+      ..color = color
+      ..style = PaintingStyle.fill;
+
+    const arrowSize = 8.0;
+    final arrowPath = Path()
+      ..moveTo(to.dx, to.dy)
+      ..lineTo(to.dx - arrowSize * 0.5, to.dy - arrowSize)
+      ..lineTo(to.dx + arrowSize * 0.5, to.dy - arrowSize)
+      ..close();
+
+    canvas.drawPath(arrowPath, arrowPaint);
+  }
+
+  bool _isFailureLabel(String? label) {
+    return label == 'failure' || label == 'false';
+  }
+
+  String _edgeSymbol(String? label) {
+    if (label == 'success' || label == 'true') {
+      return String.fromCharCode(0x2713);
+    }
+    if (label == 'failure' || label == 'false') {
+      return String.fromCharCode(0x2717);
+    }
+    return '';
   }
 
   DesktopFlowNode? _findNode(String id) {
@@ -1659,4 +2601,105 @@ class _EdgePainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _EdgePainter oldDelegate) => true;
+}
+
+// ═════════════════════════════════════════════════════════════════
+//  PORT DOT (input/output connection point)
+// ═════════════════════════════════════════════════════════════════
+
+class _PortDot extends StatelessWidget {
+  final Color color;
+  final bool isInput;
+  final bool pulsing;
+
+  const _PortDot({
+    required this.color,
+    required this.isInput,
+    required this.pulsing,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: isInput ? 'Drop here to connect' : 'Drag to connect',
+      child: MouseRegion(
+        cursor: SystemMouseCursors.grab,
+        child: Container(
+          width: 14,
+          height: 14,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: color.withValues(alpha: 0.2),
+            border: Border.all(color: color, width: 2),
+            boxShadow: pulsing
+                ? [
+                    BoxShadow(
+                      color: color.withValues(alpha: 0.4),
+                      blurRadius: 8,
+                      spreadRadius: 2,
+                    ),
+                  ]
+                : null,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ═════════════════════════════════════════════════════════════════
+//  EDGE CUT BUTTON (hover-reveal scissors at edge midpoint)
+// ═════════════════════════════════════════════════════════════════
+
+class _EdgeCutButton extends StatefulWidget {
+  final Color color;
+  final VoidCallback onCut;
+
+  const _EdgeCutButton({required this.color, required this.onCut});
+
+  @override
+  State<_EdgeCutButton> createState() => _EdgeCutButtonState();
+}
+
+class _EdgeCutButtonState extends State<_EdgeCutButton> {
+  bool _hovered = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return MouseRegion(
+      onEnter: (_) => setState(() => _hovered = true),
+      onExit: (_) => setState(() => _hovered = false),
+      cursor: SystemMouseCursors.click,
+      child: GestureDetector(
+        onTap: widget.onCut,
+        child: AnimatedOpacity(
+          opacity: _hovered ? 1.0 : 0.0,
+          duration: const Duration(milliseconds: 150),
+          child: Container(
+            width: 28,
+            height: 28,
+            decoration: BoxDecoration(
+              color: AppColors.surface,
+              shape: BoxShape.circle,
+              border: Border.all(
+                color: widget.color.withValues(alpha: 0.6),
+                width: 1.5,
+              ),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.3),
+                  blurRadius: 4,
+                ),
+              ],
+            ),
+            child: Icon(
+              Icons.content_cut,
+              size: 14,
+              color: widget.color,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }

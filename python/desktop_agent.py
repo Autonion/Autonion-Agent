@@ -1,10 +1,13 @@
 import sys
+import os
 import json
 import base64
 import time
 import io
 import hashlib
 import ctypes
+import subprocess
+from pathlib import Path
 from ctypes import wintypes
 
 import uiautomation as auto
@@ -53,6 +56,8 @@ class DesktopAgent:
                     self.handle_get_screen_state(command)
                 elif action == "execute_action":
                     self.handle_execute_action(command)
+                elif action == "list_apps":
+                    self.handle_list_apps(command)
                 else:
                     self.send_response(cmd_id, success=False, error=f"Unknown action: {action}")
             except Exception as exc:
@@ -102,6 +107,10 @@ class DesktopAgent:
         }
         self.send_response(command.get("id"), success=True, data=data)
 
+    def handle_list_apps(self, command):
+        apps = self._list_installed_apps()
+        self.send_response(command.get("id"), success=True, data={"apps": apps})
+
     def handle_execute_action(self, command):
         payload = command.get("payload", {})
         action_type = payload.get("type")
@@ -129,6 +138,8 @@ class DesktopAgent:
                 if not keys:
                     raise ValueError("hotkey requires keys")
                 pyautogui.hotkey(*[str(k).lower() for k in keys])
+            elif action_type == "launch_app":
+                self._launch_app(payload)
             elif action_type == "done":
                 eprint("Agent indicates task is complete.")
             else:
@@ -145,6 +156,148 @@ class DesktopAgent:
         except Exception as exc:
             eprint(f"Action execution error: {exc}")
             self.send_response(command.get("id"), success=False, error=str(exc))
+
+    def _list_installed_apps(self):
+        if sys.platform == "win32":
+            return self._list_windows_apps()
+        if sys.platform == "darwin":
+            return self._list_macos_apps()
+        return self._list_linux_apps()
+
+    def _list_windows_apps(self):
+        roots = []
+        appdata = os.environ.get("APPDATA")
+        programdata = os.environ.get("PROGRAMDATA")
+        public = os.environ.get("PUBLIC")
+        if appdata:
+            roots.append(Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs")
+        if programdata:
+            roots.append(Path(programdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs")
+        roots.append(Path.home() / "Desktop")
+        if public:
+            roots.append(Path(public) / "Desktop")
+
+        apps = []
+        seen = set()
+        allowed = {".lnk", ".exe", ".bat", ".cmd", ".appref-ms", ".url"}
+        blocked_words = ("uninstall", "readme", "help", "documentation")
+        for root in roots:
+            if not root.exists():
+                continue
+            try:
+                candidates = root.rglob("*")
+            except Exception:
+                continue
+            for path in candidates:
+                try:
+                    if not path.is_file() or path.suffix.lower() not in allowed:
+                        continue
+                    name = path.stem.strip()
+                    if not name or name.lower().startswith(blocked_words):
+                        continue
+                    key = (name.lower(), str(path).lower())
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    apps.append({
+                        "name": name,
+                        "path": str(path),
+                        "source": "startMenu" if "Start Menu" in str(path) else "desktop",
+                    })
+                except Exception:
+                    continue
+
+        apps.sort(key=lambda item: item["name"].lower())
+        return apps[:750]
+
+    def _list_macos_apps(self):
+        apps = []
+        seen = set()
+        for root in (Path("/Applications"), Path.home() / "Applications"):
+            if not root.exists():
+                continue
+            for path in root.glob("*.app"):
+                name = path.stem.strip()
+                key = str(path).lower()
+                if name and key not in seen:
+                    seen.add(key)
+                    apps.append({"name": name, "path": str(path), "source": "applications"})
+        apps.sort(key=lambda item: item["name"].lower())
+        return apps
+
+    def _list_linux_apps(self):
+        apps = []
+        seen = set()
+        roots = [Path("/usr/share/applications"), Path.home() / ".local" / "share" / "applications"]
+        for root in roots:
+            if not root.exists():
+                continue
+            for path in root.glob("*.desktop"):
+                try:
+                    parsed = self._parse_desktop_file(path)
+                    name = parsed.get("Name") or path.stem
+                    exec_cmd = parsed.get("Exec") or str(path)
+                    key = name.lower()
+                    if name and key not in seen:
+                        seen.add(key)
+                        apps.append({"name": name, "path": exec_cmd, "source": "desktopFile"})
+                except Exception:
+                    continue
+        apps.sort(key=lambda item: item["name"].lower())
+        return apps
+
+    def _parse_desktop_file(self, path):
+        data = {}
+        for raw_line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            if key in ("Name", "Exec") and key not in data:
+                data[key] = value.strip()
+        return data
+
+    def _launch_app(self, payload):
+        app_path = str(payload.get("appPath") or payload.get("path") or "").strip()
+        app_name = str(payload.get("appName") or payload.get("text") or "").strip()
+
+        if app_path:
+            self._launch_path(app_path)
+            return
+        if app_name:
+            self._launch_by_search(app_name)
+            return
+        raise ValueError("launch_app requires appPath or appName")
+
+    def _launch_path(self, app_path):
+        if sys.platform == "win32":
+            os.startfile(app_path)  # noqa: S606 - user-selected local shortcut/path
+            return
+        if sys.platform == "darwin":
+            subprocess.Popen(["open", app_path])
+            return
+        command = app_path
+        if app_path.endswith(".desktop") and Path(app_path).exists():
+            command = self._parse_desktop_file(Path(app_path)).get("Exec") or app_path
+        command = self._clean_desktop_exec(command)
+        subprocess.Popen(command, shell=True)
+
+    def _launch_by_search(self, app_name):
+        if sys.platform == "darwin":
+            pyautogui.hotkey("command", "space")
+        elif sys.platform == "win32":
+            pyautogui.hotkey("win")
+        else:
+            pyautogui.hotkey("alt", "f2")
+        time.sleep(0.4)
+        self._type_text(app_name)
+        time.sleep(0.4)
+        pyautogui.hotkey("enter")
+
+    def _clean_desktop_exec(self, command):
+        for token in ("%f", "%F", "%u", "%U", "%i", "%c", "%k"):
+            command = command.replace(token, "")
+        return command.strip()
 
     def _get_accessibility_tree(self):
         """Walk the UIA tree and return actionable elements safely."""

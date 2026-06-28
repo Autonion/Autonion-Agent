@@ -39,7 +39,7 @@ enum DesktopFlowNodeType {
       case DesktopFlowNodeType.keyboard:
         return 'Keyboard';
       case DesktopFlowNodeType.hotkey:
-        return 'Hotkey';
+        return 'Keyboard';
       case DesktopFlowNodeType.launchApp:
         return 'Launch App';
       case DesktopFlowNodeType.delay:
@@ -185,6 +185,8 @@ class UITargetSelector {
   // ── Coordinate mode ──
   final double? x;
   final double? y;
+  final double? width;
+  final double? height;
 
   // ── StableId mode ──
   final String? stableId;
@@ -200,6 +202,8 @@ class UITargetSelector {
     required this.mode,
     this.x,
     this.y,
+    this.width,
+    this.height,
     this.stableId,
     this.automationId,
     this.className,
@@ -211,6 +215,21 @@ class UITargetSelector {
   /// A coordinate-based target.
   factory UITargetSelector.coordinate(double x, double y) =>
       UITargetSelector(mode: UITargetMode.coordinate, x: x, y: y);
+
+  /// A coordinate-based target region.
+  factory UITargetSelector.region(
+    double x,
+    double y,
+    double width,
+    double height,
+  ) =>
+      UITargetSelector(
+        mode: UITargetMode.coordinate,
+        x: x,
+        y: y,
+        width: width,
+        height: height,
+      );
 
   /// A stable-ID-based target.
   factory UITargetSelector.fromStableId(String stableId) =>
@@ -241,6 +260,8 @@ class UITargetSelector {
       ),
       x: _asDouble(json['x']),
       y: _asDouble(json['y']),
+      width: _asDouble(json['width']),
+      height: _asDouble(json['height']),
       stableId: json['stableId'] as String?,
       automationId: json['automationId'] as String?,
       className: json['className'] as String?,
@@ -254,6 +275,8 @@ class UITargetSelector {
     'mode': mode.name,
     if (x != null) 'x': x,
     if (y != null) 'y': y,
+    if (width != null) 'width': width,
+    if (height != null) 'height': height,
     if (stableId != null) 'stableId': stableId,
     if (automationId != null) 'automationId': automationId,
     if (className != null) 'className': className,
@@ -266,7 +289,10 @@ class UITargetSelector {
   String get summary {
     switch (mode) {
       case UITargetMode.coordinate:
-        return '(${x?.toInt()}, ${y?.toInt()})';
+        if ((width ?? 0) > 0 && (height ?? 0) > 0) {
+          return 'Area (${x?.toInt()}, ${y?.toInt()}) ${width!.toInt()}x${height!.toInt()}';
+        }
+        return 'Point (${x?.toInt()}, ${y?.toInt()})';
       case UITargetMode.stableId:
         return stableId ?? '—';
       case UITargetMode.uiaAttribute:
@@ -289,9 +315,13 @@ class UITargetSelector {
     if (value is num) return value.toDouble();
     return null;
   }
+
+  bool get hasRegion => (width ?? 0) > 0 && (height ?? 0) > 0;
+  double? get centerX => x == null ? null : x! + ((width ?? 0) / 2);
+  double? get centerY => y == null ? null : y! + ((height ?? 0) / 2);
 }
 
-// ═══════════════════════════════════════════════════════════════════
+// -------------------------------------------------------------------
 //  KEYBOARD NODE CONFIG
 // ═══════════════════════════════════════════════════════════════════
 
@@ -515,11 +545,15 @@ class DesktopFlowNode {
   /// For typeText: the text to type.
   String? text;
 
+  /// For typeText: first try to focus an editable UIA field automatically.
+  bool autoDetectInput;
+
   /// For keyboard / hotkey nodes.
   KeyboardNodeConfig? keyboardConfig;
 
   /// For launchApp: the application name or path.
   String? appName;
+  String? appPath;
 
   /// For delay: wait duration in milliseconds.
   int? delayMs;
@@ -532,8 +566,9 @@ class DesktopFlowNode {
   int? repeatCount;
 
   /// For conditional: the attribute/value to check.
-  /// If the element matching [target] exists, follow the "true" edge;
+  /// If the configured condition is true, follow the "true" edge;
   /// otherwise follow the "false" edge.
+  String? conditionOperator;
   String? conditionAttribute;
   String? conditionValue;
 
@@ -546,12 +581,15 @@ class DesktopFlowNode {
     this.onFailureEdgeId,
     this.target,
     this.text,
+    this.autoDetectInput = true,
     this.keyboardConfig,
     this.appName,
+    this.appPath,
     this.delayMs,
     this.scrollDirection,
     this.scrollAmount,
     this.repeatCount,
+    this.conditionOperator,
     this.conditionAttribute,
     this.conditionValue,
   }) : id = id ?? const Uuid().v4();
@@ -571,16 +609,19 @@ class DesktopFlowNode {
           ? UITargetSelector.fromJson(json['target'] as Map<String, dynamic>)
           : null,
       text: json['text'] as String?,
+      autoDetectInput: json['autoDetectInput'] as bool? ?? true,
       keyboardConfig: json['keyboardConfig'] != null
           ? KeyboardNodeConfig.fromJson(
               json['keyboardConfig'] as Map<String, dynamic>,
             )
           : null,
       appName: json['appName'] as String?,
+      appPath: json['appPath'] as String?,
       delayMs: json['delayMs'] as int?,
       scrollDirection: json['scrollDirection'] as String?,
       scrollAmount: json['scrollAmount'] as int?,
       repeatCount: json['repeatCount'] as int?,
+      conditionOperator: json['conditionOperator'] as String?,
       conditionAttribute: json['conditionAttribute'] as String?,
       conditionValue: json['conditionValue'] as String?,
     );
@@ -595,12 +636,15 @@ class DesktopFlowNode {
     if (onFailureEdgeId != null) 'onFailureEdgeId': onFailureEdgeId,
     if (target != null) 'target': target!.toJson(),
     if (text != null) 'text': text,
+    if (!autoDetectInput) 'autoDetectInput': autoDetectInput,
     if (keyboardConfig != null) 'keyboardConfig': keyboardConfig!.toJson(),
     if (appName != null) 'appName': appName,
+    if (appPath != null) 'appPath': appPath,
     if (delayMs != null) 'delayMs': delayMs,
     if (scrollDirection != null) 'scrollDirection': scrollDirection,
     if (scrollAmount != null) 'scrollAmount': scrollAmount,
     if (repeatCount != null) 'repeatCount': repeatCount,
+    if (conditionOperator != null) 'conditionOperator': conditionOperator,
     if (conditionAttribute != null) 'conditionAttribute': conditionAttribute,
     if (conditionValue != null) 'conditionValue': conditionValue,
   };
@@ -616,7 +660,9 @@ class DesktopFlowNode {
         return target?.summary ?? 'No target';
       case DesktopFlowNodeType.typeText:
         if (text == null || text!.isEmpty) return 'No text set';
-        return text!.length > 30 ? '${text!.substring(0, 30)}…' : text!;
+        final prefix = autoDetectInput ? 'Auto: ' : '';
+        final value = text!.length > 24 ? '${text!.substring(0, 24)}...' : text!;
+        return '$prefix$value';
       case DesktopFlowNodeType.keyboard:
       case DesktopFlowNodeType.hotkey:
         return keyboardConfig?.summary ?? 'No keys set';
@@ -634,10 +680,7 @@ class DesktopFlowNode {
       case DesktopFlowNodeType.repeat:
         return '${repeatCount ?? 1} iterations';
       case DesktopFlowNodeType.conditional:
-        if (conditionAttribute != null) {
-          return '$conditionAttribute = ${conditionValue ?? "?"}';
-        }
-        return target?.summary ?? 'Element exists?';
+        return _conditionSummary;
       case DesktopFlowNodeType.done:
         return 'End';
     }
@@ -652,12 +695,15 @@ class DesktopFlowNode {
     String? onFailureEdgeId,
     UITargetSelector? target,
     String? text,
+    bool? autoDetectInput,
     KeyboardNodeConfig? keyboardConfig,
     String? appName,
+    String? appPath,
     int? delayMs,
     String? scrollDirection,
     int? scrollAmount,
     int? repeatCount,
+    String? conditionOperator,
     String? conditionAttribute,
     String? conditionValue,
   }) {
@@ -670,12 +716,15 @@ class DesktopFlowNode {
       onFailureEdgeId: onFailureEdgeId ?? this.onFailureEdgeId,
       target: target ?? this.target,
       text: text ?? this.text,
+      autoDetectInput: autoDetectInput ?? this.autoDetectInput,
       keyboardConfig: keyboardConfig ?? this.keyboardConfig,
       appName: appName ?? this.appName,
+      appPath: appPath ?? this.appPath,
       delayMs: delayMs ?? this.delayMs,
       scrollDirection: scrollDirection ?? this.scrollDirection,
       scrollAmount: scrollAmount ?? this.scrollAmount,
       repeatCount: repeatCount ?? this.repeatCount,
+      conditionOperator: conditionOperator ?? this.conditionOperator,
       conditionAttribute: conditionAttribute ?? this.conditionAttribute,
       conditionValue: conditionValue ?? this.conditionValue,
     );
@@ -687,9 +736,35 @@ class DesktopFlowNode {
     if (value is num) return value.toDouble();
     return null;
   }
+
+  String get _conditionSummary {
+    switch (conditionOperator ?? conditionAttribute ?? 'element_exists') {
+      case 'element_missing':
+        return 'If target is missing';
+      case 'name_contains':
+        return 'If name contains "${conditionValue ?? ''}"';
+      case 'name_equals':
+        return 'If name = "${conditionValue ?? ''}"';
+      case 'value_contains':
+        return 'If value contains "${conditionValue ?? ''}"';
+      case 'value_equals':
+        return 'If value = "${conditionValue ?? ''}"';
+      case 'role_equals':
+        return 'If role = "${conditionValue ?? ''}"';
+      case 'class_contains':
+        return 'If class contains "${conditionValue ?? ''}"';
+      case 'enabled':
+        return 'If target is enabled';
+      case 'focused':
+        return 'If target is focused';
+      case 'element_exists':
+      default:
+        return 'If target exists';
+    }
+  }
 }
 
-// ═══════════════════════════════════════════════════════════════════
+// -------------------------------------------------------------------
 //  FLOW EDGE
 // ═══════════════════════════════════════════════════════════════════
 
