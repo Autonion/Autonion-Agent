@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import 'package:provider/provider.dart';
 
@@ -43,7 +44,26 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
         final flow = provider.currentFlow;
         if (flow == null) return const SizedBox.shrink();
 
-        return Column(
+        return Focus(
+          autofocus: true,
+          onKeyEvent: (node, event) {
+            if (event is KeyDownEvent &&
+                (event.logicalKey == LogicalKeyboardKey.delete ||
+                 event.logicalKey == LogicalKeyboardKey.backspace)) {
+              final selectedId = provider.selectedNodeId;
+              if (selectedId != null) {
+                final selectedNode = provider.selectedNode;
+                if (selectedNode != null &&
+                    selectedNode.nodeType != DesktopFlowNodeType.start &&
+                    selectedNode.nodeType != DesktopFlowNodeType.done) {
+                  provider.removeNode(selectedId);
+                  return KeyEventResult.handled;
+                }
+              }
+            }
+            return KeyEventResult.ignored;
+          },
+          child: Column(
           children: [
             // ── Toolbar ──────────────────────────────
             _buildToolbar(provider, flow),
@@ -65,6 +85,7 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
             if (provider.progressLog.isNotEmpty || provider.isExecuting)
               _buildExecutionLog(provider),
           ],
+        ),
         );
       },
     );
@@ -722,6 +743,14 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
         widgets.add(_buildConditionalSection(provider, node));
         break;
 
+      case DesktopFlowNodeType.visualTrigger:
+        widgets.add(_buildVisualTriggerSection(provider, node));
+        break;
+
+      case DesktopFlowNodeType.uiDetect:
+        widgets.add(_buildUIDetectSection(provider, node));
+        break;
+
       default:
         break;
     }
@@ -828,6 +857,23 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
       'class_contains',
     }.contains(operator);
 
+    // Resolve edge routing
+    final flow = provider.currentFlow;
+    String? trueTarget;
+    String? falseTarget;
+    if (flow != null) {
+      for (final edge in flow.outgoingEdges(node.id)) {
+        final label = edge.label?.toLowerCase();
+        final targetNode = flow.findNode(edge.toNodeId);
+        final targetName = targetNode?.label ?? 'Unknown';
+        if (label == 'true' || label == 'success') {
+          trueTarget = targetName;
+        } else if (label == 'false' || label == 'failure') {
+          falseTarget = targetName;
+        }
+      }
+    }
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -863,6 +909,282 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
             },
           ),
         _buildTargetSection(provider, node),
+
+        // Edge routing summary
+        const SizedBox(height: 16),
+        const Divider(color: AppColors.divider),
+        const SizedBox(height: 8),
+        const Text(
+          'EDGE ROUTING',
+          style: TextStyle(
+            color: AppColors.textMuted,
+            fontSize: 11,
+            fontWeight: FontWeight.w600,
+            letterSpacing: 1.2,
+          ),
+        ),
+        const SizedBox(height: 8),
+        _buildEdgeRoutingRow(
+          icon: Icons.check_circle_outline,
+          label: 'True',
+          target: trueTarget,
+          color: AppColors.success,
+        ),
+        const SizedBox(height: 4),
+        _buildEdgeRoutingRow(
+          icon: Icons.cancel_outlined,
+          label: 'False',
+          target: falseTarget,
+          color: AppColors.error,
+        ),
+        const SizedBox(height: 4),
+        Text(
+          'Connect edges from the True/False output ports below the node.',
+          style: TextStyle(
+            color: AppColors.textMuted.withValues(alpha: 0.7),
+            fontSize: 10,
+            fontStyle: FontStyle.italic,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildEdgeRoutingRow({
+    required IconData icon,
+    required String label,
+    required String? target,
+    required Color color,
+  }) {
+    return Row(
+      children: [
+        Icon(icon, size: 14, color: color),
+        const SizedBox(width: 6),
+        Text(
+          '$label → ',
+          style: TextStyle(
+            color: color,
+            fontSize: 12,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+        Expanded(
+          child: Text(
+            target ?? '(not connected)',
+            style: TextStyle(
+              color: target != null ? AppColors.textPrimary : AppColors.textMuted,
+              fontSize: 12,
+              fontStyle: target == null ? FontStyle.italic : FontStyle.normal,
+            ),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+      ],
+    );
+  }
+
+  // ═══════════════════════════════════════════════════════
+  //  VISUAL TRIGGER CONFIG
+  // ═══════════════════════════════════════════════════════
+
+  Widget _buildVisualTriggerSection(
+    FlowBuilderProvider provider,
+    DesktopFlowNode node,
+  ) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // Capture template button
+        SizedBox(
+          width: double.infinity,
+          child: OutlinedButton.icon(
+            onPressed: () => _captureTemplateRegion(provider, node),
+            icon: const Icon(Icons.crop, size: 16),
+            label: const Text('Capture Template Region'),
+          ),
+        ),
+        const SizedBox(height: 8),
+
+        // Template preview
+        if (node.templateImagePath != null && node.templateImagePath!.isNotEmpty)
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: AppColors.background,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: AppColors.border),
+            ),
+            child: Column(
+              children: [
+                const Icon(Icons.image, size: 32, color: AppColors.textMuted),
+                const SizedBox(height: 4),
+                Text(
+                  node.templateImagePath!.split('/').last.split('\\').last,
+                  style: const TextStyle(
+                    color: AppColors.textMuted,
+                    fontSize: 10,
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ],
+            ),
+          )
+        else
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: AppColors.background,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(
+                color: AppColors.border,
+                style: BorderStyle.solid,
+              ),
+            ),
+            child: const Text(
+              'No template captured yet.\nClick "Capture Template Region" to take a screenshot and select a region.',
+              style: TextStyle(
+                color: AppColors.textMuted,
+                fontSize: 11,
+                fontStyle: FontStyle.italic,
+              ),
+              textAlign: TextAlign.center,
+            ),
+          ),
+
+        const SizedBox(height: 12),
+
+        // Threshold slider
+        const Text(
+          'Match Threshold',
+          style: TextStyle(
+            color: AppColors.textMuted,
+            fontSize: 11,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+        Row(
+          children: [
+            Expanded(
+              child: Slider(
+                value: node.matchThreshold ?? 0.8,
+                min: 0.5,
+                max: 1.0,
+                divisions: 10,
+                activeColor: AppColors.primary,
+                onChanged: (val) {
+                  node.matchThreshold = val;
+                  provider.updateNode(node);
+                },
+              ),
+            ),
+            Text(
+              '${((node.matchThreshold ?? 0.8) * 100).toInt()}%',
+              style: const TextStyle(
+                color: AppColors.textPrimary,
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
+        ),
+
+        const SizedBox(height: 8),
+
+        // Action on match
+        _buildDropdown<String>(
+          label: 'On Match',
+          value: node.visualAction ?? 'click',
+          items: const [
+            DropdownMenuItem(value: 'click', child: Text('Click at match')),
+            DropdownMenuItem(value: 'wait', child: Text('Wait for match')),
+            DropdownMenuItem(value: 'assert_exists', child: Text('Assert exists')),
+          ],
+          onChanged: (value) {
+            if (value == null) return;
+            node.visualAction = value;
+            provider.updateNode(node);
+          },
+        ),
+      ],
+    );
+  }
+
+  void _captureTemplateRegion(
+    FlowBuilderProvider provider,
+    DesktopFlowNode node,
+  ) {
+    // TODO: Implement screenshot capture + region selection overlay
+    // For now, show a placeholder dialog
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.surface,
+        title: const Text(
+          'Capture Template',
+          style: TextStyle(color: AppColors.textPrimary),
+        ),
+        content: const Text(
+          'This will take a screenshot and let you draw a region to use as the template for image matching.\n\nComing in next update.',
+          style: TextStyle(color: AppColors.textSecondary),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('OK'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ═══════════════════════════════════════════════════════
+  //  UI DETECT CONFIG
+  // ═══════════════════════════════════════════════════════
+
+  Widget _buildUIDetectSection(
+    FlowBuilderProvider provider,
+    DesktopFlowNode node,
+  ) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // Action dropdown
+        _buildDropdown<String>(
+          label: 'Detect Action',
+          value: node.detectAction ?? 'click_first',
+          items: const [
+            DropdownMenuItem(value: 'click_first', child: Text('Click first match')),
+            DropdownMenuItem(value: 'count', child: Text('Count matches')),
+            DropdownMenuItem(value: 'extract_text', child: Text('Extract text')),
+            DropdownMenuItem(value: 'wait_until_visible', child: Text('Wait until visible')),
+          ],
+          onChanged: (value) {
+            if (value == null) return;
+            node.detectAction = value;
+            provider.updateNode(node);
+          },
+        ),
+
+        const SizedBox(height: 8),
+
+        // Output key for downstream nodes
+        _configField(
+          'Output context key',
+          node.detectOutputKey ?? 'detected_element',
+          (val) {
+            node.detectOutputKey = val;
+            provider.updateNode(node);
+          },
+        ),
+
+        const SizedBox(height: 8),
+
+        // Target section (reuses the shared target section)
+        _buildTargetSection(provider, node, title: 'ELEMENT TO DETECT'),
       ],
     );
   }
@@ -1826,6 +2148,10 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
         return Icons.loop;
       case DesktopFlowNodeType.conditional:
         return Icons.call_split;
+      case DesktopFlowNodeType.visualTrigger:
+        return Icons.image_search;
+      case DesktopFlowNodeType.uiDetect:
+        return Icons.find_in_page;
       case DesktopFlowNodeType.done:
         return Icons.check_circle;
     }
@@ -2199,6 +2525,10 @@ class _PaletteItem extends StatelessWidget {
         return Icons.loop;
       case DesktopFlowNodeType.conditional:
         return Icons.call_split;
+      case DesktopFlowNodeType.visualTrigger:
+        return Icons.image_search;
+      case DesktopFlowNodeType.uiDetect:
+        return Icons.find_in_page;
       default:
         return Icons.circle;
     }
@@ -2225,6 +2555,10 @@ class _PaletteItem extends StatelessWidget {
       case DesktopFlowNodeType.repeat:
       case DesktopFlowNodeType.conditional:
         return AppColors.error;
+      case DesktopFlowNodeType.visualTrigger:
+        return AppColors.secondary;
+      case DesktopFlowNodeType.uiDetect:
+        return AppColors.accent;
       default:
         return AppColors.textMuted;
     }
@@ -2366,6 +2700,10 @@ class _NodeCard extends StatelessWidget {
         return Icons.loop;
       case DesktopFlowNodeType.conditional:
         return Icons.call_split;
+      case DesktopFlowNodeType.visualTrigger:
+        return Icons.image_search;
+      case DesktopFlowNodeType.uiDetect:
+        return Icons.find_in_page;
       case DesktopFlowNodeType.done:
         return Icons.check_circle;
     }
@@ -2394,6 +2732,10 @@ class _NodeCard extends StatelessWidget {
       case DesktopFlowNodeType.repeat:
       case DesktopFlowNodeType.conditional:
         return AppColors.error;
+      case DesktopFlowNodeType.visualTrigger:
+        return AppColors.secondary;
+      case DesktopFlowNodeType.uiDetect:
+        return AppColors.accent;
       case DesktopFlowNodeType.done:
         return AppColors.success;
     }
@@ -2583,10 +2925,10 @@ class _EdgePainter extends CustomPainter {
 
   String _edgeSymbol(String? label) {
     if (label == 'success' || label == 'true') {
-      return String.fromCharCode(0x2713);
+      return '${String.fromCharCode(0x2713)} True';
     }
     if (label == 'failure' || label == 'false') {
-      return String.fromCharCode(0x2717);
+      return '${String.fromCharCode(0x2717)} False';
     }
     return '';
   }

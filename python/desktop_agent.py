@@ -58,6 +58,8 @@ class DesktopAgent:
                     self.handle_execute_action(command)
                 elif action == "list_apps":
                     self.handle_list_apps(command)
+                elif action == "template_match":
+                    self.handle_template_match(command)
                 else:
                     self.send_response(cmd_id, success=False, error=f"Unknown action: {action}")
             except Exception as exc:
@@ -739,6 +741,77 @@ class DesktopAgent:
         except Exception:
             width, height = pyautogui.size()
             return 0, 0, width - 1, height - 1
+
+    def handle_template_match(self, command):
+        """Template matching: find a template image on screen using OpenCV."""
+        cmd_id = command.get("id")
+        payload = command.get("payload", {})
+        template_path = payload.get("templatePath", "")
+        threshold = payload.get("threshold", 0.8)
+        search_region = payload.get("searchRegion")
+
+        try:
+            import cv2
+            import numpy as np
+
+            # Capture the screen
+            with mss() as sct:
+                monitor = sct.monitors[0]
+                screenshot = sct.grab(monitor)
+                screen_img = np.array(screenshot)
+                screen_img = cv2.cvtColor(screen_img, cv2.COLOR_BGRA2BGR)
+
+            # Optionally crop to search region
+            if search_region:
+                rx = search_region.get("x", 0)
+                ry = search_region.get("y", 0)
+                rw = search_region.get("width", screen_img.shape[1])
+                rh = search_region.get("height", screen_img.shape[0])
+                screen_img = screen_img[ry:ry+rh, rx:rx+rw]
+            else:
+                rx, ry = 0, 0
+
+            # Load template
+            if not os.path.exists(template_path):
+                self.send_response(cmd_id, success=False,
+                                   error=f"Template file not found: {template_path}")
+                return
+
+            template = cv2.imread(template_path)
+            if template is None:
+                self.send_response(cmd_id, success=False,
+                                   error=f"Failed to read template: {template_path}")
+                return
+
+            # Run template matching
+            result = cv2.matchTemplate(screen_img, template, cv2.TM_CCOEFF_NORMED)
+            _, max_val, _, max_loc = cv2.minMaxLoc(result)
+
+            if max_val >= threshold:
+                # Calculate center of the match
+                th, tw = template.shape[:2]
+                center_x = max_loc[0] + tw // 2 + rx
+                center_y = max_loc[1] + th // 2 + ry
+
+                self.send_response(cmd_id, success=True, data={
+                    "found": True,
+                    "x": center_x,
+                    "y": center_y,
+                    "confidence": round(float(max_val), 4),
+                    "matchWidth": tw,
+                    "matchHeight": th,
+                })
+            else:
+                self.send_response(cmd_id, success=True, data={
+                    "found": False,
+                    "confidence": round(float(max_val), 4),
+                })
+
+        except ImportError:
+            self.send_response(cmd_id, success=False,
+                               error="OpenCV (cv2) is not installed. Install with: pip install opencv-python")
+        except Exception as exc:
+            self.send_response(cmd_id, success=False, error=str(exc))
 
     def _capture_screenshot(self, tier):
         if tier == "accessibilityOnly":

@@ -4,6 +4,7 @@ import '../../../core/services/logging_service.dart';
 import '../models/desktop_flow_models.dart';
 import 'input_simulation_service.dart';
 import 'accessibility_tree_service.dart';
+import 'python_bridge_service.dart';
 import '../models/automation_tier.dart';
 import '../models/desktop_action.dart';
 import '../models/ui_element.dart';
@@ -72,6 +73,7 @@ class FlowExecutionResult {
 class FlowExecutionService {
   final InputSimulationService _input;
   final AccessibilityTreeService _a11y;
+  final PythonBridgeService _bridge;
   final LoggingService _log;
 
   bool _isRunning = false;
@@ -84,9 +86,11 @@ class FlowExecutionService {
   FlowExecutionService({
     required InputSimulationService input,
     required AccessibilityTreeService a11y,
+    required PythonBridgeService bridge,
     required LoggingService log,
   })  : _input = input,
         _a11y = a11y,
+        _bridge = bridge,
         _log = log;
 
   /// Execute a flow, reporting progress via callback.
@@ -376,6 +380,14 @@ class FlowExecutionService {
 
       case DesktopFlowNodeType.conditional:
         // Conditional branching is handled in the traversal loop
+        break;
+
+      case DesktopFlowNodeType.visualTrigger:
+        await _executeVisualTrigger(node);
+        break;
+
+      case DesktopFlowNodeType.uiDetect:
+        await _executeUIDetect(node);
         break;
     }
   }
@@ -881,6 +893,189 @@ class FlowExecutionService {
 
   String _conditionNeedle(DesktopFlowNode node) {
     return (node.conditionValue ?? '').trim().toLowerCase();
+  }
+
+  // ═══════════════════════════════════════════════════════
+  //  VISUAL TRIGGER EXECUTION
+  // ═══════════════════════════════════════════════════════
+
+  /// Execute a visual trigger node — screenshot + template match.
+  Future<void> _executeVisualTrigger(DesktopFlowNode node) async {
+    final templatePath = node.templateImagePath;
+    if (templatePath == null || templatePath.isEmpty) {
+      throw FlowExecutionException(
+        'Visual Trigger: No template image configured',
+      );
+    }
+
+    final threshold = node.matchThreshold ?? 0.8;
+    final action = node.visualAction ?? 'click';
+
+    _log.info('FlowExec', 'Visual Trigger: matching "$templatePath" @ ${(threshold * 100).toInt()}%');
+
+    // Use Python bridge to do template matching
+    final rawResult = await _bridge.sendCommand('template_match', {
+      'templatePath': templatePath,
+      'threshold': threshold,
+      if (node.searchRegionX != null) 'searchRegion': {
+        'x': node.searchRegionX,
+        'y': node.searchRegionY,
+        'width': node.searchRegionWidth,
+        'height': node.searchRegionHeight,
+      },
+    });
+
+    final result = rawResult is Map<String, dynamic>
+        ? rawResult
+        : <String, dynamic>{};
+
+    final found = result['found'] as bool? ?? false;
+    if (!found) {
+      throw FlowExecutionException(
+        'Visual Trigger: Template not found on screen',
+      );
+    }
+
+    final matchX = (result['x'] as num?)?.toDouble();
+    final matchY = (result['y'] as num?)?.toDouble();
+    final confidence = (result['confidence'] as num?)?.toDouble() ?? 0.0;
+
+    _log.info(
+      'FlowExec',
+      'Visual Trigger: Found at ($matchX, $matchY) confidence=${(confidence * 100).toInt()}%',
+    );
+
+    // Perform action based on config
+    if (action == 'click' && matchX != null && matchY != null) {
+      await _input.execute(DesktopAction(
+        type: 'click',
+        x: matchX,
+        y: matchY,
+      ));
+    } else if (action == 'wait') {
+      // Already found — success
+      _log.info('FlowExec', 'Visual Trigger: Wait satisfied');
+    } else if (action == 'assert_exists') {
+      // Already found — success
+      _log.info('FlowExec', 'Visual Trigger: Assert passed');
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════
+  //  UI DETECT EXECUTION
+  // ═══════════════════════════════════════════════════════
+
+  /// Execute a UI detect node — find elements by accessibility attributes.
+  Future<void> _executeUIDetect(DesktopFlowNode node) async {
+    final action = node.detectAction ?? 'click_first';
+
+    _log.info('FlowExec', 'UI Detect: action=$action target=${node.target?.summary ?? "none"}');
+
+    final screenState = await _a11y.getScreenState(
+      AutomationTier.accessibilityOnly,
+    );
+
+    // Find matching elements
+    final matches = <UIElement>[];
+    if (node.target != null) {
+      for (final element in screenState.elements) {
+        if (element.isOffscreen || !element.isEnabled) continue;
+        if (_elementMatchesTarget(element, node.target!)) {
+          matches.add(element);
+        }
+      }
+    }
+
+    _log.info('FlowExec', 'UI Detect: Found ${matches.length} matching elements');
+
+    switch (action) {
+      case 'click_first':
+        if (matches.isEmpty) {
+          throw FlowExecutionException(
+            'UI Detect: No matching element found for ${node.target?.summary}',
+          );
+        }
+        final element = matches.first;
+        final params = _targetParamsForElement(element);
+        await _input.execute(DesktopAction(
+          type: 'click',
+          x: params['x'] as double?,
+          y: params['y'] as double?,
+          targetStableId: params['targetStableId'] as String?,
+        ));
+        break;
+
+      case 'count':
+        _log.info('FlowExec', 'UI Detect: Count = ${matches.length}');
+        // Store in context for downstream conditional nodes
+        break;
+
+      case 'extract_text':
+        if (matches.isEmpty) {
+          throw FlowExecutionException(
+            'UI Detect: No matching element found for text extraction',
+          );
+        }
+        final text = matches.first.name;
+        _log.info('FlowExec', 'UI Detect: Extracted text = "$text"');
+        break;
+
+      case 'wait_until_visible':
+        // Poll for the element to appear (up to 10 seconds)
+        const maxWait = Duration(seconds: 10);
+        final start = DateTime.now();
+        while (DateTime.now().difference(start) < maxWait && !_stopRequested) {
+          final state = await _a11y.getScreenState(
+            AutomationTier.accessibilityOnly,
+          );
+          final found = state.elements.any((e) =>
+            !e.isOffscreen && e.isEnabled && _elementMatchesTarget(e, node.target!),
+          );
+          if (found) {
+            _log.info('FlowExec', 'UI Detect: Element became visible');
+            return;
+          }
+          await Future.delayed(const Duration(milliseconds: 500));
+        }
+        throw FlowExecutionException(
+          'UI Detect: Element did not appear within timeout',
+        );
+
+      default:
+        _log.info('FlowExec', 'UI Detect: Unknown action "$action"');
+    }
+  }
+
+  /// Check if a UI element matches a target selector.
+  bool _elementMatchesTarget(UIElement element, UITargetSelector target) {
+    switch (target.mode) {
+      case UITargetMode.coordinate:
+        return true; // Coordinate mode doesn't filter by attributes
+      case UITargetMode.stableId:
+        return target.stableId != null && element.stableId == target.stableId;
+      case UITargetMode.uiaAttribute:
+        if (target.name != null && target.name!.isNotEmpty) {
+          if (!element.name.toLowerCase().contains(target.name!.toLowerCase())) {
+            return false;
+          }
+        }
+        if (target.role != null && target.role!.isNotEmpty) {
+          if (element.role.toLowerCase() != target.role!.toLowerCase()) {
+            return false;
+          }
+        }
+        if (target.automationId != null && target.automationId!.isNotEmpty) {
+          if (element.automationId != target.automationId) {
+            return false;
+          }
+        }
+        if (target.className != null && target.className!.isNotEmpty) {
+          if (element.className?.toLowerCase() != target.className!.toLowerCase()) {
+            return false;
+          }
+        }
+        return true;
+    }
   }
 }
 

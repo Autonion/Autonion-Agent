@@ -129,6 +129,8 @@ class PythonBridgeService {
       'mss',
       'Pillow',
       'pyperclip',
+      'opencv-python',
+      'numpy',
     ]);
 
     if (pipResult.exitCode != 0) {

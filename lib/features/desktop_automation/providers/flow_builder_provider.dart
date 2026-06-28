@@ -156,6 +156,13 @@ class FlowBuilderProvider extends ChangeNotifier {
       node.scrollAmount = 3;
     } else if (type == DesktopFlowNodeType.repeat) {
       node.repeatCount = 3;
+    } else if (type == DesktopFlowNodeType.visualTrigger) {
+      node.matchThreshold = 0.8;
+      node.visualAction = 'click';
+    } else if (type == DesktopFlowNodeType.uiDetect) {
+      node.detectAction = 'click_first';
+      node.detectOutputKey = 'detected_element';
+      node.target = const UITargetSelector(mode: UITargetMode.uiaAttribute);
     }
 
     _currentFlow!.nodes.add(node);
@@ -273,6 +280,17 @@ class FlowBuilderProvider extends ChangeNotifier {
     _currentFlow!.edges.removeWhere((e) => e.id == edgeId);
     _isDirty = true;
     notifyListeners();
+  }
+
+  /// Update the label on an existing edge (for conditional true/false editing).
+  void updateEdgeLabel(String edgeId, String? newLabel) {
+    if (_currentFlow == null) return;
+    final edge = _currentFlow!.findEdge(edgeId);
+    if (edge != null) {
+      edge.label = newLabel;
+      _isDirty = true;
+      notifyListeners();
+    }
   }
 
   // ── Selection ──────────────────────────────────────────

@@ -22,6 +22,8 @@ enum DesktopFlowNodeType {
   scroll,
   repeat,
   conditional,
+  visualTrigger,
+  uiDetect,
   done;
 
   String get displayName {
@@ -52,6 +54,10 @@ enum DesktopFlowNodeType {
         return 'Repeat';
       case DesktopFlowNodeType.conditional:
         return 'Conditional';
+      case DesktopFlowNodeType.visualTrigger:
+        return 'Visual Trigger';
+      case DesktopFlowNodeType.uiDetect:
+        return 'UI Detect';
       case DesktopFlowNodeType.done:
         return 'Done';
     }
@@ -85,6 +91,10 @@ enum DesktopFlowNodeType {
         return 'loop';
       case DesktopFlowNodeType.conditional:
         return 'call_split';
+      case DesktopFlowNodeType.visualTrigger:
+        return 'image_search';
+      case DesktopFlowNodeType.uiDetect:
+        return 'find_in_page';
       case DesktopFlowNodeType.done:
         return 'check_circle';
     }
@@ -572,6 +582,27 @@ class DesktopFlowNode {
   String? conditionAttribute;
   String? conditionValue;
 
+  /// For visualTrigger: path to the template image cropped from screenshot.
+  String? templateImagePath;
+
+  /// For visualTrigger: confidence threshold for template matching (0.0-1.0).
+  double? matchThreshold;
+
+  /// For visualTrigger: optional search region on screen.
+  int? searchRegionX;
+  int? searchRegionY;
+  int? searchRegionWidth;
+  int? searchRegionHeight;
+
+  /// For visualTrigger: action to take on match (click, wait, assert_exists).
+  String? visualAction;
+
+  /// For uiDetect: action (click_first, count, extract_text, wait_until_visible).
+  String? detectAction;
+
+  /// For uiDetect: context key to store results for downstream nodes.
+  String? detectOutputKey;
+
   DesktopFlowNode({
     String? id,
     required this.nodeType,
@@ -592,6 +623,15 @@ class DesktopFlowNode {
     this.conditionOperator,
     this.conditionAttribute,
     this.conditionValue,
+    this.templateImagePath,
+    this.matchThreshold,
+    this.searchRegionX,
+    this.searchRegionY,
+    this.searchRegionWidth,
+    this.searchRegionHeight,
+    this.visualAction,
+    this.detectAction,
+    this.detectOutputKey,
   }) : id = id ?? const Uuid().v4();
 
   factory DesktopFlowNode.fromJson(Map<String, dynamic> json) {
@@ -624,6 +664,15 @@ class DesktopFlowNode {
       conditionOperator: json['conditionOperator'] as String?,
       conditionAttribute: json['conditionAttribute'] as String?,
       conditionValue: json['conditionValue'] as String?,
+      templateImagePath: json['templateImagePath'] as String?,
+      matchThreshold: _asDouble(json['matchThreshold']),
+      searchRegionX: json['searchRegionX'] as int?,
+      searchRegionY: json['searchRegionY'] as int?,
+      searchRegionWidth: json['searchRegionWidth'] as int?,
+      searchRegionHeight: json['searchRegionHeight'] as int?,
+      visualAction: json['visualAction'] as String?,
+      detectAction: json['detectAction'] as String?,
+      detectOutputKey: json['detectOutputKey'] as String?,
     );
   }
 
@@ -647,6 +696,15 @@ class DesktopFlowNode {
     if (conditionOperator != null) 'conditionOperator': conditionOperator,
     if (conditionAttribute != null) 'conditionAttribute': conditionAttribute,
     if (conditionValue != null) 'conditionValue': conditionValue,
+    if (templateImagePath != null) 'templateImagePath': templateImagePath,
+    if (matchThreshold != null) 'matchThreshold': matchThreshold,
+    if (searchRegionX != null) 'searchRegionX': searchRegionX,
+    if (searchRegionY != null) 'searchRegionY': searchRegionY,
+    if (searchRegionWidth != null) 'searchRegionWidth': searchRegionWidth,
+    if (searchRegionHeight != null) 'searchRegionHeight': searchRegionHeight,
+    if (visualAction != null) 'visualAction': visualAction,
+    if (detectAction != null) 'detectAction': detectAction,
+    if (detectOutputKey != null) 'detectOutputKey': detectOutputKey,
   };
 
   /// Short summary shown on the node card in the builder UI.
@@ -681,6 +739,15 @@ class DesktopFlowNode {
         return '${repeatCount ?? 1} iterations';
       case DesktopFlowNodeType.conditional:
         return _conditionSummary;
+      case DesktopFlowNodeType.visualTrigger:
+        if (templateImagePath == null || templateImagePath!.isEmpty) {
+          return 'No template set';
+        }
+        return '${visualAction ?? "click"} @ ${(matchThreshold ?? 0.8 * 100).toInt()}%';
+      case DesktopFlowNodeType.uiDetect:
+        final action = detectAction ?? 'click_first';
+        final targetDesc = target?.summary ?? 'No target';
+        return '$action: $targetDesc';
       case DesktopFlowNodeType.done:
         return 'End';
     }
@@ -706,6 +773,15 @@ class DesktopFlowNode {
     String? conditionOperator,
     String? conditionAttribute,
     String? conditionValue,
+    String? templateImagePath,
+    double? matchThreshold,
+    int? searchRegionX,
+    int? searchRegionY,
+    int? searchRegionWidth,
+    int? searchRegionHeight,
+    String? visualAction,
+    String? detectAction,
+    String? detectOutputKey,
   }) {
     return DesktopFlowNode(
       id: id ?? this.id,
@@ -727,6 +803,15 @@ class DesktopFlowNode {
       conditionOperator: conditionOperator ?? this.conditionOperator,
       conditionAttribute: conditionAttribute ?? this.conditionAttribute,
       conditionValue: conditionValue ?? this.conditionValue,
+      templateImagePath: templateImagePath ?? this.templateImagePath,
+      matchThreshold: matchThreshold ?? this.matchThreshold,
+      searchRegionX: searchRegionX ?? this.searchRegionX,
+      searchRegionY: searchRegionY ?? this.searchRegionY,
+      searchRegionWidth: searchRegionWidth ?? this.searchRegionWidth,
+      searchRegionHeight: searchRegionHeight ?? this.searchRegionHeight,
+      visualAction: visualAction ?? this.visualAction,
+      detectAction: detectAction ?? this.detectAction,
+      detectOutputKey: detectOutputKey ?? this.detectOutputKey,
     );
   }
 
@@ -775,9 +860,9 @@ class DesktopFlowEdge {
   final String toNodeId;
 
   /// Optional label for conditional branches (e.g. "true", "false").
-  final String? label;
+  String? label;
 
-  const DesktopFlowEdge({
+  DesktopFlowEdge({
     required this.id,
     required this.fromNodeId,
     required this.toNodeId,

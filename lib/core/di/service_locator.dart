@@ -97,6 +97,7 @@ Future<void> setupServiceLocator() async {
     final flowExecution = FlowExecutionService(
       input: inputSim,
       a11y: a11y,
+      bridge: pythonBridge,
       log: log,
     );
     getIt.registerSingleton<FlowExecutionService>(flowExecution);
