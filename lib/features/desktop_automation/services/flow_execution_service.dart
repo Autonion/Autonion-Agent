@@ -16,7 +16,8 @@ import '../models/ui_element.dart';
 /// Reports step-by-step progress during flow execution.
 class FlowStepProgress {
   final String flowId;
-  final String status; // started, step_executing, step_completed, completed, failed
+  final String
+  status; // started, step_executing, step_completed, completed, failed
   final String message;
   final int currentStep;
   final int totalSteps;
@@ -88,10 +89,10 @@ class FlowExecutionService {
     required AccessibilityTreeService a11y,
     required PythonBridgeService bridge,
     required LoggingService log,
-  })  : _input = input,
-        _a11y = a11y,
-        _bridge = bridge,
-        _log = log;
+  }) : _input = input,
+       _a11y = a11y,
+       _bridge = bridge,
+       _log = log;
 
   /// Execute a flow, reporting progress via callback.
   Future<FlowExecutionResult> executeFlow(
@@ -124,13 +125,15 @@ class FlowExecutionService {
 
     _log.info('FlowExec', 'Starting flow: "${flow.name}" ($totalSteps steps)');
 
-    onProgress?.call(FlowStepProgress(
-      flowId: flow.id,
-      status: 'started',
-      message: 'Starting flow: ${flow.name}',
-      currentStep: 0,
-      totalSteps: totalSteps,
-    ));
+    onProgress?.call(
+      FlowStepProgress(
+        flowId: flow.id,
+        status: 'started',
+        message: 'Starting flow: ${flow.name}',
+        currentStep: 0,
+        totalSteps: totalSteps,
+      ),
+    );
 
     try {
       // Find the start node
@@ -153,33 +156,34 @@ class FlowExecutionService {
         if (currentNode.nodeType != DesktopFlowNodeType.start) {
           stepsExecuted++;
 
-          onProgress?.call(FlowStepProgress(
-            flowId: flow.id,
-            status: 'step_executing',
-            message: '${currentNode.label}: ${currentNode.configSummary}',
-            currentStep: stepsExecuted,
-            totalSteps: totalSteps,
-            nodeLabel: currentNode.label,
-            nodeId: currentNode.id,
-          ));
-
-          try {
-            await _executeNode(currentNode, flow);
-
-            onProgress?.call(FlowStepProgress(
+          onProgress?.call(
+            FlowStepProgress(
               flowId: flow.id,
-              status: 'step_completed',
-              message: '${currentNode.label} completed',
+              status: 'step_executing',
+              message: '${currentNode.label}: ${currentNode.configSummary}',
               currentStep: stepsExecuted,
               totalSteps: totalSteps,
               nodeLabel: currentNode.label,
               nodeId: currentNode.id,
-            ));
-          } catch (e) {
-            _log.error(
-              'FlowExec',
-              'Node "${currentNode.label}" failed: $e',
+            ),
+          );
+
+          try {
+            await _executeNode(currentNode, flow);
+
+            onProgress?.call(
+              FlowStepProgress(
+                flowId: flow.id,
+                status: 'step_completed',
+                message: '${currentNode.label} completed',
+                currentStep: stepsExecuted,
+                totalSteps: totalSteps,
+                nodeLabel: currentNode.label,
+                nodeId: currentNode.id,
+              ),
             );
+          } catch (e) {
+            _log.error('FlowExec', 'Node "${currentNode.label}" failed: $e');
 
             final failureTarget = _resolveFailureBranch(currentNode, flow);
             if (failureTarget != null) {
@@ -207,10 +211,7 @@ class FlowExecutionService {
 
         // For conditional nodes, pick the right branch
         if (currentNode.nodeType == DesktopFlowNodeType.conditional) {
-          currentNode = await _resolveConditionalBranch(
-            currentNode,
-            flow,
-          );
+          currentNode = await _resolveConditionalBranch(currentNode, flow);
         } else {
           // For repeat nodes, handle looping
           if (currentNode.nodeType == DesktopFlowNodeType.repeat) {
@@ -230,7 +231,8 @@ class FlowExecutionService {
               break;
             }
           } else {
-            currentNode = _resolveSuccessBranch(currentNode, flow) ?? nextNodes.first;
+            currentNode =
+                _resolveSuccessBranch(currentNode, flow) ?? nextNodes.first;
           }
         }
 
@@ -241,14 +243,19 @@ class FlowExecutionService {
       stopwatch.stop();
 
       if (_stopRequested) {
-        _log.info('FlowExec', 'Flow stopped by user after $stepsExecuted steps');
-        onProgress?.call(FlowStepProgress(
-          flowId: flow.id,
-          status: 'failed',
-          message: 'Flow stopped by user',
-          currentStep: stepsExecuted,
-          totalSteps: totalSteps,
-        ));
+        _log.info(
+          'FlowExec',
+          'Flow stopped by user after $stepsExecuted steps',
+        );
+        onProgress?.call(
+          FlowStepProgress(
+            flowId: flow.id,
+            status: 'failed',
+            message: 'Flow stopped by user',
+            currentStep: stepsExecuted,
+            totalSteps: totalSteps,
+          ),
+        );
         return FlowExecutionResult(
           success: false,
           stepsExecuted: stepsExecuted,
@@ -262,13 +269,15 @@ class FlowExecutionService {
         'Flow "${flow.name}" completed successfully ($stepsExecuted steps, ${stopwatch.elapsed.inMilliseconds}ms)',
       );
 
-      onProgress?.call(FlowStepProgress(
-        flowId: flow.id,
-        status: 'completed',
-        message: 'Flow completed successfully',
-        currentStep: stepsExecuted,
-        totalSteps: totalSteps,
-      ));
+      onProgress?.call(
+        FlowStepProgress(
+          flowId: flow.id,
+          status: 'completed',
+          message: 'Flow completed successfully',
+          currentStep: stepsExecuted,
+          totalSteps: totalSteps,
+        ),
+      );
 
       return FlowExecutionResult(
         success: true,
@@ -277,13 +286,15 @@ class FlowExecutionService {
       );
     } on FlowExecutionException catch (e) {
       stopwatch.stop();
-      onProgress?.call(FlowStepProgress(
-        flowId: flow.id,
-        status: 'failed',
-        message: e.message,
-        currentStep: stepsExecuted,
-        totalSteps: totalSteps,
-      ));
+      onProgress?.call(
+        FlowStepProgress(
+          flowId: flow.id,
+          status: 'failed',
+          message: e.message,
+          currentStep: stepsExecuted,
+          totalSteps: totalSteps,
+        ),
+      );
       return FlowExecutionResult(
         success: false,
         stepsExecuted: stepsExecuted,
@@ -293,13 +304,15 @@ class FlowExecutionService {
     } catch (e) {
       stopwatch.stop();
       _log.error('FlowExec', 'Unexpected error: $e');
-      onProgress?.call(FlowStepProgress(
-        flowId: flow.id,
-        status: 'failed',
-        message: 'Unexpected error: $e',
-        currentStep: stepsExecuted,
-        totalSteps: totalSteps,
-      ));
+      onProgress?.call(
+        FlowStepProgress(
+          flowId: flow.id,
+          status: 'failed',
+          message: 'Unexpected error: $e',
+          currentStep: stepsExecuted,
+          totalSteps: totalSteps,
+        ),
+      );
       return FlowExecutionResult(
         success: false,
         stepsExecuted: stepsExecuted,
@@ -494,7 +507,10 @@ class FlowExecutionService {
       AutomationTier.accessibilityOnly,
     );
     if (target == null) {
-      return _bestElement(screenState.elements, requireEditable: requireEditable);
+      return _bestElement(
+        screenState.elements,
+        requireEditable: requireEditable,
+      );
     }
     return _findElementInList(
       screenState.elements,
@@ -532,7 +548,9 @@ class FlowExecutionService {
     final candidates = elements.where((element) {
       if (element.isOffscreen || !element.isEnabled) return false;
       if (requireEditable && !_isEditableElement(element)) return false;
-      return !requireEditable || element.isKeyboardFocusable || element.isFocused;
+      return !requireEditable ||
+          element.isKeyboardFocusable ||
+          element.isFocused;
     }).toList();
 
     if (candidates.isEmpty) return null;
@@ -645,25 +663,34 @@ class FlowExecutionService {
     return double.tryParse(value?.toString() ?? '') ?? 0;
   }
 
-  Future<void> _executeClickAction(DesktopFlowNode node, String clickType) async {
+  Future<void> _executeClickAction(
+    DesktopFlowNode node,
+    String clickType,
+  ) async {
     final targetParams = await _resolveTarget(node.target);
-    await _input.execute(DesktopAction(
-      type: clickType == 'double_click' ? 'click' : clickType,
-      x: targetParams['x'] as double?,
-      y: targetParams['y'] as double?,
-      targetStableId: targetParams['targetStableId'] as String?,
-      button: clickType == 'right_click' ? 'right' : 'left',
-    ));
-    // For double-click, click twice quickly
-    if (clickType == 'double_click') {
-      await Future.delayed(const Duration(milliseconds: 50));
-      await _input.execute(DesktopAction(
-        type: 'click',
+    await _input.execute(
+      DesktopAction(
+        type: clickType == 'double_click' ? 'click' : clickType,
         x: targetParams['x'] as double?,
         y: targetParams['y'] as double?,
         targetStableId: targetParams['targetStableId'] as String?,
-        button: 'left',
-      ));
+        coordinateSpace: 'screen',
+        button: clickType == 'right_click' ? 'right' : 'left',
+      ),
+    );
+    // For double-click, click twice quickly
+    if (clickType == 'double_click') {
+      await Future.delayed(const Duration(milliseconds: 50));
+      await _input.execute(
+        DesktopAction(
+          type: 'click',
+          x: targetParams['x'] as double?,
+          y: targetParams['y'] as double?,
+          targetStableId: targetParams['targetStableId'] as String?,
+          coordinateSpace: 'screen',
+          button: 'left',
+        ),
+      );
     }
   }
 
@@ -691,19 +718,19 @@ class FlowExecutionService {
       await Future.delayed(const Duration(milliseconds: 150));
     }
 
-    await _input.execute(DesktopAction(
-      type: 'type',
-      text: node.text ?? '',
-    ));
+    await _input.execute(DesktopAction(type: 'type', text: node.text ?? ''));
   }
 
   Future<void> _clickTarget(Map<String, dynamic> targetParams) {
-    return _input.execute(DesktopAction(
-      type: 'click',
-      x: targetParams['x'] as double?,
-      y: targetParams['y'] as double?,
-      targetStableId: targetParams['targetStableId'] as String?,
-    ));
+    return _input.execute(
+      DesktopAction(
+        type: 'click',
+        x: targetParams['x'] as double?,
+        y: targetParams['y'] as double?,
+        targetStableId: targetParams['targetStableId'] as String?,
+        coordinateSpace: 'screen',
+      ),
+    );
   }
 
   Future<void> _executeKeyboard(DesktopFlowNode node) async {
@@ -717,37 +744,34 @@ class FlowExecutionService {
 
       switch (config.action) {
         case KeyboardActionType.press:
-          await _input.execute(DesktopAction(
-            type: 'hotkey',
-            keys: config.keys,
-          ));
+          await _input.execute(
+            DesktopAction(type: 'hotkey', keys: config.keys),
+          );
           break;
 
         case KeyboardActionType.hold:
           // Hold is a press with extended duration
-          await _input.execute(DesktopAction(
-            type: 'hotkey',
-            keys: config.keys,
-            durationMs: config.holdDurationMs ?? 500,
-          ));
+          await _input.execute(
+            DesktopAction(
+              type: 'hotkey',
+              keys: config.keys,
+              durationMs: config.holdDurationMs ?? 500,
+            ),
+          );
           break;
 
         case KeyboardActionType.release:
           // Release previously held keys
-          await _input.execute(DesktopAction(
-            type: 'hotkey',
-            keys: config.keys,
-          ));
+          await _input.execute(
+            DesktopAction(type: 'hotkey', keys: config.keys),
+          );
           break;
 
         case KeyboardActionType.typeSequence:
           // Type each key as an individual keystroke
           for (final key in config.keys) {
             if (_stopRequested) break;
-            await _input.execute(DesktopAction(
-              type: 'hotkey',
-              keys: [key],
-            ));
+            await _input.execute(DesktopAction(type: 'hotkey', keys: [key]));
             await Future.delayed(const Duration(milliseconds: 50));
           }
           break;
@@ -755,9 +779,7 @@ class FlowExecutionService {
 
       // Delay between repetitions
       if (i < config.repeatCount - 1) {
-        await Future.delayed(
-          Duration(milliseconds: config.delayBetweenMs),
-        );
+        await Future.delayed(Duration(milliseconds: config.delayBetweenMs));
       }
     }
   }
@@ -770,21 +792,16 @@ class FlowExecutionService {
     }
 
     try {
-      await _input.execute(DesktopAction(
-        type: 'launch_app',
-        appName: app,
-        appPath: appPath,
-      ));
+      await _input.execute(
+        DesktopAction(type: 'launch_app', appName: app, appPath: appPath),
+      );
     } catch (e) {
       if (appPath == null || appPath.isEmpty || app.isEmpty) rethrow;
       _log.warn(
         'FlowExec',
         'Direct app launch failed, falling back to search: $e',
       );
-      await _input.execute(DesktopAction(
-        type: 'launch_app',
-        appName: app,
-      ));
+      await _input.execute(DesktopAction(type: 'launch_app', appName: app));
     }
 
     await Future.delayed(const Duration(milliseconds: 500));
@@ -797,18 +814,19 @@ class FlowExecutionService {
   }
 
   Future<void> _executeScreenshot() async {
-    await _input.execute(const DesktopAction(
-      type: 'hotkey',
-      keys: ['printscreen'],
-    ));
+    await _input.execute(
+      const DesktopAction(type: 'hotkey', keys: ['printscreen']),
+    );
   }
 
   Future<void> _executeScroll(DesktopFlowNode node) async {
-    await _input.execute(DesktopAction(
-      type: 'scroll',
-      direction: node.scrollDirection ?? 'down',
-      amount: node.scrollAmount ?? 3,
-    ));
+    await _input.execute(
+      DesktopAction(
+        type: 'scroll',
+        direction: node.scrollDirection ?? 'down',
+        amount: node.scrollAmount ?? 3,
+      ),
+    );
   }
 
   /// For conditional nodes, evaluate the configured condition and return
@@ -854,7 +872,8 @@ class FlowExecutionService {
   }
 
   Future<bool> _evaluateCondition(DesktopFlowNode node) async {
-    final operator = node.conditionOperator ?? node.conditionAttribute ?? 'element_exists';
+    final operator =
+        node.conditionOperator ?? node.conditionAttribute ?? 'element_exists';
     final element = await _findCurrentElement(node.target);
 
     switch (operator) {
@@ -870,7 +889,9 @@ class FlowExecutionService {
             element.name.toLowerCase() == _conditionNeedle(node);
       case 'value_contains':
         return element != null &&
-            (element.value ?? '').toLowerCase().contains(_conditionNeedle(node));
+            (element.value ?? '').toLowerCase().contains(
+              _conditionNeedle(node),
+            );
       case 'value_equals':
         return element != null &&
             (element.value ?? '').toLowerCase() == _conditionNeedle(node);
@@ -880,8 +901,8 @@ class FlowExecutionService {
       case 'class_contains':
         return element != null &&
             (element.className ?? '').toLowerCase().contains(
-                  _conditionNeedle(node),
-                );
+              _conditionNeedle(node),
+            );
       case 'enabled':
         return element?.isEnabled ?? false;
       case 'focused':
@@ -899,7 +920,7 @@ class FlowExecutionService {
   //  VISUAL TRIGGER EXECUTION
   // ═══════════════════════════════════════════════════════
 
-  /// Execute a visual trigger node — screenshot + template match.
+  /// Execute a visual trigger node by waiting for the template to appear.
   Future<void> _executeVisualTrigger(DesktopFlowNode node) async {
     final templatePath = node.templateImagePath;
     if (templatePath == null || templatePath.isEmpty) {
@@ -910,55 +931,103 @@ class FlowExecutionService {
 
     final threshold = node.matchThreshold ?? 0.8;
     final action = node.visualAction ?? 'click';
+    final searchRegion = _visualSearchRegion(node);
 
-    _log.info('FlowExec', 'Visual Trigger: matching "$templatePath" @ ${(threshold * 100).toInt()}%');
+    _log.info(
+      'FlowExec',
+      'Visual Trigger: waiting for "$templatePath" @ ${(threshold * 100).toInt()}%',
+    );
 
-    // Use Python bridge to do template matching
-    final rawResult = await _bridge.sendCommand('template_match', {
-      'templatePath': templatePath,
-      'threshold': threshold,
-      if (node.searchRegionX != null) 'searchRegion': {
-        'x': node.searchRegionX,
-        'y': node.searchRegionY,
-        'width': node.searchRegionWidth,
-        'height': node.searchRegionHeight,
-      },
-    });
+    const timeout = Duration(seconds: 30);
+    const pollInterval = Duration(milliseconds: 500);
+    final started = DateTime.now();
+    Map<String, dynamic>? match;
+    var bestConfidence = 0.0;
 
-    final result = rawResult is Map<String, dynamic>
-        ? rawResult
-        : <String, dynamic>{};
+    while (!_stopRequested && DateTime.now().difference(started) < timeout) {
+      final rawResult = await _bridge.sendCommand('template_match', {
+        'templatePath': templatePath,
+        'threshold': threshold,
+        if (searchRegion != null) 'searchRegion': searchRegion,
+      });
 
-    final found = result['found'] as bool? ?? false;
-    if (!found) {
+      final result = rawResult is Map
+          ? rawResult.map((key, value) => MapEntry(key.toString(), value))
+          : <String, dynamic>{};
+      final confidence = (result['confidence'] as num?)?.toDouble() ?? 0.0;
+      if (confidence > bestConfidence) bestConfidence = confidence;
+
+      if (result['found'] as bool? ?? false) {
+        match = result;
+        break;
+      }
+
+      await Future.delayed(pollInterval);
+    }
+
+    if (_stopRequested) {
+      throw const FlowExecutionException('Visual Trigger: stopped');
+    }
+    if (match == null) {
       throw FlowExecutionException(
-        'Visual Trigger: Template not found on screen',
+        'Visual Trigger: Template not found within ${timeout.inSeconds}s (best ${(bestConfidence * 100).toInt()}%)',
       );
     }
 
-    final matchX = (result['x'] as num?)?.toDouble();
-    final matchY = (result['y'] as num?)?.toDouble();
-    final confidence = (result['confidence'] as num?)?.toDouble() ?? 0.0;
+    final matchX = (match['x'] as num?)?.toDouble();
+    final matchY = (match['y'] as num?)?.toDouble();
+    final confidence = (match['confidence'] as num?)?.toDouble() ?? 0.0;
 
     _log.info(
       'FlowExec',
       'Visual Trigger: Found at ($matchX, $matchY) confidence=${(confidence * 100).toInt()}%',
     );
 
-    // Perform action based on config
-    if (action == 'click' && matchX != null && matchY != null) {
-      await _input.execute(DesktopAction(
-        type: 'click',
-        x: matchX,
-        y: matchY,
-      ));
-    } else if (action == 'wait') {
-      // Already found — success
-      _log.info('FlowExec', 'Visual Trigger: Wait satisfied');
-    } else if (action == 'assert_exists') {
-      // Already found — success
-      _log.info('FlowExec', 'Visual Trigger: Assert passed');
+    switch (action) {
+      case 'click':
+      case 'double_click':
+      case 'right_click':
+        if (matchX == null || matchY == null) {
+          throw FlowExecutionException(
+            'Visual Trigger: Match coordinates unavailable',
+          );
+        }
+        await _input.execute(
+          DesktopAction(
+            type: action,
+            x: matchX,
+            y: matchY,
+            button: action == 'right_click' ? 'right' : 'left',
+            coordinateSpace: 'screen',
+          ),
+        );
+        break;
+      case 'wait':
+        _log.info('FlowExec', 'Visual Trigger: Wait satisfied');
+        break;
+      case 'assert_exists':
+        _log.info('FlowExec', 'Visual Trigger: Assert passed');
+        break;
+      default:
+        throw FlowExecutionException(
+          'Visual Trigger: Unsupported action "$action"',
+        );
     }
+  }
+
+  Map<String, dynamic>? _visualSearchRegion(DesktopFlowNode node) {
+    if (node.searchRegionX == null ||
+        node.searchRegionY == null ||
+        node.searchRegionWidth == null ||
+        node.searchRegionHeight == null) {
+      return null;
+    }
+    return {
+      'x': node.searchRegionX,
+      'y': node.searchRegionY,
+      'width': node.searchRegionWidth,
+      'height': node.searchRegionHeight,
+    };
   }
 
   // ═══════════════════════════════════════════════════════
@@ -969,7 +1038,10 @@ class FlowExecutionService {
   Future<void> _executeUIDetect(DesktopFlowNode node) async {
     final action = node.detectAction ?? 'click_first';
 
-    _log.info('FlowExec', 'UI Detect: action=$action target=${node.target?.summary ?? "none"}');
+    _log.info(
+      'FlowExec',
+      'UI Detect: action=$action target=${node.target?.summary ?? "none"}',
+    );
 
     final screenState = await _a11y.getScreenState(
       AutomationTier.accessibilityOnly,
@@ -986,7 +1058,10 @@ class FlowExecutionService {
       }
     }
 
-    _log.info('FlowExec', 'UI Detect: Found ${matches.length} matching elements');
+    _log.info(
+      'FlowExec',
+      'UI Detect: Found ${matches.length} matching elements',
+    );
 
     switch (action) {
       case 'click_first':
@@ -997,12 +1072,15 @@ class FlowExecutionService {
         }
         final element = matches.first;
         final params = _targetParamsForElement(element);
-        await _input.execute(DesktopAction(
-          type: 'click',
-          x: params['x'] as double?,
-          y: params['y'] as double?,
-          targetStableId: params['targetStableId'] as String?,
-        ));
+        await _input.execute(
+          DesktopAction(
+            type: 'click',
+            x: params['x'] as double?,
+            y: params['y'] as double?,
+            targetStableId: params['targetStableId'] as String?,
+            coordinateSpace: 'screen',
+          ),
+        );
         break;
 
       case 'count':
@@ -1028,8 +1106,11 @@ class FlowExecutionService {
           final state = await _a11y.getScreenState(
             AutomationTier.accessibilityOnly,
           );
-          final found = state.elements.any((e) =>
-            !e.isOffscreen && e.isEnabled && _elementMatchesTarget(e, node.target!),
+          final found = state.elements.any(
+            (e) =>
+                !e.isOffscreen &&
+                e.isEnabled &&
+                _elementMatchesTarget(e, node.target!),
           );
           if (found) {
             _log.info('FlowExec', 'UI Detect: Element became visible');
@@ -1055,7 +1136,9 @@ class FlowExecutionService {
         return target.stableId != null && element.stableId == target.stableId;
       case UITargetMode.uiaAttribute:
         if (target.name != null && target.name!.isNotEmpty) {
-          if (!element.name.toLowerCase().contains(target.name!.toLowerCase())) {
+          if (!element.name.toLowerCase().contains(
+            target.name!.toLowerCase(),
+          )) {
             return false;
           }
         }
@@ -1070,7 +1153,8 @@ class FlowExecutionService {
           }
         }
         if (target.className != null && target.className!.isNotEmpty) {
-          if (element.className?.toLowerCase() != target.className!.toLowerCase()) {
+          if (element.className?.toLowerCase() !=
+              target.className!.toLowerCase()) {
             return false;
           }
         }

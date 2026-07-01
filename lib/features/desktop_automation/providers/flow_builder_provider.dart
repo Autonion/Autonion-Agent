@@ -1,5 +1,7 @@
-import 'package:flutter/foundation.dart';
+import 'dart:io';
 
+import 'package:flutter/foundation.dart';
+import 'package:path/path.dart' as p;
 
 import '../../../core/services/logging_service.dart';
 import '../models/automation_tier.dart';
@@ -28,11 +30,11 @@ class FlowBuilderProvider extends ChangeNotifier {
     required AccessibilityTreeService a11y,
     required PythonBridgeService bridge,
     required LoggingService log,
-  })  : _storage = storage,
-        _execution = execution,
-        _a11y = a11y,
-        _bridge = bridge,
-        _log = log;
+  }) : _storage = storage,
+       _execution = execution,
+       _a11y = a11y,
+       _bridge = bridge,
+       _log = log;
 
   // ── State ──────────────────────────────────────────────
 
@@ -189,9 +191,7 @@ class FlowBuilderProvider extends ChangeNotifier {
   void updateNode(DesktopFlowNode updatedNode) {
     if (_currentFlow == null) return;
 
-    final idx = _currentFlow!.nodes.indexWhere(
-      (n) => n.id == updatedNode.id,
-    );
+    final idx = _currentFlow!.nodes.indexWhere((n) => n.id == updatedNode.id);
     if (idx != -1) {
       _currentFlow!.nodes[idx] = updatedNode;
       _isDirty = true;
@@ -313,6 +313,44 @@ class FlowBuilderProvider extends ChangeNotifier {
     return _a11y.getScreenState(AutomationTier.treeWithFullScreenshot);
   }
 
+  Future<Map<String, dynamic>?> selectScreenRegion({
+    required bool requireArea,
+  }) async {
+    final response = await _bridge.sendCommand('select_screen_region', {
+      'requireArea': requireArea,
+    });
+    if (response is! Map) return null;
+    final result = response.map(
+      (key, value) => MapEntry(key.toString(), value),
+    );
+    if (result['cancelled'] == true) return null;
+    return result;
+  }
+
+  Future<String> saveVisualTemplate(String nodeId, Uint8List pngBytes) async {
+    final flow = _currentFlow;
+    if (flow == null) {
+      throw StateError('No flow is open');
+    }
+
+    final home =
+        Platform.environment['USERPROFILE'] ??
+        Platform.environment['HOME'] ??
+        '.';
+    final dir = Directory(
+      p.join(home, '.autonion', 'visual_templates', flow.id),
+    );
+    if (!await dir.exists()) {
+      await dir.create(recursive: true);
+    }
+
+    final safeNodeId = nodeId.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
+    final file = File(p.join(dir.path, '$safeNodeId.png'));
+    await file.writeAsBytes(pngBytes, flush: true);
+    _log.info('FlowBuilder', 'Saved visual template: ${file.path}');
+    return file.path;
+  }
+
   Future<void> loadAvailableApps({bool force = false}) async {
     if (_isLoadingApps) return;
     if (!force && _availableApps.isNotEmpty) return;
@@ -326,17 +364,25 @@ class FlowBuilderProvider extends ChangeNotifier {
       final rawApps = response is List
           ? response
           : response is Map
-              ? response['apps'] as List<dynamic>? ?? const []
-              : const [];
+          ? response['apps'] as List<dynamic>? ?? const []
+          : const [];
 
-      _availableApps = rawApps
-          .whereType<Map>()
-          .map((raw) => SystemAppInfo.fromJson(
-                raw.map((key, value) => MapEntry(key.toString(), value)),
-              ))
-          .where((app) => app.name.trim().isNotEmpty && app.path.trim().isNotEmpty)
-          .toList()
-        ..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+      _availableApps =
+          rawApps
+              .whereType<Map>()
+              .map(
+                (raw) => SystemAppInfo.fromJson(
+                  raw.map((key, value) => MapEntry(key.toString(), value)),
+                ),
+              )
+              .where(
+                (app) =>
+                    app.name.trim().isNotEmpty && app.path.trim().isNotEmpty,
+              )
+              .toList()
+            ..sort(
+              (a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()),
+            );
     } catch (e) {
       _appLoadError = e.toString();
       _log.error('FlowBuilder', 'Failed to load installed apps: $e');

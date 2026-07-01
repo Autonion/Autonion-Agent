@@ -232,14 +232,13 @@ class UITargetSelector {
     double y,
     double width,
     double height,
-  ) =>
-      UITargetSelector(
-        mode: UITargetMode.coordinate,
-        x: x,
-        y: y,
-        width: width,
-        height: height,
-      );
+  ) => UITargetSelector(
+    mode: UITargetMode.coordinate,
+    x: x,
+    y: y,
+    width: width,
+    height: height,
+  );
 
   /// A stable-ID-based target.
   factory UITargetSelector.fromStableId(String stableId) =>
@@ -252,15 +251,14 @@ class UITargetSelector {
     String? name,
     String? role,
     String? controlType,
-  }) =>
-      UITargetSelector(
-        mode: UITargetMode.uiaAttribute,
-        automationId: automationId,
-        className: className,
-        name: name,
-        role: role,
-        controlType: controlType,
-      );
+  }) => UITargetSelector(
+    mode: UITargetMode.uiaAttribute,
+    automationId: automationId,
+    className: className,
+    name: name,
+    role: role,
+    controlType: controlType,
+  );
 
   factory UITargetSelector.fromJson(Map<String, dynamic> json) {
     return UITargetSelector(
@@ -365,9 +363,8 @@ class KeyboardNodeConfig {
 
   factory KeyboardNodeConfig.fromJson(Map<String, dynamic> json) {
     return KeyboardNodeConfig(
-      keys: (json['keys'] as List<dynamic>?)
-              ?.map((k) => k.toString())
-              .toList() ??
+      keys:
+          (json['keys'] as List<dynamic>?)?.map((k) => k.toString()).toList() ??
           [],
       action: KeyboardActionType.values.firstWhere(
         (a) => a.name == json['action'],
@@ -461,11 +458,11 @@ class FlowTrigger {
 
   /// Default: manual trigger.
   const FlowTrigger.manual()
-      : type = FlowTriggerType.manual,
-        hotkeyCombo = null,
-        elementMatch = null,
-        scheduleIntervalMs = null,
-        enabled = true;
+    : type = FlowTriggerType.manual,
+      hotkeyCombo = null,
+      elementMatch = null,
+      scheduleIntervalMs = null,
+      enabled = true;
 
   factory FlowTrigger.fromJson(Map<String, dynamic> json) {
     return FlowTrigger(
@@ -719,7 +716,9 @@ class DesktopFlowNode {
       case DesktopFlowNodeType.typeText:
         if (text == null || text!.isEmpty) return 'No text set';
         final prefix = autoDetectInput ? 'Auto: ' : '';
-        final value = text!.length > 24 ? '${text!.substring(0, 24)}...' : text!;
+        final value = text!.length > 24
+            ? '${text!.substring(0, 24)}...'
+            : text!;
         return '$prefix$value';
       case DesktopFlowNodeType.keyboard:
       case DesktopFlowNodeType.hotkey:
@@ -743,7 +742,7 @@ class DesktopFlowNode {
         if (templateImagePath == null || templateImagePath!.isEmpty) {
           return 'No template set';
         }
-        return '${visualAction ?? "click"} @ ${(matchThreshold ?? 0.8 * 100).toInt()}%';
+        return '${visualAction ?? "click"} @ ${((matchThreshold ?? 0.8) * 100).toInt()}%';
       case DesktopFlowNodeType.uiDetect:
         final action = detectAction ?? 'click_first';
         final targetDesc = target?.summary ?? 'No target';
@@ -932,13 +931,13 @@ class DesktopFlow {
     DateTime? updatedAt,
     List<String>? tags,
     FlowTrigger? trigger,
-  })  : id = id ?? const Uuid().v4(),
-        nodes = nodes ?? [],
-        edges = edges ?? [],
-        createdAt = createdAt ?? DateTime.now(),
-        updatedAt = updatedAt ?? DateTime.now(),
-        tags = tags ?? [],
-        trigger = trigger ?? const FlowTrigger.manual();
+  }) : id = id ?? const Uuid().v4(),
+       nodes = nodes ?? [],
+       edges = edges ?? [],
+       createdAt = createdAt ?? DateTime.now(),
+       updatedAt = updatedAt ?? DateTime.now(),
+       tags = tags ?? [],
+       trigger = trigger ?? const FlowTrigger.manual();
 
   /// Create a new flow with a Start and Done node already placed.
   factory DesktopFlow.empty(String name, {String description = ''}) {
@@ -969,18 +968,14 @@ class DesktopFlow {
       name: json['name'] as String? ?? 'Untitled',
       description: json['description'] as String? ?? '',
       version: json['version'] as int? ?? 1,
-      nodes: (json['nodes'] as List<dynamic>?)
-              ?.map(
-                (n) =>
-                    DesktopFlowNode.fromJson(n as Map<String, dynamic>),
-              )
+      nodes:
+          (json['nodes'] as List<dynamic>?)
+              ?.map((n) => DesktopFlowNode.fromJson(n as Map<String, dynamic>))
               .toList() ??
           [],
-      edges: (json['edges'] as List<dynamic>?)
-              ?.map(
-                (e) =>
-                    DesktopFlowEdge.fromJson(e as Map<String, dynamic>),
-              )
+      edges:
+          (json['edges'] as List<dynamic>?)
+              ?.map((e) => DesktopFlowEdge.fromJson(e as Map<String, dynamic>))
               .toList() ??
           [],
       createdAt: json['createdAt'] != null
@@ -989,9 +984,8 @@ class DesktopFlow {
       updatedAt: json['updatedAt'] != null
           ? DateTime.parse(json['updatedAt'] as String)
           : DateTime.now(),
-      tags: (json['tags'] as List<dynamic>?)
-              ?.map((t) => t.toString())
-              .toList() ??
+      tags:
+          (json['tags'] as List<dynamic>?)?.map((t) => t.toString()).toList() ??
           [],
       trigger: json['trigger'] != null
           ? FlowTrigger.fromJson(json['trigger'] as Map<String, dynamic>)
@@ -1015,9 +1009,7 @@ class DesktopFlow {
   /// Find the start node (there should be exactly one).
   DesktopFlowNode? get startNode {
     try {
-      return nodes.firstWhere(
-        (n) => n.nodeType == DesktopFlowNodeType.start,
-      );
+      return nodes.firstWhere((n) => n.nodeType == DesktopFlowNodeType.start);
     } catch (_) {
       return null;
     }
@@ -1118,9 +1110,8 @@ class FlowManifest {
       updatedAt: json['updatedAt'] is String
           ? DateTime.parse(json['updatedAt'] as String)
           : DateTime.fromMillisecondsSinceEpoch(json['updatedAt'] as int),
-      tags: (json['tags'] as List<dynamic>?)
-              ?.map((t) => t.toString())
-              .toList() ??
+      tags:
+          (json['tags'] as List<dynamic>?)?.map((t) => t.toString()).toList() ??
           [],
       triggerType: FlowTriggerType.values.firstWhere(
         (t) => t.name == json['triggerType'],

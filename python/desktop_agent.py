@@ -58,6 +58,8 @@ class DesktopAgent:
                     self.handle_execute_action(command)
                 elif action == "list_apps":
                     self.handle_list_apps(command)
+                elif action == "select_screen_region":
+                    self.handle_select_screen_region(command)
                 elif action == "template_match":
                     self.handle_template_match(command)
                 else:
@@ -741,6 +743,258 @@ class DesktopAgent:
         except Exception:
             width, height = pyautogui.size()
             return 0, 0, width - 1, height - 1
+
+    def handle_select_screen_region(self, command):
+        """Two-phase screen region selection.
+
+        Phase 1 -- Transparent overlay: the user can see and arrange their
+        desktop.  Click, Space, or Enter captures the screenshot.
+        Phase 2 -- Frozen screenshot overlay: the user drags to select a region.
+        """
+        cmd_id = command.get("id")
+        payload = command.get("payload", {})
+        require_area = bool(payload.get("requireArea", False))
+
+        try:
+            from PIL import Image, ImageTk
+            import tkinter as tk
+
+            # -- helpers ------------------------------------------------
+            def clamp(value, lower, upper):
+                return max(lower, min(upper, int(round(value))))
+
+            # -- discover virtual-desktop geometry (all monitors) --------
+            with mss() as sct:
+                monitor = sct.monitors[0] if sct.monitors else {
+                    "left": 0, "top": 0, "width": 0, "height": 0,
+                }
+                screen_left = int(monitor.get("left", 0))
+                screen_top = int(monitor.get("top", 0))
+                screen_width = int(monitor.get("width", 0))
+                screen_height = int(monitor.get("height", 0))
+
+            # ===========================================================
+            #  PHASE 1 -- floating toolbar (no fullscreen overlay)
+            #  The user can freely interact with their desktop.
+            #  Click the Capture button or press Space/Enter to snap.
+            # ===========================================================
+            phase1_cancelled = False
+            phase1_done = False
+
+            p1_root = tk.Tk()
+            p1_root.withdraw()
+            p1_root.overrideredirect(True)
+            p1_root.attributes("-topmost", True)
+            try:
+                p1_root.attributes("-alpha", 0.94)
+            except Exception:
+                pass
+            toolbar_w, toolbar_h = 420, 52
+            toolbar_x = screen_left + (screen_width - toolbar_w) // 2
+            toolbar_y = screen_top + 28
+            p1_root.geometry(f"{toolbar_w}x{toolbar_h}{toolbar_x:+d}{toolbar_y:+d}")
+            p1_root.configure(background="#111827")
+
+            # -- outer frame with border --------------------------------
+            outer = tk.Frame(
+                p1_root, bg="#111827",
+                highlightbackground="#38bdf8", highlightthickness=1,
+            )
+            outer.pack(fill="both", expand=True)
+
+            inner = tk.Frame(outer, bg="#111827")
+            inner.pack(fill="both", expand=True, padx=8, pady=6)
+
+            # -- camera icon + label ------------------------------------
+            tk.Label(
+                inner,
+                text="\U0001f4f7  Arrange your screen, then:",
+                fg="#94a3b8", bg="#111827",
+                font=("Segoe UI", 10), anchor="w",
+            ).pack(side="left", padx=(4, 8))
+
+            # -- Capture button -----------------------------------------
+            def p1_trigger(event=None):
+                nonlocal phase1_done
+                if phase1_done:
+                    return
+                phase1_done = True
+                p1_root.quit()
+
+            def p1_cancel(event=None):
+                nonlocal phase1_cancelled, phase1_done
+                if phase1_done:
+                    return
+                phase1_cancelled = True
+                phase1_done = True
+                p1_root.quit()
+
+            capture_btn = tk.Button(
+                inner, text="\u2318 Capture", fg="white", bg="#0ea5e9",
+                activeforeground="white", activebackground="#0284c7",
+                font=("Segoe UI", 10, "bold"), bd=0,
+                padx=14, pady=2, cursor="hand2",
+                command=p1_trigger,
+            )
+            capture_btn.pack(side="left", padx=(0, 6))
+
+            cancel_btn = tk.Button(
+                inner, text="Cancel", fg="#94a3b8", bg="#1e293b",
+                activeforeground="white", activebackground="#334155",
+                font=("Segoe UI", 10), bd=0,
+                padx=10, pady=2, cursor="hand2",
+                command=p1_cancel,
+            )
+            cancel_btn.pack(side="left")
+
+            # -- keyboard shortcuts (when toolbar has focus) ------------
+            p1_root.bind("<space>", p1_trigger)
+            p1_root.bind("<Return>", p1_trigger)
+            p1_root.bind("<Escape>", p1_cancel)
+
+            p1_root.deiconify()
+            p1_root.focus_force()
+
+            p1_root.mainloop()
+            try:
+                p1_root.destroy()
+            except Exception:
+                pass
+
+            if phase1_cancelled:
+                self.send_response(cmd_id, success=True, data={"cancelled": True})
+                return
+
+            # Brief pause so the toolbar disappears before capture
+            time.sleep(0.15)
+
+
+            # ===========================================================
+            #  PHASE 2 -- capture screenshot & region selection
+            # ===========================================================
+            with mss() as sct:
+                monitor = sct.monitors[0] if sct.monitors else {
+                    "left": 0, "top": 0, "width": 0, "height": 0,
+                }
+                shot = sct.grab(monitor)
+                image = Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
+
+            with io.BytesIO() as buf:
+                image.save(buf, format="PNG", optimize=True)
+                screenshot_base64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+
+            result = {"cancelled": True}
+            root = tk.Tk()
+            root.withdraw()
+            root.overrideredirect(True)
+            root.attributes("-topmost", True)
+            try:
+                root.attributes("-alpha", 0.98)
+            except Exception:
+                pass
+            root.geometry(
+                f"{screen_width}x{screen_height}{screen_left:+d}{screen_top:+d}"
+            )
+            root.deiconify()
+            root.focus_force()
+
+            canvas = tk.Canvas(
+                root, width=screen_width, height=screen_height,
+                highlightthickness=0, cursor="crosshair",
+            )
+            canvas.pack(fill="both", expand=True)
+            photo = ImageTk.PhotoImage(image)
+            canvas.create_image(0, 0, image=photo, anchor="nw")
+            canvas.create_rectangle(
+                0, 0, screen_width, screen_height,
+                fill="black", stipple="gray25", outline="",
+            )
+            canvas.create_rectangle(
+                18, 18, 530, 58,
+                fill="#111827", outline="#38bdf8", width=1,
+            )
+            hint_text = "Drag to select an area. Esc/right-click cancels."
+            if not require_area:
+                hint_text = "Click a point or drag an area. Esc/right-click cancels."
+            canvas.create_text(
+                32, 38, text=hint_text, fill="white", anchor="w",
+                font=("Segoe UI", 12, "bold"),
+            )
+            rect_id = None
+            start = {"x": 0, "y": 0}
+
+            def on_press(event):
+                nonlocal rect_id
+                start["x"] = clamp(event.x, 0, screen_width)
+                start["y"] = clamp(event.y, 0, screen_height)
+                if rect_id is not None:
+                    canvas.delete(rect_id)
+                rect_id = canvas.create_rectangle(
+                    start["x"], start["y"], start["x"], start["y"],
+                    outline="#38bdf8", width=3, fill="#38bdf8", stipple="gray25",
+                )
+
+            def on_drag(event):
+                if rect_id is None:
+                    return
+                x = clamp(event.x, 0, screen_width)
+                y = clamp(event.y, 0, screen_height)
+                canvas.coords(rect_id, start["x"], start["y"], x, y)
+
+            def on_release(event):
+                nonlocal result
+                end_x = clamp(event.x, 0, screen_width)
+                end_y = clamp(event.y, 0, screen_height)
+                left = min(start["x"], end_x)
+                top = min(start["y"], end_y)
+                right = max(start["x"], end_x)
+                bottom = max(start["y"], end_y)
+                width = right - left
+                height = bottom - top
+                if require_area and (width <= 3 or height <= 3):
+                    return
+                if width <= 3 or height <= 3:
+                    left = start["x"]
+                    top = start["y"]
+                    width = 0
+                    height = 0
+                result = {
+                    "cancelled": False,
+                    "x": screen_left + left,
+                    "y": screen_top + top,
+                    "width": width,
+                    "height": height,
+                    "imageX": left,
+                    "imageY": top,
+                    "imageWidth": width,
+                    "imageHeight": height,
+                    "screenLeft": screen_left,
+                    "screenTop": screen_top,
+                    "screenWidth": screen_width,
+                    "screenHeight": screen_height,
+                    "imageWidthFull": image.width,
+                    "imageHeightFull": image.height,
+                    "screenshotBase64": screenshot_base64,
+                }
+                root.quit()
+
+            def cancel(event=None):
+                root.quit()
+
+            canvas.bind("<ButtonPress-1>", on_press)
+            canvas.bind("<B1-Motion>", on_drag)
+            canvas.bind("<ButtonRelease-1>", on_release)
+            canvas.bind("<ButtonPress-3>", cancel)
+            root.bind("<Escape>", cancel)
+            root.mainloop()
+            try:
+                root.destroy()
+            except Exception:
+                pass
+
+            self.send_response(cmd_id, success=True, data=result)
+        except Exception as exc:
+            self.send_response(cmd_id, success=False, error=str(exc))
 
     def handle_template_match(self, command):
         """Template matching: find a template image on screen using OpenCV."""

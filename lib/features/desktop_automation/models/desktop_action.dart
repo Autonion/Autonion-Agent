@@ -4,7 +4,8 @@ class DesktopAction {
   final int? targetIndex; // The numeric index matching the UIElement ID
   final String? targetStableId; // Stable UIA-derived ID when available
   final int? endTargetIndex; // Optional destination element for drag actions
-  final String? endTargetStableId; // Optional stable destination for drag actions
+  final String?
+  endTargetStableId; // Optional stable destination for drag actions
   final double? x; // Optional absolute screen x coordinate
   final double? y; // Optional absolute screen y coordinate
   final double? endX; // Optional absolute drag destination x coordinate
@@ -18,6 +19,7 @@ class DesktopAction {
   final List<String>? keys; // Array of keys for hotkey
   final int? durationMs; // Duration for drag/move-like actions
   final String? button; // left/right/middle
+  final String? coordinateSpace; // screen or screenshot
 
   const DesktopAction({
     required this.type,
@@ -38,6 +40,7 @@ class DesktopAction {
     this.keys,
     this.durationMs,
     this.button,
+    this.coordinateSpace,
   });
 
   factory DesktopAction.fromJson(Map<String, dynamic> json) {
@@ -61,6 +64,7 @@ class DesktopAction {
       keys: (json['keys'] as List?)?.cast<String>(),
       durationMs: json['durationMs'] as int?,
       button: json['button'] as String?,
+      coordinateSpace: json['coordinateSpace'] as String?,
     );
   }
 
@@ -83,6 +87,7 @@ class DesktopAction {
     'keys': keys,
     'durationMs': durationMs,
     'button': button,
+    'coordinateSpace': coordinateSpace,
   };
 
   static double? _asDouble(dynamic value) {

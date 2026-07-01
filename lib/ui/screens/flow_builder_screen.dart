@@ -1,11 +1,13 @@
 import 'dart:convert';
+import 'dart:io';
 import 'dart:math' as math;
-import 'dart:typed_data';
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'package:provider/provider.dart';
+import 'package:window_manager/window_manager.dart';
 
 import '../../features/desktop_automation/models/desktop_flow_models.dart';
 import '../../features/desktop_automation/providers/flow_builder_provider.dart';
@@ -28,7 +30,7 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
 
   // ── Edge connection drag state ──
   Offset? _pendingEdgeStart; // Canvas-space start of rubber-band
-  Offset? _pendingEdgeEnd;   // Canvas-space end of rubber-band (follows cursor)
+  Offset? _pendingEdgeEnd; // Canvas-space end of rubber-band (follows cursor)
   String? _pendingEdgeLabel; // "success" or "failure"
 
   @override
@@ -49,7 +51,7 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
           onKeyEvent: (node, event) {
             if (event is KeyDownEvent &&
                 (event.logicalKey == LogicalKeyboardKey.delete ||
-                 event.logicalKey == LogicalKeyboardKey.backspace)) {
+                    event.logicalKey == LogicalKeyboardKey.backspace)) {
               final selectedId = provider.selectedNodeId;
               if (selectedId != null) {
                 final selectedNode = provider.selectedNode;
@@ -64,28 +66,28 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
             return KeyEventResult.ignored;
           },
           child: Column(
-          children: [
-            // ── Toolbar ──────────────────────────────
-            _buildToolbar(provider, flow),
-            // ── Main content ─────────────────────────
-            Expanded(
-              child: Row(
-                children: [
-                  // ── Node Palette (left) ────────────
-                  _buildNodePalette(provider),
-                  // ── Canvas (center) ────────────────
-                  Expanded(child: _buildCanvas(provider, flow)),
-                  // ── Config Panel (right) ───────────
-                  if (provider.selectedNode != null)
-                    _buildConfigPanel(provider),
-                ],
+            children: [
+              // ── Toolbar ──────────────────────────────
+              _buildToolbar(provider, flow),
+              // ── Main content ─────────────────────────
+              Expanded(
+                child: Row(
+                  children: [
+                    // ── Node Palette (left) ────────────
+                    _buildNodePalette(provider),
+                    // ── Canvas (center) ────────────────
+                    Expanded(child: _buildCanvas(provider, flow)),
+                    // ── Config Panel (right) ───────────
+                    if (provider.selectedNode != null)
+                      _buildConfigPanel(provider),
+                  ],
+                ),
               ),
-            ),
-            // ── Execution Log ────────────────────────
-            if (provider.progressLog.isNotEmpty || provider.isExecuting)
-              _buildExecutionLog(provider),
-          ],
-        ),
+              // ── Execution Log ────────────────────────
+              if (provider.progressLog.isNotEmpty || provider.isExecuting)
+                _buildExecutionLog(provider),
+            ],
+          ),
         );
       },
     );
@@ -242,10 +244,12 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
   Widget _buildNodePalette(FlowBuilderProvider provider) {
     // Exclude start and done — they are auto-placed
     final types = DesktopFlowNodeType.values
-        .where((t) =>
-            t != DesktopFlowNodeType.start &&
-            t != DesktopFlowNodeType.done &&
-            t != DesktopFlowNodeType.hotkey)
+        .where(
+          (t) =>
+              t != DesktopFlowNodeType.start &&
+              t != DesktopFlowNodeType.done &&
+              t != DesktopFlowNodeType.hotkey,
+        )
         .toList();
 
     return Container(
@@ -431,7 +435,8 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
                 isSelected: isSelected,
                 isExecuting: isExecuting,
                 isConnecting: isConnecting,
-                onDelete: node.nodeType != DesktopFlowNodeType.start &&
+                onDelete:
+                    node.nodeType != DesktopFlowNodeType.start &&
                         node.nodeType != DesktopFlowNodeType.done
                     ? () => provider.removeNode(node.id)
                     : null,
@@ -512,8 +517,10 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
             for (final target in flow.nodes) {
               if (target.id == node.id) continue;
               final targetRect = Rect.fromLTWH(
-                target.x - 20, target.y - 20,
-                _nodeWidth + 40, _nodeHeight + 40,
+                target.x - 20,
+                target.y - 20,
+                _nodeWidth + 40,
+                _nodeHeight + 40,
               );
               if (targetRect.contains(_pendingEdgeEnd!)) {
                 provider.completeConnection(target.id);
@@ -661,14 +668,10 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
                   const SizedBox(height: 12),
 
                   // Label
-                  _configField(
-                    'Label',
-                    node.label,
-                    (val) {
-                      node.label = val;
-                      provider.updateNode(node);
-                    },
-                  ),
+                  _configField('Label', node.label, (val) {
+                    node.label = val;
+                    provider.updateNode(node);
+                  }),
 
                   // Type-specific fields
                   ..._buildTypeSpecificFields(provider, node),
@@ -727,15 +730,12 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
 
       case DesktopFlowNodeType.repeat:
         widgets.add(
-          _configField(
-            'Repeat count',
-            (node.repeatCount ?? 3).toString(),
-            (val) {
-              node.repeatCount = int.tryParse(val) ?? 3;
-              provider.updateNode(node);
-            },
-            isNumber: true,
-          ),
+          _configField('Repeat count', (node.repeatCount ?? 3).toString(), (
+            val,
+          ) {
+            node.repeatCount = int.tryParse(val) ?? 3;
+            provider.updateNode(node);
+          }, isNumber: true),
         );
         break;
 
@@ -784,15 +784,10 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
           title: node.autoDetectInput ? 'LIMIT / FALLBACK AREA' : 'TARGET',
         ),
         const SizedBox(height: 12),
-        _configField(
-          'Text to type',
-          node.text ?? '',
-          (val) {
-            node.text = val;
-            provider.updateNode(node);
-          },
-          maxLines: 3,
-        ),
+        _configField('Text to type', node.text ?? '', (val) {
+          node.text = val;
+          provider.updateNode(node);
+        }, maxLines: 3),
       ],
     );
   }
@@ -847,7 +842,8 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
     FlowBuilderProvider provider,
     DesktopFlowNode node,
   ) {
-    final operator = node.conditionOperator ?? node.conditionAttribute ?? 'element_exists';
+    final operator =
+        node.conditionOperator ?? node.conditionAttribute ?? 'element_exists';
     final needsValue = <String>{
       'name_contains',
       'name_equals',
@@ -881,14 +877,32 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
           label: 'Condition',
           value: operator,
           items: const [
-            DropdownMenuItem(value: 'element_exists', child: Text('Target exists')),
-            DropdownMenuItem(value: 'element_missing', child: Text('Target missing')),
-            DropdownMenuItem(value: 'name_contains', child: Text('Name contains')),
+            DropdownMenuItem(
+              value: 'element_exists',
+              child: Text('Target exists'),
+            ),
+            DropdownMenuItem(
+              value: 'element_missing',
+              child: Text('Target missing'),
+            ),
+            DropdownMenuItem(
+              value: 'name_contains',
+              child: Text('Name contains'),
+            ),
             DropdownMenuItem(value: 'name_equals', child: Text('Name equals')),
-            DropdownMenuItem(value: 'value_contains', child: Text('Value contains')),
-            DropdownMenuItem(value: 'value_equals', child: Text('Value equals')),
+            DropdownMenuItem(
+              value: 'value_contains',
+              child: Text('Value contains'),
+            ),
+            DropdownMenuItem(
+              value: 'value_equals',
+              child: Text('Value equals'),
+            ),
             DropdownMenuItem(value: 'role_equals', child: Text('Role equals')),
-            DropdownMenuItem(value: 'class_contains', child: Text('Class contains')),
+            DropdownMenuItem(
+              value: 'class_contains',
+              child: Text('Class contains'),
+            ),
             DropdownMenuItem(value: 'enabled', child: Text('Enabled')),
             DropdownMenuItem(value: 'focused', child: Text('Focused')),
           ],
@@ -900,14 +914,10 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
           },
         ),
         if (needsValue)
-          _configField(
-            'Compare value',
-            node.conditionValue ?? '',
-            (val) {
-              node.conditionValue = val;
-              provider.updateNode(node);
-            },
-          ),
+          _configField('Compare value', node.conditionValue ?? '', (val) {
+            node.conditionValue = val;
+            provider.updateNode(node);
+          }),
         _buildTargetSection(provider, node),
 
         // Edge routing summary
@@ -972,7 +982,9 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
           child: Text(
             target ?? '(not connected)',
             style: TextStyle(
-              color: target != null ? AppColors.textPrimary : AppColors.textMuted,
+              color: target != null
+                  ? AppColors.textPrimary
+                  : AppColors.textMuted,
               fontSize: 12,
               fontStyle: target == null ? FontStyle.italic : FontStyle.normal,
             ),
@@ -1007,7 +1019,8 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
         const SizedBox(height: 8),
 
         // Template preview
-        if (node.templateImagePath != null && node.templateImagePath!.isNotEmpty)
+        if (node.templateImagePath != null &&
+            node.templateImagePath!.isNotEmpty)
           Container(
             width: double.infinity,
             padding: const EdgeInsets.all(8),
@@ -1018,8 +1031,23 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
             ),
             child: Column(
               children: [
-                const Icon(Icons.image, size: 32, color: AppColors.textMuted),
-                const SizedBox(height: 4),
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(6),
+                  child: SizedBox(
+                    height: 88,
+                    width: double.infinity,
+                    child: Image.file(
+                      File(node.templateImagePath!),
+                      fit: BoxFit.contain,
+                      errorBuilder: (context, error, stackTrace) => const Icon(
+                        Icons.broken_image_outlined,
+                        size: 32,
+                        color: AppColors.textMuted,
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 6),
                 Text(
                   node.templateImagePath!.split('/').last.split('\\').last,
                   style: const TextStyle(
@@ -1100,8 +1128,19 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
           value: node.visualAction ?? 'click',
           items: const [
             DropdownMenuItem(value: 'click', child: Text('Click at match')),
+            DropdownMenuItem(
+              value: 'double_click',
+              child: Text('Double-click at match'),
+            ),
+            DropdownMenuItem(
+              value: 'right_click',
+              child: Text('Right-click at match'),
+            ),
             DropdownMenuItem(value: 'wait', child: Text('Wait for match')),
-            DropdownMenuItem(value: 'assert_exists', child: Text('Assert exists')),
+            DropdownMenuItem(
+              value: 'assert_exists',
+              child: Text('Assert exists'),
+            ),
           ],
           onChanged: (value) {
             if (value == null) return;
@@ -1113,32 +1152,158 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
     );
   }
 
-  void _captureTemplateRegion(
+  Future<void> _captureTemplateRegion(
     FlowBuilderProvider provider,
     DesktopFlowNode node,
-  ) {
-    // TODO: Implement screenshot capture + region selection overlay
-    // For now, show a placeholder dialog
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: AppColors.surface,
-        title: const Text(
-          'Capture Template',
-          style: TextStyle(color: AppColors.textPrimary),
-        ),
-        content: const Text(
-          'This will take a screenshot and let you draw a region to use as the template for image matching.\n\nComing in next update.',
-          style: TextStyle(color: AppColors.textSecondary),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('OK'),
+  ) async {
+    try {
+      final selection = await _selectScreenRegionOverlay(
+        provider,
+        requireArea: true,
+      );
+      if (selection == null || !mounted) return;
+      if (!selection.target.hasArea) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Draw a region for the visual template'),
           ),
-        ],
-      ),
+        );
+        return;
+      }
+
+      final templateBytes = await _cropTemplatePng(
+        selection.capture.imageBytes,
+        selection.target,
+      );
+      final templatePath = await provider.saveVisualTemplate(
+        node.id,
+        templateBytes,
+      );
+
+      node.templateImagePath = templatePath;
+      node.matchThreshold ??= 0.8;
+      node.visualAction ??= 'click';
+      node.searchRegionX = null;
+      node.searchRegionY = null;
+      node.searchRegionWidth = null;
+      node.searchRegionHeight = null;
+      provider.updateNode(node);
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Visual trigger template captured')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Template capture failed: $e')));
+    }
+  }
+
+  Future<_OverlayRegionSelection?> _selectScreenRegionOverlay(
+    FlowBuilderProvider provider, {
+    required bool requireArea,
+  }) async {
+    try {
+      await windowManager.hide();
+    } catch (_) {}
+
+    try {
+      final result = await provider.selectScreenRegion(
+        requireArea: requireArea,
+      );
+      if (result == null) return null;
+
+      final encoded = result['screenshotBase64'] as String?;
+      if (encoded == null || encoded.isEmpty) {
+        throw StateError('Screenshot unavailable');
+      }
+
+      final capture = _ScreenCapture(
+        imageBytes: base64Decode(encoded),
+        imageWidth:
+            _asInt(result['imageWidthFull']) ??
+            _asInt(result['screenWidth']) ??
+            0,
+        imageHeight:
+            _asInt(result['imageHeightFull']) ??
+            _asInt(result['screenHeight']) ??
+            0,
+        screenLeft: _asInt(result['screenLeft']) ?? 0,
+        screenTop: _asInt(result['screenTop']) ?? 0,
+        screenWidth: _asInt(result['screenWidth']) ?? 0,
+        screenHeight: _asInt(result['screenHeight']) ?? 0,
+      );
+      final target = _ScreenTargetSelection(
+        x: _asDouble(result['x']) ?? 0,
+        y: _asDouble(result['y']) ?? 0,
+        width: _asDouble(result['width']) ?? 0,
+        height: _asDouble(result['height']) ?? 0,
+        imageX: _asDouble(result['imageX']) ?? 0,
+        imageY: _asDouble(result['imageY']) ?? 0,
+        imageWidth: _asDouble(result['imageWidth']) ?? 0,
+        imageHeight: _asDouble(result['imageHeight']) ?? 0,
+      );
+      return _OverlayRegionSelection(capture: capture, target: target);
+    } finally {
+      try {
+        await windowManager.show();
+        await windowManager.focus();
+      } catch (_) {}
+    }
+  }
+
+  int? _asInt(dynamic value) {
+    if (value is int) return value;
+    if (value is num) return value.round();
+    return int.tryParse(value?.toString() ?? '');
+  }
+
+  double? _asDouble(dynamic value) {
+    if (value is num) return value.toDouble();
+    return double.tryParse(value?.toString() ?? '');
+  }
+
+  Future<Uint8List> _cropTemplatePng(
+    Uint8List imageBytes,
+    _ScreenTargetSelection selection,
+  ) async {
+    final codec = await ui.instantiateImageCodec(imageBytes);
+    final frame = await codec.getNextFrame();
+    final image = frame.image;
+
+    final left = selection.imageX.floor().clamp(0, image.width - 1).toInt();
+    final top = selection.imageY.floor().clamp(0, image.height - 1).toInt();
+    final right = (selection.imageX + selection.imageWidth)
+        .ceil()
+        .clamp(left + 1, image.width)
+        .toInt();
+    final bottom = (selection.imageY + selection.imageHeight)
+        .ceil()
+        .clamp(top + 1, image.height)
+        .toInt();
+    final width = math.max(1, right - left);
+    final height = math.max(1, bottom - top);
+
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder);
+    final src = Rect.fromLTWH(
+      left.toDouble(),
+      top.toDouble(),
+      width.toDouble(),
+      height.toDouble(),
     );
+    final dst = Rect.fromLTWH(0, 0, width.toDouble(), height.toDouble());
+    canvas.drawImageRect(image, src, dst, Paint());
+
+    final picture = recorder.endRecording();
+    final cropped = await picture.toImage(width, height);
+    final bytes = await cropped.toByteData(format: ui.ImageByteFormat.png);
+    if (bytes == null) {
+      throw StateError('Failed to encode template image');
+    }
+    return bytes.buffer.asUint8List(bytes.offsetInBytes, bytes.lengthInBytes);
   }
 
   // ═══════════════════════════════════════════════════════
@@ -1157,10 +1322,19 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
           label: 'Detect Action',
           value: node.detectAction ?? 'click_first',
           items: const [
-            DropdownMenuItem(value: 'click_first', child: Text('Click first match')),
+            DropdownMenuItem(
+              value: 'click_first',
+              child: Text('Click first match'),
+            ),
             DropdownMenuItem(value: 'count', child: Text('Count matches')),
-            DropdownMenuItem(value: 'extract_text', child: Text('Extract text')),
-            DropdownMenuItem(value: 'wait_until_visible', child: Text('Wait until visible')),
+            DropdownMenuItem(
+              value: 'extract_text',
+              child: Text('Extract text'),
+            ),
+            DropdownMenuItem(
+              value: 'wait_until_visible',
+              child: Text('Wait until visible'),
+            ),
           ],
           onChanged: (value) {
             if (value == null) return;
@@ -1226,10 +1400,7 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
           segments: UITargetMode.values.map((m) {
             return ButtonSegment(
               value: m,
-              label: Text(
-                m.displayName,
-                style: const TextStyle(fontSize: 11),
-              ),
+              label: Text(m.displayName, style: const TextStyle(fontSize: 11)),
             );
           }).toList(),
           selected: {mode},
@@ -1245,9 +1416,7 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
               }
               return AppColors.textSecondary;
             }),
-            textStyle: WidgetStateProperty.all(
-              const TextStyle(fontSize: 11),
-            ),
+            textStyle: WidgetStateProperty.all(const TextStyle(fontSize: 11)),
           ),
         ),
 
@@ -1258,37 +1427,31 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
           Row(
             children: [
               Expanded(
-                child: _configField(
-                  'X',
-                  (target?.x ?? 0).toInt().toString(),
-                  (val) {
-                    node.target = UITargetSelector.region(
-                      double.tryParse(val) ?? 0,
-                      target?.y ?? 0,
-                      target?.width ?? 0,
-                      target?.height ?? 0,
-                    );
-                    provider.updateNode(node);
-                  },
-                  isNumber: true,
-                ),
+                child: _configField('X', (target?.x ?? 0).toInt().toString(), (
+                  val,
+                ) {
+                  node.target = UITargetSelector.region(
+                    double.tryParse(val) ?? 0,
+                    target?.y ?? 0,
+                    target?.width ?? 0,
+                    target?.height ?? 0,
+                  );
+                  provider.updateNode(node);
+                }, isNumber: true),
               ),
               const SizedBox(width: 8),
               Expanded(
-                child: _configField(
-                  'Y',
-                  (target?.y ?? 0).toInt().toString(),
-                  (val) {
-                    node.target = UITargetSelector.region(
-                      target?.x ?? 0,
-                      double.tryParse(val) ?? 0,
-                      target?.width ?? 0,
-                      target?.height ?? 0,
-                    );
-                    provider.updateNode(node);
-                  },
-                  isNumber: true,
-                ),
+                child: _configField('Y', (target?.y ?? 0).toInt().toString(), (
+                  val,
+                ) {
+                  node.target = UITargetSelector.region(
+                    target?.x ?? 0,
+                    double.tryParse(val) ?? 0,
+                    target?.width ?? 0,
+                    target?.height ?? 0,
+                  );
+                  provider.updateNode(node);
+                }, isNumber: true),
               ),
             ],
           ),
@@ -1340,64 +1503,46 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
             hintText: 'e.g. btn_save_document',
           ),
         ] else if (mode == UITargetMode.uiaAttribute) ...[
-          _configField(
-            'Name (contains)',
-            target?.name ?? '',
-            (val) {
-              node.target = UITargetSelector.fromAttributes(
-                name: val.isNotEmpty ? val : null,
-                role: target?.role,
-                automationId: target?.automationId,
-                className: target?.className,
-                controlType: target?.controlType,
-              );
-              provider.updateNode(node);
-            },
-            hintText: 'e.g. Save, OK, File',
-          ),
-          _configField(
-            'Role',
-            target?.role ?? '',
-            (val) {
-              node.target = UITargetSelector.fromAttributes(
-                name: target?.name,
-                role: val.isNotEmpty ? val : null,
-                automationId: target?.automationId,
-                className: target?.className,
-                controlType: target?.controlType,
-              );
-              provider.updateNode(node);
-            },
-            hintText: 'e.g. Button, TextBox, MenuItem',
-          ),
-          _configField(
-            'Automation ID',
-            target?.automationId ?? '',
-            (val) {
-              node.target = UITargetSelector.fromAttributes(
-                name: target?.name,
-                role: target?.role,
-                automationId: val.isNotEmpty ? val : null,
-                className: target?.className,
-                controlType: target?.controlType,
-              );
-              provider.updateNode(node);
-            },
-          ),
-          _configField(
-            'Class Name',
-            target?.className ?? '',
-            (val) {
-              node.target = UITargetSelector.fromAttributes(
-                name: target?.name,
-                role: target?.role,
-                automationId: target?.automationId,
-                className: val.isNotEmpty ? val : null,
-                controlType: target?.controlType,
-              );
-              provider.updateNode(node);
-            },
-          ),
+          _configField('Name (contains)', target?.name ?? '', (val) {
+            node.target = UITargetSelector.fromAttributes(
+              name: val.isNotEmpty ? val : null,
+              role: target?.role,
+              automationId: target?.automationId,
+              className: target?.className,
+              controlType: target?.controlType,
+            );
+            provider.updateNode(node);
+          }, hintText: 'e.g. Save, OK, File'),
+          _configField('Role', target?.role ?? '', (val) {
+            node.target = UITargetSelector.fromAttributes(
+              name: target?.name,
+              role: val.isNotEmpty ? val : null,
+              automationId: target?.automationId,
+              className: target?.className,
+              controlType: target?.controlType,
+            );
+            provider.updateNode(node);
+          }, hintText: 'e.g. Button, TextBox, MenuItem'),
+          _configField('Automation ID', target?.automationId ?? '', (val) {
+            node.target = UITargetSelector.fromAttributes(
+              name: target?.name,
+              role: target?.role,
+              automationId: val.isNotEmpty ? val : null,
+              className: target?.className,
+              controlType: target?.controlType,
+            );
+            provider.updateNode(node);
+          }),
+          _configField('Class Name', target?.className ?? '', (val) {
+            node.target = UITargetSelector.fromAttributes(
+              name: target?.name,
+              role: target?.role,
+              automationId: target?.automationId,
+              className: val.isNotEmpty ? val : null,
+              controlType: target?.controlType,
+            );
+            provider.updateNode(node);
+          }),
         ],
       ],
     );
@@ -1407,8 +1552,7 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
     FlowBuilderProvider provider,
     DesktopFlowNode node,
   ) {
-    final config = node.keyboardConfig ??
-        const KeyboardNodeConfig(keys: []);
+    final config = node.keyboardConfig ?? const KeyboardNodeConfig(keys: []);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1463,27 +1607,9 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
             _quickKeyButton('Esc', ['escape'], provider, node, config),
             _quickKeyButton('Tab', ['tab'], provider, node, config),
             _quickKeyButton('F5', ['f5'], provider, node, config),
-            _quickKeyButton(
-              'Alt+Tab',
-              ['alt', 'tab'],
-              provider,
-              node,
-              config,
-            ),
-            _quickKeyButton(
-              'Alt+F4',
-              ['alt', 'f4'],
-              provider,
-              node,
-              config,
-            ),
-            _quickKeyButton(
-              'Win+D',
-              ['win', 'd'],
-              provider,
-              node,
-              config,
-            ),
+            _quickKeyButton('Alt+Tab', ['alt', 'tab'], provider, node, config),
+            _quickKeyButton('Alt+F4', ['alt', 'f4'], provider, node, config),
+            _quickKeyButton('Win+D', ['win', 'd'], provider, node, config),
           ],
         ),
 
@@ -1499,8 +1625,10 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
             labelStyle: const TextStyle(color: AppColors.textSecondary),
             filled: true,
             fillColor: AppColors.surfaceVariant,
-            contentPadding:
-                const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            contentPadding: const EdgeInsets.symmetric(
+              horizontal: 12,
+              vertical: 10,
+            ),
             border: OutlineInputBorder(
               borderRadius: BorderRadius.circular(8),
               borderSide: const BorderSide(color: AppColors.border),
@@ -1511,10 +1639,7 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
             ),
           ),
           items: KeyboardActionType.values.map((a) {
-            return DropdownMenuItem(
-              value: a,
-              child: Text(a.displayName),
-            );
+            return DropdownMenuItem(value: a, child: Text(a.displayName));
           }).toList(),
           onChanged: (val) {
             if (val == null) return;
@@ -1532,21 +1657,16 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
         const SizedBox(height: 8),
 
         // Repeat count
-        _configField(
-          'Repeat count',
-          config.repeatCount.toString(),
-          (val) {
-            node.keyboardConfig = KeyboardNodeConfig(
-              keys: config.keys,
-              action: config.action,
-              holdDurationMs: config.holdDurationMs,
-              repeatCount: int.tryParse(val) ?? 1,
-              delayBetweenMs: config.delayBetweenMs,
-            );
-            provider.updateNode(node);
-          },
-          isNumber: true,
-        ),
+        _configField('Repeat count', config.repeatCount.toString(), (val) {
+          node.keyboardConfig = KeyboardNodeConfig(
+            keys: config.keys,
+            action: config.action,
+            holdDurationMs: config.holdDurationMs,
+            repeatCount: int.tryParse(val) ?? 1,
+            delayBetweenMs: config.delayBetweenMs,
+          );
+          provider.updateNode(node);
+        }, isNumber: true),
       ],
     );
   }
@@ -1617,8 +1737,10 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
             labelStyle: const TextStyle(color: AppColors.textSecondary),
             filled: true,
             fillColor: AppColors.surfaceVariant,
-            contentPadding:
-                const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            contentPadding: const EdgeInsets.symmetric(
+              horizontal: 12,
+              vertical: 10,
+            ),
             border: OutlineInputBorder(
               borderRadius: BorderRadius.circular(8),
               borderSide: const BorderSide(color: AppColors.border),
@@ -1657,45 +1779,26 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
     DesktopFlowNode node,
   ) async {
     try {
-      final screen = await provider.captureTargetScreen();
-      final encoded = screen.screenshotBase64;
-      if (!mounted) return;
-      if (encoded == null || encoded.isEmpty) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(screen.screenshotError ?? 'Screenshot unavailable')),
-        );
-        return;
-      }
-
-      final selection = await showDialog<_ScreenTargetSelection>(
-        context: context,
-        builder: (ctx) => _TargetPickerDialog(
-          imageBytes: base64Decode(encoded),
-          imageWidth: screen.screenshotWidth ?? screen.screenWidth,
-          imageHeight: screen.screenshotHeight ?? screen.screenHeight,
-          screenLeft: screen.screenLeft,
-          screenTop: screen.screenTop,
-          screenWidth: screen.screenWidth,
-          screenHeight: screen.screenHeight,
-          initialTarget: node.target,
-        ),
+      final selection = await _selectScreenRegionOverlay(
+        provider,
+        requireArea: false,
       );
-
       if (selection == null || !mounted) return;
-      node.target = selection.hasArea
+      final target = selection.target;
+      node.target = target.hasArea
           ? UITargetSelector.region(
-              selection.x,
-              selection.y,
-              selection.width,
-              selection.height,
+              target.x,
+              target.y,
+              target.width,
+              target.height,
             )
-          : UITargetSelector.coordinate(selection.x, selection.y);
+          : UITargetSelector.coordinate(target.x, target.y);
       provider.updateNode(node);
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Target capture failed: $e')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Target capture failed: $e')));
     }
   }
 
@@ -1712,11 +1815,14 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setDialogState) {
           final query = searchCtrl.text.trim().toLowerCase();
-          final apps = provider.availableApps.where((app) {
-            if (query.isEmpty) return true;
-            return app.name.toLowerCase().contains(query) ||
-                app.path.toLowerCase().contains(query);
-          }).take(250).toList();
+          final apps = provider.availableApps
+              .where((app) {
+                if (query.isEmpty) return true;
+                return app.name.toLowerCase().contains(query) ||
+                    app.path.toLowerCase().contains(query);
+              })
+              .take(250)
+              .toList();
 
           return AlertDialog(
             backgroundColor: AppColors.surface,
@@ -1749,7 +1855,10 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
                       padding: const EdgeInsets.only(bottom: 8),
                       child: Text(
                         provider.appLoadError!,
-                        style: const TextStyle(color: AppColors.error, fontSize: 12),
+                        style: const TextStyle(
+                          color: AppColors.error,
+                          fontSize: 12,
+                        ),
                         maxLines: 2,
                         overflow: TextOverflow.ellipsis,
                       ),
@@ -1825,7 +1934,6 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
     searchCtrl.dispose();
   }
 
-
   //  EXECUTION LOG
   // ═══════════════════════════════════════════════════════
 
@@ -1855,8 +1963,10 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
                 const Spacer(),
                 if (provider.lastResult != null)
                   Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: 2,
+                    ),
                     decoration: BoxDecoration(
                       color: provider.lastResult!.success
                           ? AppColors.success.withValues(alpha: 0.15)
@@ -1892,8 +2002,8 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
                       color: prog.status == 'failed'
                           ? AppColors.error
                           : prog.status == 'completed'
-                              ? AppColors.success
-                              : AppColors.textSecondary,
+                          ? AppColors.success
+                          : AppColors.textSecondary,
                       fontSize: 12,
                       fontFamily: 'monospace',
                     ),
@@ -1966,8 +2076,9 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
                     style: const TextStyle(color: AppColors.textPrimary),
                     decoration: InputDecoration(
                       labelText: 'Hotkey combo',
-                      labelStyle:
-                          const TextStyle(color: AppColors.textSecondary),
+                      labelStyle: const TextStyle(
+                        color: AppColors.textSecondary,
+                      ),
                       hintText: 'e.g. ctrl+shift+f1',
                       hintStyle: const TextStyle(color: AppColors.textMuted),
                       filled: true,
@@ -1995,8 +2106,9 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
                     keyboardType: TextInputType.number,
                     decoration: InputDecoration(
                       labelText: 'Interval (milliseconds)',
-                      labelStyle:
-                          const TextStyle(color: AppColors.textSecondary),
+                      labelStyle: const TextStyle(
+                        color: AppColors.textSecondary,
+                      ),
                       filled: true,
                       fillColor: AppColors.surfaceVariant,
                       border: OutlineInputBorder(
@@ -2038,8 +2150,7 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
                 provider.updateFlowTrigger(finalTrigger);
                 Navigator.pop(ctx);
               },
-              style:
-                  FilledButton.styleFrom(backgroundColor: AppColors.primary),
+              style: FilledButton.styleFrom(backgroundColor: AppColors.primary),
               child: const Text('Apply'),
             ),
           ],
@@ -2092,10 +2203,7 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
     );
   }
 
-  InputDecoration _inputDecoration({
-    required String label,
-    String? hintText,
-  }) {
+  InputDecoration _inputDecoration({required String label, String? hintText}) {
     return InputDecoration(
       labelText: label,
       labelStyle: const TextStyle(color: AppColors.textSecondary),
@@ -2118,7 +2226,6 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
       ),
     );
   }
-
 
   IconData _nodeIcon(DesktopFlowNodeType type) {
     switch (type) {
@@ -2220,7 +2327,10 @@ class _ConfigTextFieldState extends State<_ConfigTextField> {
         hintStyle: const TextStyle(color: AppColors.textMuted),
         filled: true,
         fillColor: AppColors.surfaceVariant,
-        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        contentPadding: const EdgeInsets.symmetric(
+          horizontal: 12,
+          vertical: 10,
+        ),
         border: OutlineInputBorder(
           borderRadius: BorderRadius.circular(8),
           borderSide: const BorderSide(color: AppColors.border),
@@ -2239,23 +2349,7 @@ class _ConfigTextFieldState extends State<_ConfigTextField> {
   }
 }
 
-class _ScreenTargetSelection {
-  final double x;
-  final double y;
-  final double width;
-  final double height;
-
-  const _ScreenTargetSelection({
-    required this.x,
-    required this.y,
-    required this.width,
-    required this.height,
-  });
-
-  bool get hasArea => width > 3 && height > 3;
-}
-
-class _TargetPickerDialog extends StatefulWidget {
+class _ScreenCapture {
   final Uint8List imageBytes;
   final int imageWidth;
   final int imageHeight;
@@ -2263,9 +2357,8 @@ class _TargetPickerDialog extends StatefulWidget {
   final int screenTop;
   final int screenWidth;
   final int screenHeight;
-  final UITargetSelector? initialTarget;
 
-  const _TargetPickerDialog({
+  const _ScreenCapture({
     required this.imageBytes,
     required this.imageWidth,
     required this.imageHeight,
@@ -2273,187 +2366,39 @@ class _TargetPickerDialog extends StatefulWidget {
     required this.screenTop,
     required this.screenWidth,
     required this.screenHeight,
-    this.initialTarget,
+  });
+}
+
+class _OverlayRegionSelection {
+  final _ScreenCapture capture;
+  final _ScreenTargetSelection target;
+
+  const _OverlayRegionSelection({required this.capture, required this.target});
+}
+
+class _ScreenTargetSelection {
+  final double x;
+  final double y;
+  final double width;
+  final double height;
+  final double imageX;
+  final double imageY;
+  final double imageWidth;
+  final double imageHeight;
+
+  const _ScreenTargetSelection({
+    required this.x,
+    required this.y,
+    required this.width,
+    required this.height,
+    required this.imageX,
+    required this.imageY,
+    required this.imageWidth,
+    required this.imageHeight,
   });
 
-  @override
-  State<_TargetPickerDialog> createState() => _TargetPickerDialogState();
+  bool get hasArea => width > 3 && height > 3;
 }
-
-class _TargetPickerDialogState extends State<_TargetPickerDialog> {
-  Offset? _start;
-  Offset? _end;
-
-  @override
-  void initState() {
-    super.initState();
-    final target = widget.initialTarget;
-    if (target?.mode == UITargetMode.coordinate && target?.x != null && target?.y != null) {
-      final x = _screenToImageX(target!.x!);
-      final y = _screenToImageY(target.y!);
-      _start = Offset(x, y);
-      _end = target.hasRegion
-          ? Offset(_screenToImageX(target.x! + target.width!), _screenToImageY(target.y! + target.height!))
-          : _start;
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return AlertDialog(
-      backgroundColor: AppColors.surface,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(14),
-        side: const BorderSide(color: AppColors.border),
-      ),
-      title: const Text(
-        'Select Target',
-        style: TextStyle(color: AppColors.textPrimary),
-      ),
-      content: SizedBox(
-        width: 920,
-        height: 620,
-        child: LayoutBuilder(
-          builder: (context, constraints) {
-            final scale = math.min(
-              constraints.maxWidth / widget.imageWidth,
-              constraints.maxHeight / widget.imageHeight,
-            );
-            final displayWidth = widget.imageWidth * scale;
-            final displayHeight = widget.imageHeight * scale;
-            final left = (constraints.maxWidth - displayWidth) / 2;
-            final top = (constraints.maxHeight - displayHeight) / 2;
-            final imageRect = Rect.fromLTWH(left, top, displayWidth, displayHeight);
-            final selectionRect = _selectionDisplayRect(imageRect, scale);
-
-            return GestureDetector(
-              onTapDown: (details) => _setPoint(details.localPosition, imageRect, scale),
-              onPanStart: (details) => _setPoint(details.localPosition, imageRect, scale),
-              onPanUpdate: (details) => _setEnd(details.localPosition, imageRect, scale),
-              child: MouseRegion(
-                cursor: SystemMouseCursors.precise,
-                child: Stack(
-                  children: [
-                    Positioned.fromRect(
-                      rect: imageRect,
-                      child: Image.memory(widget.imageBytes, fit: BoxFit.fill),
-                    ),
-                    if (selectionRect != null)
-                      Positioned.fromRect(
-                        rect: selectionRect,
-                        child: IgnorePointer(
-                          child: DecoratedBox(
-                            decoration: BoxDecoration(
-                              color: AppColors.primary.withValues(alpha: 0.16),
-                              border: Border.all(color: AppColors.primary, width: 2),
-                            ),
-                          ),
-                        ),
-                      ),
-                    if (_start != null && (_end == null || (_start! - _end!).distance <= 3))
-                      Positioned(
-                        left: imageRect.left + _start!.dx * scale - 8,
-                        top: imageRect.top + _start!.dy * scale - 8,
-                        child: IgnorePointer(
-                          child: Container(
-                            width: 16,
-                            height: 16,
-                            decoration: BoxDecoration(
-                              shape: BoxShape.circle,
-                              color: AppColors.primary.withValues(alpha: 0.25),
-                              border: Border.all(color: AppColors.primary, width: 2),
-                            ),
-                          ),
-                        ),
-                      ),
-                  ],
-                ),
-              ),
-            );
-          },
-        ),
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context),
-          child: const Text('Cancel'),
-        ),
-        FilledButton(
-          onPressed: _start == null ? null : () => Navigator.pop(context, _buildSelection()),
-          child: const Text('Save Target'),
-        ),
-      ],
-    );
-  }
-
-  Rect? _selectionDisplayRect(Rect imageRect, double scale) {
-    if (_start == null || _end == null || (_start! - _end!).distance <= 3) return null;
-    final rect = Rect.fromPoints(_start!, _end!);
-    return Rect.fromLTWH(
-      imageRect.left + rect.left * scale,
-      imageRect.top + rect.top * scale,
-      rect.width * scale,
-      rect.height * scale,
-    );
-  }
-
-  void _setPoint(Offset local, Rect imageRect, double scale) {
-    if (!imageRect.contains(local)) return;
-    final point = _displayToImage(local, imageRect, scale);
-    setState(() {
-      _start = point;
-      _end = point;
-    });
-  }
-
-  void _setEnd(Offset local, Rect imageRect, double scale) {
-    if (_start == null) return;
-    setState(() => _end = _displayToImage(local, imageRect, scale));
-  }
-
-  Offset _displayToImage(Offset local, Rect imageRect, double scale) {
-    final x = ((local.dx - imageRect.left) / scale).clamp(0, widget.imageWidth.toDouble()).toDouble();
-    final y = ((local.dy - imageRect.top) / scale).clamp(0, widget.imageHeight.toDouble()).toDouble();
-    return Offset(x, y);
-  }
-
-  _ScreenTargetSelection _buildSelection() {
-    final start = _start!;
-    final end = _end ?? _start!;
-    final imageRect = Rect.fromPoints(start, end);
-    if (imageRect.width <= 3 || imageRect.height <= 3) {
-      return _ScreenTargetSelection(
-        x: _imageToScreenX(start.dx),
-        y: _imageToScreenY(start.dy),
-        width: 0,
-        height: 0,
-      );
-    }
-    return _ScreenTargetSelection(
-      x: _imageToScreenX(imageRect.left),
-      y: _imageToScreenY(imageRect.top),
-      width: imageRect.width * widget.screenWidth / widget.imageWidth,
-      height: imageRect.height * widget.screenHeight / widget.imageHeight,
-    );
-  }
-
-  double _imageToScreenX(double x) {
-    return widget.screenLeft + x * widget.screenWidth / widget.imageWidth;
-  }
-
-  double _imageToScreenY(double y) {
-    return widget.screenTop + y * widget.screenHeight / widget.imageHeight;
-  }
-
-  double _screenToImageX(double x) {
-    return (x - widget.screenLeft) * widget.imageWidth / widget.screenWidth;
-  }
-
-  double _screenToImageY(double y) {
-    return (y - widget.screenTop) * widget.imageHeight / widget.screenHeight;
-  }
-}
-
 
 // ═══════════════════════════════════════════════════════════════════
 //  PALETTE ITEM
@@ -2478,11 +2423,7 @@ class _PaletteItem extends StatelessWidget {
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
             child: Row(
               children: [
-                Icon(
-                  _icon,
-                  size: 16,
-                  color: _color,
-                ),
+                Icon(_icon, size: 16, color: _color),
                 const SizedBox(width: 10),
                 Text(
                   type.displayName,
@@ -2657,16 +2598,11 @@ class _NodeCard extends StatelessWidget {
             padding: const EdgeInsets.only(top: 4),
             child: Text(
               node.configSummary,
-              style: const TextStyle(
-                color: AppColors.textMuted,
-                fontSize: 10,
-              ),
+              style: const TextStyle(color: AppColors.textMuted, fontSize: 10),
               maxLines: 2,
               overflow: TextOverflow.ellipsis,
             ),
           ),
-
-
         ],
       ),
     );
@@ -2893,14 +2829,7 @@ class _EdgePainter extends CustomPainter {
     final dy = (to.dy - from.dy).abs() * 0.5;
     final path = Path()
       ..moveTo(from.dx, from.dy)
-      ..cubicTo(
-        from.dx,
-        from.dy + dy,
-        to.dx,
-        to.dy - dy,
-        to.dx,
-        to.dy,
-      );
+      ..cubicTo(from.dx, from.dy + dy, to.dx, to.dy - dy, to.dx, to.dy);
 
     canvas.drawPath(path, paint);
 
@@ -3034,11 +2963,7 @@ class _EdgeCutButtonState extends State<_EdgeCutButton> {
                 ),
               ],
             ),
-            child: Icon(
-              Icons.content_cut,
-              size: 14,
-              color: widget.color,
-            ),
+            child: Icon(Icons.content_cut, size: 14, color: widget.color),
           ),
         ),
       ),
