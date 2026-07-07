@@ -327,6 +327,22 @@ class FlowBuilderProvider extends ChangeNotifier {
     return result;
   }
 
+  /// Opens the interactive UI element picker overlay.
+  ///
+  /// The Python bridge shows a fullscreen overlay with bounding boxes
+  /// around clickable elements. If screenshots are blocked, it falls
+  /// back to a searchable list dialog. Returns the selected element's
+  /// UIA attributes, or `null` if cancelled.
+  Future<Map<String, dynamic>?> selectUIElement() async {
+    final response = await _bridge.sendCommand('select_ui_element');
+    if (response is! Map) return null;
+    final result = response.map(
+      (key, value) => MapEntry(key.toString(), value),
+    );
+    if (result['cancelled'] == true) return null;
+    return result;
+  }
+
   Future<String> saveVisualTemplate(String nodeId, Uint8List pngBytes) async {
     final flow = _currentFlow;
     if (flow == null) {

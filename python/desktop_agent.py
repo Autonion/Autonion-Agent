@@ -62,6 +62,8 @@ class DesktopAgent:
                     self.handle_select_screen_region(command)
                 elif action == "template_match":
                     self.handle_template_match(command)
+                elif action == "select_ui_element":
+                    self.handle_select_ui_element(command)
                 else:
                     self.send_response(cmd_id, success=False, error=f"Unknown action: {action}")
             except Exception as exc:
@@ -1065,6 +1067,417 @@ class DesktopAgent:
             self.send_response(cmd_id, success=False,
                                error="OpenCV (cv2) is not installed. Install with: pip install opencv-python")
         except Exception as exc:
+            self.send_response(cmd_id, success=False, error=str(exc))
+
+    def handle_select_ui_element(self, command):
+        """Interactive UI element picker with bounding-box overlay.
+
+        1. Enumerates the UIA accessibility tree for clickable elements.
+        2. Attempts a screenshot of the virtual desktop.
+        3. If screenshot succeeds  → fullscreen overlay with bounding boxes.
+           If screenshot fails     → searchable list dialog fallback.
+        """
+        cmd_id = command.get("id")
+
+        try:
+            import tkinter as tk
+            from PIL import Image, ImageTk
+
+            # -- helpers ------------------------------------------------
+            def clamp(value, lower, upper):
+                return max(lower, min(upper, int(round(value))))
+
+            # -- 1. Enumerate UIA tree ----------------------------------
+            elements = self._get_accessibility_tree()
+            clickable = [
+                el for el in elements
+                if el.get("isClickable")
+                and not el.get("isOffscreen", False)
+                and el.get("isEnabled", True)
+                and el.get("boundingBox", {}).get("width", 0) > 2
+                and el.get("boundingBox", {}).get("height", 0) > 2
+            ]
+            if not clickable:
+                self.send_response(cmd_id, success=True, data={"cancelled": True, "error": "No clickable elements found"})
+                return
+
+            # -- 2. Discover virtual-desktop geometry -------------------
+            with mss() as sct:
+                monitor = sct.monitors[0] if sct.monitors else {
+                    "left": 0, "top": 0, "width": 0, "height": 0,
+                }
+                screen_left = int(monitor.get("left", 0))
+                screen_top = int(monitor.get("top", 0))
+                screen_width = int(monitor.get("width", 0))
+                screen_height = int(monitor.get("height", 0))
+
+            # -- 3. Attempt screenshot ----------------------------------
+            screenshot_ok = False
+            image = None
+            try:
+                with mss() as sct:
+                    monitor = sct.monitors[0]
+                    shot = sct.grab(monitor)
+                    image = Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
+                screenshot_ok = True
+            except Exception as exc:
+                eprint(f"Screenshot failed for element picker, using list fallback: {exc}")
+
+            if screenshot_ok and image is not None:
+                # =======================================================
+                #  OVERLAY MODE: bounding boxes on screenshot
+                # =======================================================
+                result = {"cancelled": True}
+                selected_index = {"value": -1}
+                hover_index = {"value": -1}
+
+                root = tk.Tk()
+                root.withdraw()
+                root.overrideredirect(True)
+                root.attributes("-topmost", True)
+                try:
+                    root.attributes("-alpha", 0.97)
+                except Exception:
+                    pass
+                root.geometry(
+                    f"{screen_width}x{screen_height}{screen_left:+d}{screen_top:+d}"
+                )
+
+                canvas = tk.Canvas(
+                    root, width=screen_width, height=screen_height,
+                    highlightthickness=0, cursor="hand2",
+                )
+                canvas.pack(fill="both", expand=True)
+                photo = ImageTk.PhotoImage(image)
+                canvas.create_image(0, 0, image=photo, anchor="nw")
+
+                # Dim overlay
+                canvas.create_rectangle(
+                    0, 0, screen_width, screen_height,
+                    fill="black", stipple="gray25", outline="",
+                )
+
+                # -- Draw bounding boxes --------------------------------
+                box_ids = []  # (canvas_rect_id, element_dict)
+                BLUE = "#38bdf8"
+                GREEN = "#22c55e"
+                HOVER_FILL = "#38bdf8"
+
+                for el in clickable:
+                    bb = el.get("boundingBox", {})
+                    bx = int(bb.get("x", 0)) - screen_left
+                    by = int(bb.get("y", 0)) - screen_top
+                    bw = int(bb.get("width", 0))
+                    bh = int(bb.get("height", 0))
+
+                    # Skip elements fully outside the screen
+                    if bx + bw <= 0 or by + bh <= 0 or bx >= screen_width or by >= screen_height:
+                        continue
+
+                    is_input = el.get("isKeyboardFocusable", False)
+                    color = GREEN if is_input else BLUE
+
+                    rect_id = canvas.create_rectangle(
+                        bx, by, bx + bw, by + bh,
+                        outline=color, width=2, fill="", tags="bbox",
+                    )
+                    box_ids.append((rect_id, el, bx, by, bw, bh))
+
+                # -- Header bar -----------------------------------------
+                canvas.create_rectangle(
+                    14, 14, 620, 58,
+                    fill="#111827", outline="#38bdf8", width=1,
+                )
+                canvas.create_text(
+                    28, 36,
+                    text=f"\u2318 Click an element to select it  |  {len(box_ids)} elements  |  Esc to cancel",
+                    fill="white", anchor="w",
+                    font=("Segoe UI", 12, "bold"),
+                )
+
+                # -- Tooltip label (hidden until hover) -----------------
+                tooltip_bg = canvas.create_rectangle(0, 0, 0, 0, fill="#1e293b", outline="#38bdf8", width=1, state="hidden")
+                tooltip_text = canvas.create_text(0, 0, text="", fill="white", anchor="nw", font=("Segoe UI", 10), state="hidden")
+
+                # -- Hover tracking -------------------------------------
+                prev_highlight = {"rect_id": None, "original_outline": None}
+
+                def on_motion(event):
+                    mx, my = event.x, event.y
+                    best_idx = -1
+                    best_area = float("inf")
+
+                    for idx, (rid, el, bx, by, bw, bh) in enumerate(box_ids):
+                        if bx <= mx <= bx + bw and by <= my <= by + bh:
+                            area = bw * bh
+                            if area < best_area:
+                                best_area = area
+                                best_idx = idx
+
+                    if best_idx == hover_index["value"]:
+                        return
+                    hover_index["value"] = best_idx
+
+                    # Restore previous highlight
+                    if prev_highlight["rect_id"] is not None:
+                        canvas.itemconfigure(
+                            prev_highlight["rect_id"],
+                            outline=prev_highlight["original_outline"],
+                            width=2, fill="",
+                        )
+                        prev_highlight["rect_id"] = None
+
+                    if best_idx < 0:
+                        canvas.itemconfigure(tooltip_bg, state="hidden")
+                        canvas.itemconfigure(tooltip_text, state="hidden")
+                        return
+
+                    rid, el, bx, by, bw, bh = box_ids[best_idx]
+                    is_input = el.get("isKeyboardFocusable", False)
+                    original_color = GREEN if is_input else BLUE
+                    prev_highlight["rect_id"] = rid
+                    prev_highlight["original_outline"] = original_color
+
+                    canvas.itemconfigure(
+                        rid, outline="#facc15", width=3,
+                        fill=HOVER_FILL, stipple="gray25",
+                    )
+
+                    # Update tooltip
+                    name = el.get("name", "") or ""
+                    role = el.get("role", "") or ""
+                    auto_id = el.get("automationId", "") or ""
+                    tip_parts = []
+                    if name:
+                        tip_parts.append(f"Name: {name[:60]}")
+                    if role:
+                        tip_parts.append(f"Role: {role}")
+                    if auto_id:
+                        tip_parts.append(f"ID: {auto_id[:40]}")
+                    tip_parts.append(f"Bounds: {bx},{by} {bw}x{bh}")
+                    tip_text = "\n".join(tip_parts)
+
+                    tx = clamp(bx, 10, screen_width - 350)
+                    ty = clamp(by - 70, 10, screen_height - 80)
+                    if ty >= by - 5:
+                        ty = clamp(by + bh + 8, 10, screen_height - 80)
+
+                    canvas.coords(tooltip_text, tx + 8, ty + 6)
+                    canvas.itemconfigure(tooltip_text, text=tip_text, state="normal")
+                    # Measure text bbox for background
+                    tbbox = canvas.bbox(tooltip_text)
+                    if tbbox:
+                        canvas.coords(tooltip_bg, tbbox[0] - 6, tbbox[1] - 4, tbbox[2] + 6, tbbox[3] + 4)
+                        canvas.itemconfigure(tooltip_bg, state="normal")
+                    canvas.tag_raise(tooltip_bg)
+                    canvas.tag_raise(tooltip_text)
+
+                def on_click(event):
+                    nonlocal result
+                    idx = hover_index["value"]
+                    if idx < 0:
+                        return
+                    _, el, _, _, _, _ = box_ids[idx]
+                    result = {
+                        "cancelled": False,
+                        "element": el,
+                        "screenshotAvailable": True,
+                    }
+                    root.quit()
+
+                def cancel(event=None):
+                    root.quit()
+
+                canvas.bind("<Motion>", on_motion)
+                canvas.bind("<ButtonRelease-1>", on_click)
+                canvas.bind("<ButtonPress-3>", cancel)
+                root.bind("<Escape>", cancel)
+
+                root.deiconify()
+                root.focus_force()
+                root.mainloop()
+                try:
+                    root.destroy()
+                except Exception:
+                    pass
+
+                self.send_response(cmd_id, success=True, data=result)
+            else:
+                # =======================================================
+                #  LIST FALLBACK MODE: searchable list dialog
+                # =======================================================
+                result = {"cancelled": True}
+
+                root = tk.Tk()
+                root.withdraw()
+                root.title("Select UI Element")
+                root.attributes("-topmost", True)
+
+                dialog_w, dialog_h = 700, 600
+                dialog_x = screen_left + (screen_width - dialog_w) // 2
+                dialog_y = screen_top + (screen_height - dialog_h) // 2
+                root.geometry(f"{dialog_w}x{dialog_h}{dialog_x:+d}{dialog_y:+d}")
+                root.configure(bg="#111827")
+
+                # -- Header
+                header = tk.Frame(root, bg="#111827")
+                header.pack(fill="x", padx=16, pady=(16, 8))
+
+                tk.Label(
+                    header, text="\u2318 Select UI Element",
+                    fg="white", bg="#111827",
+                    font=("Segoe UI", 14, "bold"),
+                ).pack(side="left")
+
+                tk.Label(
+                    header,
+                    text="(Screenshot unavailable \u2014 showing element list)",
+                    fg="#94a3b8", bg="#111827",
+                    font=("Segoe UI", 10),
+                ).pack(side="left", padx=(12, 0))
+
+                # -- Search field
+                search_frame = tk.Frame(root, bg="#111827")
+                search_frame.pack(fill="x", padx=16, pady=(0, 8))
+
+                search_var = tk.StringVar()
+                search_entry = tk.Entry(
+                    search_frame, textvariable=search_var,
+                    bg="#1e293b", fg="white", insertbackground="white",
+                    font=("Segoe UI", 11), relief="flat", bd=0,
+                )
+                search_entry.pack(fill="x", ipady=6, ipadx=8)
+                search_entry.insert(0, "")
+                search_entry.focus_set()
+
+                # -- Element listbox
+                list_frame = tk.Frame(root, bg="#111827")
+                list_frame.pack(fill="both", expand=True, padx=16, pady=(0, 8))
+
+                scrollbar = tk.Scrollbar(list_frame)
+                scrollbar.pack(side="right", fill="y")
+
+                listbox = tk.Listbox(
+                    list_frame, bg="#1e293b", fg="white",
+                    selectbackground="#38bdf8", selectforeground="#111827",
+                    font=("Consolas", 10), relief="flat", bd=0,
+                    yscrollcommand=scrollbar.set,
+                    activestyle="none",
+                )
+                listbox.pack(fill="both", expand=True)
+                scrollbar.config(command=listbox.yview)
+
+                # -- Detail panel at bottom
+                detail_var = tk.StringVar(value="Click an element to see details")
+                detail_label = tk.Label(
+                    root, textvariable=detail_var,
+                    fg="#94a3b8", bg="#1e293b",
+                    font=("Consolas", 9), anchor="w", justify="left",
+                    wraplength=dialog_w - 40,
+                )
+                detail_label.pack(fill="x", padx=16, pady=(0, 8), ipady=6, ipadx=8)
+
+                # -- Buttons
+                btn_frame = tk.Frame(root, bg="#111827")
+                btn_frame.pack(fill="x", padx=16, pady=(0, 16))
+
+                # Track filtered elements
+                filtered_elements = {"data": list(clickable)}
+
+                def format_element_line(el):
+                    name = (el.get("name") or "")[:45]
+                    role = el.get("role") or "?"
+                    auto_id = (el.get("automationId") or "")[:20]
+                    bb = el.get("boundingBox", {})
+                    bx, by = bb.get("x", 0), bb.get("y", 0)
+                    return f"[{role:12s}]  {name:45s}  {auto_id:20s}  ({bx},{by})"
+
+                def refresh_list(*_args):
+                    query = search_var.get().strip().lower()
+                    listbox.delete(0, "end")
+                    filtered = []
+                    for el in clickable:
+                        if query:
+                            searchable = " ".join([
+                                el.get("name") or "",
+                                el.get("role") or "",
+                                el.get("automationId") or "",
+                                el.get("className") or "",
+                            ]).lower()
+                            if query not in searchable:
+                                continue
+                        filtered.append(el)
+                        listbox.insert("end", format_element_line(el))
+                    filtered_elements["data"] = filtered
+
+                def on_select(event):
+                    sel = listbox.curselection()
+                    if not sel:
+                        return
+                    idx = sel[0]
+                    el = filtered_elements["data"][idx]
+                    bb = el.get("boundingBox", {})
+                    details = (
+                        f"Name: {el.get('name', '')}  |  Role: {el.get('role', '')}  |  "
+                        f"AutomationId: {el.get('automationId', '')}  |  "
+                        f"Class: {el.get('className', '')}  |  "
+                        f"Bounds: {bb.get('x',0)},{bb.get('y',0)} {bb.get('width',0)}x{bb.get('height',0)}"
+                    )
+                    detail_var.set(details)
+
+                def confirm(event=None):
+                    nonlocal result
+                    sel = listbox.curselection()
+                    if not sel:
+                        return
+                    idx = sel[0]
+                    el = filtered_elements["data"][idx]
+                    result = {
+                        "cancelled": False,
+                        "element": el,
+                        "screenshotAvailable": False,
+                    }
+                    root.quit()
+
+                def cancel(event=None):
+                    root.quit()
+
+                search_var.trace_add("write", refresh_list)
+                listbox.bind("<<ListboxSelect>>", on_select)
+                listbox.bind("<Double-Button-1>", confirm)
+                root.bind("<Return>", confirm)
+                root.bind("<Escape>", cancel)
+
+                select_btn = tk.Button(
+                    btn_frame, text="Select", fg="white", bg="#0ea5e9",
+                    activeforeground="white", activebackground="#0284c7",
+                    font=("Segoe UI", 10, "bold"), bd=0,
+                    padx=20, pady=4, cursor="hand2",
+                    command=confirm,
+                )
+                select_btn.pack(side="right", padx=(8, 0))
+
+                cancel_btn = tk.Button(
+                    btn_frame, text="Cancel", fg="#94a3b8", bg="#1e293b",
+                    activeforeground="white", activebackground="#334155",
+                    font=("Segoe UI", 10), bd=0,
+                    padx=14, pady=4, cursor="hand2",
+                    command=cancel,
+                )
+                cancel_btn.pack(side="right")
+
+                refresh_list()
+                root.deiconify()
+                root.mainloop()
+                try:
+                    root.destroy()
+                except Exception:
+                    pass
+
+                self.send_response(cmd_id, success=True, data=result)
+
+        except Exception as exc:
+            eprint(f"select_ui_element error: {exc}")
             self.send_response(cmd_id, success=False, error=str(exc))
 
     def _capture_screenshot(self, tier):

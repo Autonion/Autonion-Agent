@@ -57,7 +57,7 @@ enum DesktopFlowNodeType {
       case DesktopFlowNodeType.visualTrigger:
         return 'Visual Trigger';
       case DesktopFlowNodeType.uiDetect:
-        return 'UI Detect';
+        return 'UI Attribute';
       case DesktopFlowNodeType.done:
         return 'Done';
     }

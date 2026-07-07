@@ -1307,19 +1307,170 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
   }
 
   // ═══════════════════════════════════════════════════════
-  //  UI DETECT CONFIG
+  //  UI ATTRIBUTE CONFIG
   // ═══════════════════════════════════════════════════════
 
   Widget _buildUIDetectSection(
     FlowBuilderProvider provider,
     DesktopFlowNode node,
   ) {
+    final target = node.target;
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // Action dropdown
+        // ── Pick Element button ─────────────────────────
+        const SizedBox(height: 4),
+        SizedBox(
+          width: double.infinity,
+          child: ElevatedButton.icon(
+            onPressed: () => _selectUIElement(provider, node),
+            icon: const Icon(Icons.ads_click, size: 18),
+            label: const Text('Pick Element from Screen'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppColors.accent,
+              foregroundColor: Colors.white,
+              padding: const EdgeInsets.symmetric(vertical: 12),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(8),
+              ),
+            ),
+          ),
+        ),
+
+        const SizedBox(height: 10),
+
+        // ── Selected element summary card ───────────────
+        if (target != null &&
+            target.mode == UITargetMode.uiaAttribute &&
+            ((target.name ?? '').isNotEmpty ||
+                (target.role ?? '').isNotEmpty ||
+                (target.automationId ?? '').isNotEmpty))
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: AppColors.background,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: AppColors.accent.withValues(alpha: 0.4)),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Icon(
+                      Icons.check_circle,
+                      size: 14,
+                      color: AppColors.success,
+                    ),
+                    const SizedBox(width: 6),
+                    const Text(
+                      'SELECTED ELEMENT',
+                      style: TextStyle(
+                        color: AppColors.textMuted,
+                        fontSize: 10,
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: 1.2,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                if ((target.name ?? '').isNotEmpty)
+                  _attributeRow('Name', target.name!),
+                if ((target.role ?? '').isNotEmpty)
+                  _attributeRow('Role', target.role!),
+                if ((target.automationId ?? '').isNotEmpty)
+                  _attributeRow('AutomationId', target.automationId!),
+                if ((target.className ?? '').isNotEmpty)
+                  _attributeRow('ClassName', target.className!),
+              ],
+            ),
+          )
+        else
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: AppColors.background,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: AppColors.border),
+            ),
+            child: const Text(
+              'No element selected yet.\nClick "Pick Element from Screen" to choose a UI element.',
+              style: TextStyle(
+                color: AppColors.textMuted,
+                fontSize: 11,
+                fontStyle: FontStyle.italic,
+              ),
+              textAlign: TextAlign.center,
+            ),
+          ),
+
+        const SizedBox(height: 12),
+
+        // ── Manual attribute editing ────────────────────
+        const Text(
+          'ATTRIBUTES (EDITABLE)',
+          style: TextStyle(
+            color: AppColors.textMuted,
+            fontSize: 11,
+            fontWeight: FontWeight.w600,
+            letterSpacing: 1.2,
+          ),
+        ),
+        const SizedBox(height: 8),
+
+        _configField('Name (contains)', target?.name ?? '', (val) {
+          node.target = UITargetSelector.fromAttributes(
+            name: val.isNotEmpty ? val : null,
+            role: target?.role,
+            automationId: target?.automationId,
+            className: target?.className,
+            controlType: target?.controlType,
+          );
+          provider.updateNode(node);
+        }, hintText: 'e.g. Save, OK, File'),
+
+        _configField('Role', target?.role ?? '', (val) {
+          node.target = UITargetSelector.fromAttributes(
+            name: target?.name,
+            role: val.isNotEmpty ? val : null,
+            automationId: target?.automationId,
+            className: target?.className,
+            controlType: target?.controlType,
+          );
+          provider.updateNode(node);
+        }, hintText: 'e.g. Button, TextBox, MenuItem'),
+
+        _configField('Automation ID', target?.automationId ?? '', (val) {
+          node.target = UITargetSelector.fromAttributes(
+            name: target?.name,
+            role: target?.role,
+            automationId: val.isNotEmpty ? val : null,
+            className: target?.className,
+            controlType: target?.controlType,
+          );
+          provider.updateNode(node);
+        }),
+
+        _configField('Class Name', target?.className ?? '', (val) {
+          node.target = UITargetSelector.fromAttributes(
+            name: target?.name,
+            role: target?.role,
+            automationId: target?.automationId,
+            className: val.isNotEmpty ? val : null,
+            controlType: target?.controlType,
+          );
+          provider.updateNode(node);
+        }),
+
+        const SizedBox(height: 12),
+
+        // ── Action dropdown ─────────────────────────────
         _buildDropdown<String>(
-          label: 'Detect Action',
+          label: 'Action',
           value: node.detectAction ?? 'click_first',
           items: const [
             DropdownMenuItem(
@@ -1345,7 +1496,7 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
 
         const SizedBox(height: 8),
 
-        // Output key for downstream nodes
+        // ── Output key ──────────────────────────────────
         _configField(
           'Output context key',
           node.detectOutputKey ?? 'detected_element',
@@ -1354,12 +1505,41 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
             provider.updateNode(node);
           },
         ),
-
-        const SizedBox(height: 8),
-
-        // Target section (reuses the shared target section)
-        _buildTargetSection(provider, node, title: 'ELEMENT TO DETECT'),
       ],
+    );
+  }
+
+  /// Helper to display a label/value row in the selected element summary.
+  Widget _attributeRow(String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 3),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 90,
+            child: Text(
+              label,
+              style: const TextStyle(
+                color: AppColors.textMuted,
+                fontSize: 11,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+          Expanded(
+            child: Text(
+              value,
+              style: const TextStyle(
+                color: AppColors.textPrimary,
+                fontSize: 11,
+              ),
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+        ],
+      ),
     );
   }
 
@@ -1799,6 +1979,52 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text('Target capture failed: $e')));
+    }
+  }
+
+  /// Opens the interactive UI element picker (bounding-box overlay or list
+  /// fallback) and populates the node's [UITargetSelector] with the
+  /// selected element's UIA attributes.
+  Future<void> _selectUIElement(
+    FlowBuilderProvider provider,
+    DesktopFlowNode node,
+  ) async {
+    try {
+      await windowManager.hide();
+    } catch (_) {}
+
+    try {
+      final result = await provider.selectUIElement();
+      if (result == null || !mounted) return;
+
+      final element = result['element'];
+      if (element is! Map) return;
+
+      final el = element.map((k, v) => MapEntry(k.toString(), v));
+
+      node.target = UITargetSelector.fromAttributes(
+        name: el['name'] as String?,
+        role: el['role'] as String?,
+        automationId: el['automationId'] as String?,
+        className: el['className'] as String?,
+      );
+      provider.updateNode(node);
+
+      if (!mounted) return;
+      final elName = el['name'] as String? ?? el['role'] as String? ?? 'element';
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Selected: $elName')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Element selection failed: $e')),
+      );
+    } finally {
+      try {
+        await windowManager.show();
+        await windowManager.focus();
+      } catch (_) {}
     }
   }
 
