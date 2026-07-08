@@ -191,6 +191,14 @@ class _CreateFlowButton extends StatelessWidget {
                 controller: nameCtrl,
                 autofocus: true,
                 style: const TextStyle(color: AppColors.textPrimary),
+                textInputAction: TextInputAction.done,
+                onSubmitted: (_) {
+                  final name = nameCtrl.text.trim();
+                  if (name.isNotEmpty) {
+                    provider.newFlow(name, description: descCtrl.text.trim());
+                    Navigator.pop(ctx);
+                  }
+                },
                 decoration: InputDecoration(
                   labelText: 'Flow Name',
                   labelStyle: const TextStyle(color: AppColors.textSecondary),

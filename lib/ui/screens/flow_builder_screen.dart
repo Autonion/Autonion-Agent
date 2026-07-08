@@ -728,6 +728,10 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
         widgets.add(_buildScrollSection(provider, node));
         break;
 
+      case DesktopFlowNodeType.swipe:
+        widgets.add(_buildSwipeSection(provider, node));
+        break;
+
       case DesktopFlowNodeType.repeat:
         widgets.add(
           _configField('Repeat count', (node.repeatCount ?? 3).toString(), (
@@ -1429,6 +1433,11 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
             automationId: target?.automationId,
             className: target?.className,
             controlType: target?.controlType,
+            hintX: target?.hintX,
+            hintY: target?.hintY,
+            hintWidth: target?.hintWidth,
+            hintHeight: target?.hintHeight,
+            hintValue: target?.hintValue,
           );
           provider.updateNode(node);
         }, hintText: 'e.g. Save, OK, File'),
@@ -1440,6 +1449,11 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
             automationId: target?.automationId,
             className: target?.className,
             controlType: target?.controlType,
+            hintX: target?.hintX,
+            hintY: target?.hintY,
+            hintWidth: target?.hintWidth,
+            hintHeight: target?.hintHeight,
+            hintValue: target?.hintValue,
           );
           provider.updateNode(node);
         }, hintText: 'e.g. Button, TextBox, MenuItem'),
@@ -1451,6 +1465,11 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
             automationId: val.isNotEmpty ? val : null,
             className: target?.className,
             controlType: target?.controlType,
+            hintX: target?.hintX,
+            hintY: target?.hintY,
+            hintWidth: target?.hintWidth,
+            hintHeight: target?.hintHeight,
+            hintValue: target?.hintValue,
           );
           provider.updateNode(node);
         }),
@@ -1462,6 +1481,11 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
             automationId: target?.automationId,
             className: val.isNotEmpty ? val : null,
             controlType: target?.controlType,
+            hintX: target?.hintX,
+            hintY: target?.hintY,
+            hintWidth: target?.hintWidth,
+            hintHeight: target?.hintHeight,
+            hintValue: target?.hintValue,
           );
           provider.updateNode(node);
         }),
@@ -1690,6 +1714,11 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
               automationId: target?.automationId,
               className: target?.className,
               controlType: target?.controlType,
+              hintX: target?.hintX,
+              hintY: target?.hintY,
+              hintWidth: target?.hintWidth,
+              hintHeight: target?.hintHeight,
+              hintValue: target?.hintValue,
             );
             provider.updateNode(node);
           }, hintText: 'e.g. Save, OK, File'),
@@ -1700,6 +1729,11 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
               automationId: target?.automationId,
               className: target?.className,
               controlType: target?.controlType,
+              hintX: target?.hintX,
+              hintY: target?.hintY,
+              hintWidth: target?.hintWidth,
+              hintHeight: target?.hintHeight,
+              hintValue: target?.hintValue,
             );
             provider.updateNode(node);
           }, hintText: 'e.g. Button, TextBox, MenuItem'),
@@ -1710,6 +1744,11 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
               automationId: val.isNotEmpty ? val : null,
               className: target?.className,
               controlType: target?.controlType,
+              hintX: target?.hintX,
+              hintY: target?.hintY,
+              hintWidth: target?.hintWidth,
+              hintHeight: target?.hintHeight,
+              hintValue: target?.hintValue,
             );
             provider.updateNode(node);
           }),
@@ -1720,6 +1759,11 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
               automationId: target?.automationId,
               className: val.isNotEmpty ? val : null,
               controlType: target?.controlType,
+              hintX: target?.hintX,
+              hintY: target?.hintY,
+              hintWidth: target?.hintWidth,
+              hintHeight: target?.hintHeight,
+              hintValue: target?.hintValue,
             );
             provider.updateNode(node);
           }),
@@ -1954,6 +1998,220 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
   }
 
   // ═══════════════════════════════════════════════════════
+  //  SWIPE CONFIG SECTION
+  // ═══════════════════════════════════════════════════════
+
+  Widget _buildSwipeSection(
+    FlowBuilderProvider provider,
+    DesktopFlowNode node,
+  ) {
+    final hasEndpoints = node.swipeStartX != null &&
+        node.swipeStartY != null &&
+        node.swipeEndX != null &&
+        node.swipeEndY != null;
+
+    return Column(
+      children: [
+        // ── Pick on Screen button ──
+        SizedBox(
+          width: double.infinity,
+          child: ElevatedButton.icon(
+            icon: const Icon(Icons.my_location, size: 16),
+            label: Text(
+              hasEndpoints ? 'Re-pick Swipe on Screen' : 'Pick Swipe on Screen',
+            ),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppColors.primary,
+              foregroundColor: Colors.white,
+              padding: const EdgeInsets.symmetric(vertical: 10),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(8),
+              ),
+            ),
+            onPressed: () => _pickSwipeOnScreen(provider, node),
+          ),
+        ),
+
+        // ── Picked coordinates summary ──
+        if (hasEndpoints) ...[
+          const SizedBox(height: 10),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: AppColors.surfaceVariant,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: AppColors.border),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Container(
+                      width: 10,
+                      height: 10,
+                      decoration: const BoxDecoration(
+                        color: Color(0xFF22c55e),
+                        shape: BoxShape.circle,
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    Text(
+                      'Start: (${node.swipeStartX}, ${node.swipeStartY})',
+                      style: const TextStyle(
+                        color: AppColors.textPrimary,
+                        fontSize: 12,
+                        fontFamily: 'monospace',
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 4),
+                Row(
+                  children: [
+                    Container(
+                      width: 10,
+                      height: 10,
+                      decoration: const BoxDecoration(
+                        color: Color(0xFFef4444),
+                        shape: BoxShape.circle,
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    Text(
+                      'End: (${node.swipeEndX}, ${node.swipeEndY})',
+                      style: const TextStyle(
+                        color: AppColors.textPrimary,
+                        fontSize: 12,
+                        fontFamily: 'monospace',
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                InkWell(
+                  onTap: () {
+                    node.swipeStartX = null;
+                    node.swipeStartY = null;
+                    node.swipeEndX = null;
+                    node.swipeEndY = null;
+                    provider.updateNode(node);
+                  },
+                  child: const Text(
+                    'Clear \u2715',
+                    style: TextStyle(
+                      color: AppColors.textMuted,
+                      fontSize: 11,
+                      decoration: TextDecoration.underline,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+
+        // ── Fallback: manual direction/distance (when no endpoints) ──
+        if (!hasEndpoints) ...[
+          const SizedBox(height: 10),
+          const Text(
+            'Or configure manually:',
+            style: TextStyle(color: AppColors.textMuted, fontSize: 11),
+          ),
+          const SizedBox(height: 8),
+          DropdownButtonFormField<String>(
+            value: node.swipeDirection ?? 'down',
+            dropdownColor: AppColors.surfaceElevated,
+            style: const TextStyle(color: AppColors.textPrimary, fontSize: 13),
+            decoration: InputDecoration(
+              labelText: 'Direction',
+              labelStyle: const TextStyle(color: AppColors.textSecondary),
+              filled: true,
+              fillColor: AppColors.surfaceVariant,
+              contentPadding: const EdgeInsets.symmetric(
+                horizontal: 12,
+                vertical: 10,
+              ),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(8),
+                borderSide: const BorderSide(color: AppColors.border),
+              ),
+              enabledBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(8),
+                borderSide: const BorderSide(color: AppColors.border),
+              ),
+            ),
+            items: const [
+              DropdownMenuItem(value: 'up', child: Text('Up')),
+              DropdownMenuItem(value: 'down', child: Text('Down')),
+              DropdownMenuItem(value: 'left', child: Text('Left')),
+              DropdownMenuItem(value: 'right', child: Text('Right')),
+            ],
+            onChanged: (val) {
+              node.swipeDirection = val ?? 'down';
+              provider.updateNode(node);
+            },
+          ),
+          const SizedBox(height: 8),
+          _configField(
+            'Distance (pixels)',
+            (node.swipeDistance ?? 300).toString(),
+            (val) {
+              node.swipeDistance = int.tryParse(val) ?? 300;
+              provider.updateNode(node);
+            },
+            isNumber: true,
+          ),
+        ],
+
+        // ── Duration (always shown) ──
+        const SizedBox(height: 8),
+        _configField(
+          'Duration (ms)',
+          (node.swipeDuration ?? 350).toString(),
+          (val) {
+            node.swipeDuration = int.tryParse(val) ?? 350;
+            provider.updateNode(node);
+          },
+          isNumber: true,
+        ),
+      ],
+    );
+  }
+
+  /// Opens the swipe point picker overlay and saves coordinates to the node.
+  Future<void> _pickSwipeOnScreen(
+    FlowBuilderProvider provider,
+    DesktopFlowNode node,
+  ) async {
+    try {
+      await windowManager.hide();
+    } catch (_) {}
+
+    try {
+      final result = await provider.selectSwipePoints();
+      if (result == null || !mounted) return;
+
+      node.swipeStartX = (result['startX'] as num?)?.toInt();
+      node.swipeStartY = (result['startY'] as num?)?.toInt();
+      node.swipeEndX = (result['endX'] as num?)?.toInt();
+      node.swipeEndY = (result['endY'] as num?)?.toInt();
+      provider.updateNode(node);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Swipe pick failed: $e')),
+      );
+    } finally {
+      try {
+        await windowManager.show();
+        await windowManager.focus();
+      } catch (_) {}
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════
   Future<void> _selectTargetOnScreen(
     FlowBuilderProvider provider,
     DesktopFlowNode node,
@@ -2002,11 +2260,23 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
 
       final el = element.map((k, v) => MapEntry(k.toString(), v));
 
+      // Extract bounding box for spatial disambiguation hints
+      final bb = el['boundingBox'] as Map?;
+      final bbX = (bb?['x'] as num?)?.toDouble() ?? 0;
+      final bbY = (bb?['y'] as num?)?.toDouble() ?? 0;
+      final bbW = (bb?['width'] as num?)?.toDouble() ?? 0;
+      final bbH = (bb?['height'] as num?)?.toDouble() ?? 0;
+
       node.target = UITargetSelector.fromAttributes(
         name: el['name'] as String?,
         role: el['role'] as String?,
         automationId: el['automationId'] as String?,
         className: el['className'] as String?,
+        hintX: bbX + bbW / 2,   // center X
+        hintY: bbY + bbH / 2,   // center Y
+        hintWidth: bbW,
+        hintHeight: bbH,
+        hintValue: el['value'] as String?,
       );
       provider.updateNode(node);
 
@@ -2477,6 +2747,8 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
         return Icons.screenshot_monitor;
       case DesktopFlowNodeType.scroll:
         return Icons.swap_vert;
+      case DesktopFlowNodeType.swipe:
+        return Icons.swipe;
       case DesktopFlowNodeType.repeat:
         return Icons.loop;
       case DesktopFlowNodeType.conditional:
@@ -2858,6 +3130,8 @@ class _NodeCard extends StatelessWidget {
         return Icons.screenshot_monitor;
       case DesktopFlowNodeType.scroll:
         return Icons.swap_vert;
+      case DesktopFlowNodeType.swipe:
+        return Icons.swipe;
       case DesktopFlowNodeType.repeat:
         return Icons.loop;
       case DesktopFlowNodeType.conditional:
@@ -2890,6 +3164,7 @@ class _NodeCard extends StatelessWidget {
       case DesktopFlowNodeType.screenshot:
         return AppColors.warning;
       case DesktopFlowNodeType.scroll:
+      case DesktopFlowNodeType.swipe:
         return AppColors.primaryLight;
       case DesktopFlowNodeType.repeat:
       case DesktopFlowNodeType.conditional:

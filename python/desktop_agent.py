@@ -64,6 +64,8 @@ class DesktopAgent:
                     self.handle_template_match(command)
                 elif action == "select_ui_element":
                     self.handle_select_ui_element(command)
+                elif action == "select_swipe_points":
+                    self.handle_select_swipe_points(command)
                 else:
                     self.send_response(cmd_id, success=False, error=f"Unknown action: {action}")
             except Exception as exc:
@@ -146,6 +148,18 @@ class DesktopAgent:
                 pyautogui.hotkey(*[str(k).lower() for k in keys])
             elif action_type == "launch_app":
                 self._launch_app(payload)
+            elif action_type == "take_screenshot":
+                result = self._take_screenshot(payload)
+                mouse_x, mouse_y = pyautogui.position()
+                self.send_response(command.get("id"), success=True, data={
+                    "status": "executed",
+                    "action": action_type,
+                    "durationMs": int((time.monotonic() - started) * 1000),
+                    "mouseX": mouse_x,
+                    "mouseY": mouse_y,
+                    "filepath": result.get("filepath"),
+                })
+                return
             elif action_type == "done":
                 eprint("Agent indicates task is complete.")
             else:
@@ -498,16 +512,30 @@ class DesktopAgent:
             pyautogui.scroll(wheel_clicks)
         elif direction in ("left", "right"):
             clicks = -wheel_clicks if direction == "left" else wheel_clicks
-            if hasattr(pyautogui, "hscroll"):
+            try:
                 pyautogui.hscroll(clicks)
-            else:
-                pyautogui.keyDown("shift")
-                try:
-                    pyautogui.scroll(clicks)
-                finally:
-                    pyautogui.keyUp("shift")
+            except AttributeError:
+                pyautogui.scroll(clicks)  # fallback for older pyautogui
         else:
             raise ValueError(f"Unsupported scroll direction: {direction}")
+
+    def _take_screenshot(self, payload):
+        """Capture full screen via mss and save to Pictures/Autonion Screenshots/."""
+        from PIL import Image
+        import datetime
+
+        with mss() as sct:
+            monitor = sct.monitors[0]  # full virtual desktop
+            shot = sct.grab(monitor)
+            img = Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
+
+        save_dir = os.path.join(os.path.expanduser("~"), "Pictures", "Autonion Screenshots")
+        os.makedirs(save_dir, exist_ok=True)
+        filename = f"screenshot_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+        filepath = os.path.join(save_dir, filename)
+        img.save(filepath, "PNG")
+        eprint(f"Screenshot saved: {filepath}")
+        return {"filepath": filepath}
 
     def _type_text(self, text):
         if not text:
@@ -565,7 +593,11 @@ class DesktopAgent:
 
         x = int(round(float(x)))
         y = int(round(float(y)))
-        x, y = self._map_screenshot_point_if_needed(x, y)
+        # Skip screenshot-to-screen remapping when coordinates are already in
+        # absolute screen space (e.g. from the swipe point picker overlay).
+        coord_space = payload.get("coordinateSpace", "")
+        if coord_space != "screen":
+            x, y = self._map_screenshot_point_if_needed(x, y)
         self._assert_point_in_virtual_desktop(x, y)
         return x, y
 
@@ -998,6 +1030,282 @@ class DesktopAgent:
         except Exception as exc:
             self.send_response(cmd_id, success=False, error=str(exc))
 
+    def handle_select_swipe_points(self, command):
+        """Full-screen overlay with two draggable markers (Start & End) connected by an arrow.
+
+        The user clicks to place the start point, then clicks again to place
+        the end point.  Both markers are draggable afterwards.  Confirm with
+        Enter/Space or the Confirm button.  Esc or right-click cancels.
+        """
+        cmd_id = command.get("id")
+
+        try:
+            from PIL import Image, ImageTk
+            import tkinter as tk
+            import math
+
+            # -- discover virtual-desktop geometry --------------------------
+            with mss() as sct:
+                monitor = sct.monitors[0] if sct.monitors else {
+                    "left": 0, "top": 0, "width": 0, "height": 0,
+                }
+                screen_left = int(monitor.get("left", 0))
+                screen_top = int(monitor.get("top", 0))
+                screen_width = int(monitor.get("width", 0))
+                screen_height = int(monitor.get("height", 0))
+                shot = sct.grab(monitor)
+                image = Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
+
+            # -- state ------------------------------------------------------
+            result = {"cancelled": True}
+            phase = {"value": "start"}  # "start" -> "end" -> "adjust"
+            start_pt = {"x": 0, "y": 0}
+            end_pt = {"x": 0, "y": 0}
+            marker_radius = 18
+            dragging = {"item": None, "which": None}
+
+            # -- tkinter root -----------------------------------------------
+            root = tk.Tk()
+            root.withdraw()
+            root.overrideredirect(True)
+            root.attributes("-topmost", True)
+            try:
+                root.attributes("-alpha", 0.98)
+            except Exception:
+                pass
+            root.geometry(
+                f"{screen_width}x{screen_height}{screen_left:+d}{screen_top:+d}"
+            )
+
+            canvas = tk.Canvas(
+                root, width=screen_width, height=screen_height,
+                highlightthickness=0, cursor="crosshair",
+            )
+            canvas.pack(fill="both", expand=True)
+
+            # background screenshot with dim overlay
+            photo = ImageTk.PhotoImage(image)
+            canvas.create_image(0, 0, image=photo, anchor="nw")
+            canvas.create_rectangle(
+                0, 0, screen_width, screen_height,
+                fill="black", stipple="gray25", outline="",
+            )
+
+            # -- hint banner ------------------------------------------------
+            hint_bg = canvas.create_rectangle(18, 18, 520, 58, fill="#111827", outline="#38bdf8", width=1)
+            hint_text_id = canvas.create_text(
+                32, 38, text="Click to place SWIPE START point. Esc cancels.",
+                fill="white", anchor="w", font=("Segoe UI", 12, "bold"),
+            )
+
+            # -- drawing helpers --------------------------------------------
+            line_id = None
+            arrow_ids = []
+            start_marker_ids = []
+            end_marker_ids = []
+            confirm_btn_ids = []
+
+            def draw_marker(cx, cy, label, color, tag):
+                """Draw a circular marker with label."""
+                ids = []
+                # outer ring
+                ids.append(canvas.create_oval(
+                    cx - marker_radius, cy - marker_radius,
+                    cx + marker_radius, cy + marker_radius,
+                    outline=color, width=3, fill="", tags=(tag,),
+                ))
+                # inner dot
+                ids.append(canvas.create_oval(
+                    cx - 5, cy - 5, cx + 5, cy + 5,
+                    outline=color, fill=color, tags=(tag,),
+                ))
+                # label
+                ids.append(canvas.create_text(
+                    cx, cy - marker_radius - 14, text=label,
+                    fill=color, font=("Segoe UI", 10, "bold"), tags=(tag,),
+                ))
+                return ids
+
+            def draw_arrow_line():
+                """Draw a line with arrow from start to end."""
+                nonlocal line_id, arrow_ids
+                # clear old
+                if line_id:
+                    canvas.delete(line_id)
+                for aid in arrow_ids:
+                    canvas.delete(aid)
+                arrow_ids = []
+
+                sx, sy = start_pt["x"], start_pt["y"]
+                ex, ey = end_pt["x"], end_pt["y"]
+
+                # main line
+                line_id = canvas.create_line(
+                    sx, sy, ex, ey,
+                    fill="#38bdf8", width=3, dash=(8, 4),
+                )
+
+                # arrowhead
+                dx = ex - sx
+                dy = ey - sy
+                length = math.sqrt(dx * dx + dy * dy)
+                if length > 20:
+                    ux, uy = dx / length, dy / length
+                    # perpendicular
+                    px, py = -uy, ux
+                    arrow_size = 16
+                    tip_x, tip_y = ex, ey
+                    left_x = tip_x - arrow_size * ux + arrow_size * 0.5 * px
+                    left_y = tip_y - arrow_size * uy + arrow_size * 0.5 * py
+                    right_x = tip_x - arrow_size * ux - arrow_size * 0.5 * px
+                    right_y = tip_y - arrow_size * uy - arrow_size * 0.5 * py
+                    arrow_ids.append(canvas.create_polygon(
+                        tip_x, tip_y, left_x, left_y, right_x, right_y,
+                        fill="#38bdf8", outline="#38bdf8",
+                    ))
+
+            def update_markers():
+                """Redraw markers and line after drag."""
+                for mid in start_marker_ids:
+                    canvas.delete(mid)
+                for mid in end_marker_ids:
+                    canvas.delete(mid)
+                start_marker_ids.clear()
+                end_marker_ids.clear()
+
+                start_marker_ids.extend(
+                    draw_marker(start_pt["x"], start_pt["y"], "START", "#22c55e", "start_marker")
+                )
+                if phase["value"] in ("end", "adjust"):
+                    end_marker_ids.extend(
+                        draw_marker(end_pt["x"], end_pt["y"], "END", "#ef4444", "end_marker")
+                    )
+                    draw_arrow_line()
+
+            def show_confirm_ui():
+                """Show confirm/cancel buttons after both points are placed."""
+                for cid in confirm_btn_ids:
+                    canvas.delete(cid)
+                confirm_btn_ids.clear()
+
+                canvas.itemconfig(hint_text_id,
+                    text="Drag markers to adjust. Enter/Space to confirm. Esc cancels.")
+
+                # confirm button
+                bx, by = screen_width - 240, 28
+                confirm_btn_ids.append(canvas.create_rectangle(
+                    bx, by, bx + 100, by + 34,
+                    fill="#0ea5e9", outline="#0ea5e9", tags=("confirm_btn",),
+                ))
+                confirm_btn_ids.append(canvas.create_text(
+                    bx + 50, by + 17, text="Confirm",
+                    fill="white", font=("Segoe UI", 11, "bold"), tags=("confirm_btn",),
+                ))
+
+                # cancel button
+                cx = bx + 115
+                confirm_btn_ids.append(canvas.create_rectangle(
+                    cx, by, cx + 80, by + 34,
+                    fill="#1e293b", outline="#475569", tags=("cancel_btn",),
+                ))
+                confirm_btn_ids.append(canvas.create_text(
+                    cx + 40, by + 17, text="Cancel",
+                    fill="#94a3b8", font=("Segoe UI", 11), tags=("cancel_btn",),
+                ))
+
+            # -- event handlers ---------------------------------------------
+            def on_click(event):
+                nonlocal dragging
+                x, y = event.x, event.y
+
+                # check for button clicks
+                items = canvas.find_overlapping(x - 2, y - 2, x + 2, y + 2)
+                tags_at = set()
+                for item in items:
+                    tags_at.update(canvas.gettags(item))
+
+                if "confirm_btn" in tags_at:
+                    confirm()
+                    return
+                if "cancel_btn" in tags_at:
+                    cancel()
+                    return
+
+                # check for marker drag
+                if phase["value"] == "adjust":
+                    if "start_marker" in tags_at:
+                        dragging["item"] = "start"
+                        return
+                    if "end_marker" in tags_at:
+                        dragging["item"] = "end"
+                        return
+
+                # placement
+                if phase["value"] == "start":
+                    start_pt["x"] = x
+                    start_pt["y"] = y
+                    phase["value"] = "end"
+                    canvas.itemconfig(hint_text_id,
+                        text="Click to place SWIPE END point.")
+                    update_markers()
+                elif phase["value"] == "end":
+                    end_pt["x"] = x
+                    end_pt["y"] = y
+                    phase["value"] = "adjust"
+                    update_markers()
+                    show_confirm_ui()
+
+            def on_drag(event):
+                if dragging["item"] == "start":
+                    start_pt["x"] = max(0, min(event.x, screen_width))
+                    start_pt["y"] = max(0, min(event.y, screen_height))
+                    update_markers()
+                    draw_arrow_line()
+                elif dragging["item"] == "end":
+                    end_pt["x"] = max(0, min(event.x, screen_width))
+                    end_pt["y"] = max(0, min(event.y, screen_height))
+                    update_markers()
+                    draw_arrow_line()
+
+            def on_release(event):
+                dragging["item"] = None
+
+            def confirm(event=None):
+                nonlocal result
+                if phase["value"] != "adjust":
+                    return
+                result = {
+                    "cancelled": False,
+                    "startX": screen_left + start_pt["x"],
+                    "startY": screen_top + start_pt["y"],
+                    "endX": screen_left + end_pt["x"],
+                    "endY": screen_top + end_pt["y"],
+                }
+                root.quit()
+
+            def cancel(event=None):
+                root.quit()
+
+            canvas.bind("<ButtonPress-1>", on_click)
+            canvas.bind("<B1-Motion>", on_drag)
+            canvas.bind("<ButtonRelease-1>", on_release)
+            canvas.bind("<ButtonPress-3>", cancel)
+            root.bind("<Escape>", cancel)
+            root.bind("<Return>", confirm)
+            root.bind("<space>", confirm)
+
+            root.deiconify()
+            root.focus_force()
+            root.mainloop()
+            try:
+                root.destroy()
+            except Exception:
+                pass
+
+            self.send_response(cmd_id, success=True, data=result)
+        except Exception as exc:
+            self.send_response(cmd_id, success=False, error=str(exc))
+
     def handle_template_match(self, command):
         """Template matching: find a template image on screen using OpenCV."""
         cmd_id = command.get("id")
@@ -1072,10 +1380,14 @@ class DesktopAgent:
     def handle_select_ui_element(self, command):
         """Interactive UI element picker with bounding-box overlay.
 
-        1. Enumerates the UIA accessibility tree for clickable elements.
-        2. Attempts a screenshot of the virtual desktop.
-        3. If screenshot succeeds  → fullscreen overlay with bounding boxes.
-           If screenshot fails     → searchable list dialog fallback.
+        Phase 1 -- Floating toolbar: user arranges their screen / switches
+                   monitor.  Click Capture or press Space/Enter.
+        Phase 2 -- After capture: enumerate UIA tree, take screenshot,
+                   show fullscreen overlay with bounding boxes.
+        Fallback -- If screenshot fails, show searchable list dialog.
+
+        Debug: saves full_dom.json and detected_dom.json under
+               ~/.autonion/debug/ for missing-element analysis.
         """
         cmd_id = command.get("id")
 
@@ -1087,21 +1399,7 @@ class DesktopAgent:
             def clamp(value, lower, upper):
                 return max(lower, min(upper, int(round(value))))
 
-            # -- 1. Enumerate UIA tree ----------------------------------
-            elements = self._get_accessibility_tree()
-            clickable = [
-                el for el in elements
-                if el.get("isClickable")
-                and not el.get("isOffscreen", False)
-                and el.get("isEnabled", True)
-                and el.get("boundingBox", {}).get("width", 0) > 2
-                and el.get("boundingBox", {}).get("height", 0) > 2
-            ]
-            if not clickable:
-                self.send_response(cmd_id, success=True, data={"cancelled": True, "error": "No clickable elements found"})
-                return
-
-            # -- 2. Discover virtual-desktop geometry -------------------
+            # -- Discover virtual-desktop geometry (all monitors) -------
             with mss() as sct:
                 monitor = sct.monitors[0] if sct.monitors else {
                     "left": 0, "top": 0, "width": 0, "height": 0,
@@ -1111,7 +1409,172 @@ class DesktopAgent:
                 screen_width = int(monitor.get("width", 0))
                 screen_height = int(monitor.get("height", 0))
 
-            # -- 3. Attempt screenshot ----------------------------------
+            # ===========================================================
+            #  PHASE 1 -- floating toolbar (no fullscreen overlay)
+            #  The user can freely interact with their desktop, switch
+            #  monitors, navigate to the target app, etc.
+            # ===========================================================
+            phase1_cancelled = False
+            phase1_done = False
+
+            p1_root = tk.Tk()
+            p1_root.withdraw()
+            p1_root.overrideredirect(True)
+            p1_root.attributes("-topmost", True)
+            try:
+                p1_root.attributes("-alpha", 0.94)
+            except Exception:
+                pass
+            toolbar_w, toolbar_h = 480, 52
+            toolbar_x = screen_left + (screen_width - toolbar_w) // 2
+            toolbar_y = screen_top + 28
+            p1_root.geometry(f"{toolbar_w}x{toolbar_h}{toolbar_x:+d}{toolbar_y:+d}")
+            p1_root.configure(background="#111827")
+
+            # -- outer frame with border --------------------------------
+            outer = tk.Frame(
+                p1_root, bg="#111827",
+                highlightbackground="#38bdf8", highlightthickness=1,
+            )
+            outer.pack(fill="both", expand=True)
+
+            inner = tk.Frame(outer, bg="#111827")
+            inner.pack(fill="both", expand=True, padx=8, pady=6)
+
+            # -- camera icon + label ------------------------------------
+            tk.Label(
+                inner,
+                text="\U0001f50d  Navigate to your target, then:",
+                fg="#94a3b8", bg="#111827",
+                font=("Segoe UI", 10), anchor="w",
+            ).pack(side="left", padx=(4, 8))
+
+            # -- Capture button -----------------------------------------
+            def p1_trigger(event=None):
+                nonlocal phase1_done
+                if phase1_done:
+                    return
+                phase1_done = True
+                p1_root.quit()
+
+            def p1_cancel(event=None):
+                nonlocal phase1_cancelled, phase1_done
+                if phase1_done:
+                    return
+                phase1_cancelled = True
+                phase1_done = True
+                p1_root.quit()
+
+            capture_btn = tk.Button(
+                inner, text="\u2318 Capture Elements", fg="white", bg="#0ea5e9",
+                activeforeground="white", activebackground="#0284c7",
+                font=("Segoe UI", 10, "bold"), bd=0,
+                padx=14, pady=2, cursor="hand2",
+                command=p1_trigger,
+            )
+            capture_btn.pack(side="left", padx=(0, 6))
+
+            cancel_btn_p1 = tk.Button(
+                inner, text="Cancel", fg="#94a3b8", bg="#1e293b",
+                activeforeground="white", activebackground="#334155",
+                font=("Segoe UI", 10), bd=0,
+                padx=10, pady=2, cursor="hand2",
+                command=p1_cancel,
+            )
+            cancel_btn_p1.pack(side="left")
+
+            # -- keyboard shortcuts -------------------------------------
+            p1_root.bind("<space>", p1_trigger)
+            p1_root.bind("<Return>", p1_trigger)
+            p1_root.bind("<Escape>", p1_cancel)
+
+            p1_root.deiconify()
+            p1_root.focus_force()
+            p1_root.mainloop()
+            try:
+                p1_root.destroy()
+            except Exception:
+                pass
+
+            if phase1_cancelled:
+                self.send_response(cmd_id, success=True, data={"cancelled": True})
+                return
+
+            # Brief pause so the toolbar disappears before capture
+            time.sleep(0.15)
+
+            # ===========================================================
+            #  PHASE 2 -- Enumerate UIA tree + screenshot + overlay
+            # ===========================================================
+
+            # -- 1. Enumerate UIA tree NOW (after user arranged screen) --
+            elements = self._get_accessibility_tree()
+            clickable = [
+                el for el in elements
+                if el.get("isClickable")
+                and not el.get("isOffscreen", False)
+                and el.get("isEnabled", True)
+                and el.get("boundingBox", {}).get("width", 0) > 2
+                and el.get("boundingBox", {}).get("height", 0) > 2
+            ]
+
+            # -- 2. Debug dump: save full & filtered DOM to files --------
+            try:
+                debug_dir = os.path.join(
+                    os.environ.get("USERPROFILE") or os.environ.get("HOME") or ".",
+                    ".autonion", "debug",
+                )
+                os.makedirs(debug_dir, exist_ok=True)
+
+                full_path = os.path.join(debug_dir, "full_dom.json")
+                detected_path = os.path.join(debug_dir, "detected_dom.json")
+
+                with open(full_path, "w", encoding="utf-8") as f:
+                    json.dump({
+                        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                        "total_elements": len(elements),
+                        "elements": elements,
+                    }, f, indent=2, ensure_ascii=False, default=str)
+
+                with open(detected_path, "w", encoding="utf-8") as f:
+                    json.dump({
+                        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                        "total_elements": len(elements),
+                        "clickable_count": len(clickable),
+                        "filter_criteria": {
+                            "isClickable": True,
+                            "isOffscreen": False,
+                            "isEnabled": True,
+                            "min_width": 3,
+                            "min_height": 3,
+                        },
+                        "elements": clickable,
+                    }, f, indent=2, ensure_ascii=False, default=str)
+
+                eprint(f"[DEBUG] DOM dumps saved: {full_path} ({len(elements)} total), "
+                       f"{detected_path} ({len(clickable)} clickable)")
+            except Exception as dump_exc:
+                eprint(f"[DEBUG] Failed to save DOM dumps: {dump_exc}")
+
+            if not clickable:
+                self.send_response(cmd_id, success=True, data={
+                    "cancelled": True,
+                    "error": "No clickable elements found",
+                })
+                return
+
+            # -- 3. Re-read virtual-desktop geometry (monitors may have
+            #       changed if user switched display config) -------------
+            with mss() as sct:
+                monitor = sct.monitors[0] if sct.monitors else {
+                    "left": 0, "top": 0, "width": 0, "height": 0,
+                }
+                screen_left = int(monitor.get("left", 0))
+                screen_top = int(monitor.get("top", 0))
+                screen_width = int(monitor.get("width", 0))
+                screen_height = int(monitor.get("height", 0))
+
+            # -- 4. Attempt screenshot ----------------------------------
             screenshot_ok = False
             image = None
             try:
@@ -1128,7 +1591,6 @@ class DesktopAgent:
                 #  OVERLAY MODE: bounding boxes on screenshot
                 # =======================================================
                 result = {"cancelled": True}
-                selected_index = {"value": -1}
                 hover_index = {"value": -1}
 
                 root = tk.Tk()
@@ -1158,7 +1620,7 @@ class DesktopAgent:
                 )
 
                 # -- Draw bounding boxes --------------------------------
-                box_ids = []  # (canvas_rect_id, element_dict)
+                box_ids = []  # (canvas_rect_id, element_dict, bx, by, bw, bh)
                 BLUE = "#38bdf8"
                 GREEN = "#22c55e"
                 HOVER_FILL = "#38bdf8"
@@ -1170,7 +1632,7 @@ class DesktopAgent:
                     bw = int(bb.get("width", 0))
                     bh = int(bb.get("height", 0))
 
-                    # Skip elements fully outside the screen
+                    # Skip elements fully outside the virtual screen
                     if bx + bw <= 0 or by + bh <= 0 or bx >= screen_width or by >= screen_height:
                         continue
 

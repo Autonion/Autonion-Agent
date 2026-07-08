@@ -76,7 +76,8 @@ class PythonBridgeService {
       throw PythonBridgeException('Failed to write to agent: $e');
     }
 
-    final timeout = action == 'select_screen_region'
+    final timeout = (action == 'select_screen_region' ||
+            action == 'select_ui_element')
         ? const Duration(minutes: 5)
         : const Duration(seconds: 30);
 

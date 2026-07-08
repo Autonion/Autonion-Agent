@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math';
 
 import '../../../core/services/logging_service.dart';
 import '../models/desktop_flow_models.dart';
@@ -385,6 +386,10 @@ class FlowExecutionService {
 
       case DesktopFlowNodeType.scroll:
         await _executeScroll(node);
+        break;
+
+      case DesktopFlowNodeType.swipe:
+        await _executeSwipe(node);
         break;
 
       case DesktopFlowNodeType.repeat:
@@ -815,8 +820,9 @@ class FlowExecutionService {
 
   Future<void> _executeScreenshot() async {
     await _input.execute(
-      const DesktopAction(type: 'hotkey', keys: ['printscreen']),
+      const DesktopAction(type: 'take_screenshot'),
     );
+    _log.info('FlowExec', 'Screenshot captured via Python bridge');
   }
 
   Future<void> _executeScroll(DesktopFlowNode node) async {
@@ -825,6 +831,59 @@ class FlowExecutionService {
         type: 'scroll',
         direction: node.scrollDirection ?? 'down',
         amount: node.scrollAmount ?? 3,
+      ),
+    );
+  }
+
+  Future<void> _executeSwipe(DesktopFlowNode node) async {
+    final duration = node.swipeDuration ?? 350;
+    // Default start: screen center (960, 540 for 1920x1080)
+    final startX = node.swipeStartX?.toDouble() ?? 960;
+    final startY = node.swipeStartY?.toDouble() ?? 540;
+
+    double endX;
+    double endY;
+
+    // Prefer explicit endpoints (from the screen picker) over direction+distance.
+    if (node.swipeEndX != null && node.swipeEndY != null) {
+      endX = node.swipeEndX!.toDouble();
+      endY = node.swipeEndY!.toDouble();
+    } else {
+      final dir = node.swipeDirection ?? 'down';
+      final dist = (node.swipeDistance ?? 300).toDouble();
+      endX = startX;
+      endY = startY;
+      switch (dir) {
+        case 'up':
+          endY = startY - dist;
+          break;
+        case 'down':
+          endY = startY + dist;
+          break;
+        case 'left':
+          endX = startX - dist;
+          break;
+        case 'right':
+          endX = startX + dist;
+          break;
+      }
+    }
+
+    _log.info(
+      'FlowExec',
+      'Swipe: (${startX.toInt()}, ${startY.toInt()}) -> '
+      '(${endX.toInt()}, ${endY.toInt()}) ${duration}ms',
+    );
+
+    await _input.execute(
+      DesktopAction(
+        type: 'drag',
+        x: startX,
+        y: startY,
+        endX: endX,
+        endY: endY,
+        durationMs: duration,
+        coordinateSpace: 'screen',
       ),
     );
   }
@@ -1043,6 +1102,16 @@ class FlowExecutionService {
       'UI Detect: action=$action target=${node.target?.summary ?? "none"}',
     );
 
+    // Guard: fail early if no attributes are configured
+    if (node.target == null ||
+        (node.target!.mode == UITargetMode.uiaAttribute &&
+            !node.target!.hasAnyAttribute)) {
+      throw FlowExecutionException(
+        'UI Detect: No target attributes configured. '
+        'Please pick an element or set attributes (name, role, automationId, className) first.',
+      );
+    }
+
     final screenState = await _a11y.getScreenState(
       AutomationTier.accessibilityOnly,
     );
@@ -1070,8 +1139,15 @@ class FlowExecutionService {
             'UI Detect: No matching element found for ${node.target?.summary}',
           );
         }
-        final element = matches.first;
+        final element = _pickBestMatch(matches, node.target!);
         final params = _targetParamsForElement(element);
+        _log.info(
+          'FlowExec',
+          'UI Detect: Clicking best match at '
+          '(${params['x']?.toStringAsFixed(0) ?? params['targetStableId']}'
+          '${params['y'] != null ? ', ${params['y']!.toStringAsFixed(0)}' : ''})'
+          ' from ${matches.length} candidates',
+        );
         await _input.execute(
           DesktopAction(
             type: 'click',
@@ -1094,7 +1170,8 @@ class FlowExecutionService {
             'UI Detect: No matching element found for text extraction',
           );
         }
-        final text = matches.first.name;
+        final textElement = _pickBestMatch(matches, node.target!);
+        final text = textElement.name;
         _log.info('FlowExec', 'UI Detect: Extracted text = "$text"');
         break;
 
@@ -1127,6 +1204,70 @@ class FlowExecutionService {
     }
   }
 
+  /// Pick the best match from attribute-matched elements using
+  /// spatial proximity, size similarity, and text matching.
+  UIElement _pickBestMatch(List<UIElement> matches, UITargetSelector target) {
+    if (matches.length == 1 || !target.hasHint) return matches.first;
+
+    UIElement? best;
+    double bestScore = double.infinity; // lower = better
+
+    for (final el in matches) {
+      double score = 0;
+      final bb = el.boundingBox;
+      final elW = _asDouble(bb['width']);
+      final elH = _asDouble(bb['height']);
+      final cx = _asDouble(bb['x']) + elW / 2;
+      final cy = _asDouble(bb['y']) + elH / 2;
+
+      // 1. Spatial proximity (primary signal — Euclidean distance)
+      if (target.hintX != null && target.hintY != null) {
+        final dx = cx - target.hintX!;
+        final dy = cy - target.hintY!;
+        score += sqrt(dx * dx + dy * dy);
+      }
+
+      // 2. Size similarity penalty (amplified to differentiate same-area elements)
+      if (target.hintWidth != null && target.hintHeight != null) {
+        final wRatio = (elW - target.hintWidth!).abs() /
+            max(target.hintWidth!, 1.0);
+        final hRatio = (elH - target.hintHeight!).abs() /
+            max(target.hintHeight!, 1.0);
+        score += (wRatio + hRatio) * 50;
+      }
+
+      // 3. Text/value match bonus (subtract to reward matches)
+      if (target.hintValue != null && target.hintValue!.isNotEmpty) {
+        if ((el.value != null && el.value == target.hintValue) ||
+            el.name == target.hintValue) {
+          score -= 100; // strong bonus for exact text match
+        }
+      }
+
+      if (best == null || score < bestScore) {
+        best = el;
+        bestScore = score;
+      }
+    }
+
+    _log.info(
+      'FlowExec',
+      'UI Detect: Best match score=${
+        bestScore.toStringAsFixed(1)
+      } at (${
+        _asDouble(best!.boundingBox['x']).toStringAsFixed(0)
+      }, ${
+        _asDouble(best.boundingBox['y']).toStringAsFixed(0)
+      }) hint=(${
+        target.hintX?.toStringAsFixed(0) ?? '?'
+      }, ${
+        target.hintY?.toStringAsFixed(0) ?? '?'
+      })',
+    );
+
+    return best;
+  }
+
   /// Check if a UI element matches a target selector.
   bool _elementMatchesTarget(UIElement element, UITargetSelector target) {
     switch (target.mode) {
@@ -1135,6 +1276,8 @@ class FlowExecutionService {
       case UITargetMode.stableId:
         return target.stableId != null && element.stableId == target.stableId;
       case UITargetMode.uiaAttribute:
+        // If no attributes are set, match nothing (safety net)
+        if (!target.hasAnyAttribute) return false;
         if (target.name != null && target.name!.isNotEmpty) {
           if (!element.name.toLowerCase().contains(
             target.name!.toLowerCase(),

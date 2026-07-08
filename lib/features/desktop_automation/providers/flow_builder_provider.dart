@@ -343,6 +343,19 @@ class FlowBuilderProvider extends ChangeNotifier {
     return result;
   }
 
+  /// Opens a fullscreen overlay where the user clicks to place start and end
+  /// swipe markers.  Returns {startX, startY, endX, endY} in screen coords,
+  /// or `null` if cancelled.
+  Future<Map<String, dynamic>?> selectSwipePoints() async {
+    final response = await _bridge.sendCommand('select_swipe_points');
+    if (response is! Map) return null;
+    final result = response.map(
+      (key, value) => MapEntry(key.toString(), value),
+    );
+    if (result['cancelled'] == true) return null;
+    return result;
+  }
+
   Future<String> saveVisualTemplate(String nodeId, Uint8List pngBytes) async {
     final flow = _currentFlow;
     if (flow == null) {

@@ -20,6 +20,7 @@ enum DesktopFlowNodeType {
   delay,
   screenshot,
   scroll,
+  swipe,
   repeat,
   conditional,
   visualTrigger,
@@ -58,6 +59,8 @@ enum DesktopFlowNodeType {
         return 'Visual Trigger';
       case DesktopFlowNodeType.uiDetect:
         return 'UI Attribute';
+      case DesktopFlowNodeType.swipe:
+        return 'Swipe';
       case DesktopFlowNodeType.done:
         return 'Done';
     }
@@ -95,6 +98,8 @@ enum DesktopFlowNodeType {
         return 'image_search';
       case DesktopFlowNodeType.uiDetect:
         return 'find_in_page';
+      case DesktopFlowNodeType.swipe:
+        return 'swipe';
       case DesktopFlowNodeType.done:
         return 'check_circle';
     }
@@ -208,6 +213,15 @@ class UITargetSelector {
   final String? role;
   final String? controlType;
 
+  // ── UIA Attribute mode — disambiguation hints ──
+  // Saved from the originally-picked element to disambiguate
+  // when multiple elements share the same attributes.
+  final double? hintX;      // Center X of originally-picked element
+  final double? hintY;      // Center Y of originally-picked element
+  final double? hintWidth;  // Width of originally-picked element
+  final double? hintHeight; // Height of originally-picked element
+  final String? hintValue;  // Text/value of originally-picked element
+
   const UITargetSelector({
     required this.mode,
     this.x,
@@ -220,6 +234,11 @@ class UITargetSelector {
     this.name,
     this.role,
     this.controlType,
+    this.hintX,
+    this.hintY,
+    this.hintWidth,
+    this.hintHeight,
+    this.hintValue,
   });
 
   /// A coordinate-based target.
@@ -251,6 +270,11 @@ class UITargetSelector {
     String? name,
     String? role,
     String? controlType,
+    double? hintX,
+    double? hintY,
+    double? hintWidth,
+    double? hintHeight,
+    String? hintValue,
   }) => UITargetSelector(
     mode: UITargetMode.uiaAttribute,
     automationId: automationId,
@@ -258,6 +282,11 @@ class UITargetSelector {
     name: name,
     role: role,
     controlType: controlType,
+    hintX: hintX,
+    hintY: hintY,
+    hintWidth: hintWidth,
+    hintHeight: hintHeight,
+    hintValue: hintValue,
   );
 
   factory UITargetSelector.fromJson(Map<String, dynamic> json) {
@@ -276,6 +305,11 @@ class UITargetSelector {
       name: json['name'] as String?,
       role: json['role'] as String?,
       controlType: json['controlType'] as String?,
+      hintX: _asDouble(json['hintX']),
+      hintY: _asDouble(json['hintY']),
+      hintWidth: _asDouble(json['hintWidth']),
+      hintHeight: _asDouble(json['hintHeight']),
+      hintValue: json['hintValue'] as String?,
     );
   }
 
@@ -291,6 +325,11 @@ class UITargetSelector {
     if (name != null) 'name': name,
     if (role != null) 'role': role,
     if (controlType != null) 'controlType': controlType,
+    if (hintX != null) 'hintX': hintX,
+    if (hintY != null) 'hintY': hintY,
+    if (hintWidth != null) 'hintWidth': hintWidth,
+    if (hintHeight != null) 'hintHeight': hintHeight,
+    if (hintValue != null) 'hintValue': hintValue,
   };
 
   /// User-readable summary for display in node cards.
@@ -325,6 +364,18 @@ class UITargetSelector {
   }
 
   bool get hasRegion => (width ?? 0) > 0 && (height ?? 0) > 0;
+
+  /// Whether at least one UIA attribute is set for matching.
+  bool get hasAnyAttribute =>
+      (name != null && name!.isNotEmpty) ||
+      (role != null && role!.isNotEmpty) ||
+      (automationId != null && automationId!.isNotEmpty) ||
+      (className != null && className!.isNotEmpty) ||
+      (controlType != null && controlType!.isNotEmpty);
+
+  /// Whether disambiguation hint position data is available.
+  bool get hasHint => hintX != null && hintY != null;
+
   double? get centerX => x == null ? null : x! + ((width ?? 0) / 2);
   double? get centerY => y == null ? null : y! + ((height ?? 0) / 2);
 }
@@ -569,6 +620,15 @@ class DesktopFlowNode {
   String? scrollDirection;
   int? scrollAmount;
 
+  /// For swipe: direction, distance (px), duration (ms), and optional start/end.
+  String? swipeDirection;
+  int? swipeDistance;
+  int? swipeDuration;
+  int? swipeStartX;
+  int? swipeStartY;
+  int? swipeEndX;
+  int? swipeEndY;
+
   /// For repeat: number of iterations.
   int? repeatCount;
 
@@ -616,6 +676,13 @@ class DesktopFlowNode {
     this.delayMs,
     this.scrollDirection,
     this.scrollAmount,
+    this.swipeDirection,
+    this.swipeDistance,
+    this.swipeDuration,
+    this.swipeStartX,
+    this.swipeStartY,
+    this.swipeEndX,
+    this.swipeEndY,
     this.repeatCount,
     this.conditionOperator,
     this.conditionAttribute,
@@ -657,6 +724,13 @@ class DesktopFlowNode {
       delayMs: json['delayMs'] as int?,
       scrollDirection: json['scrollDirection'] as String?,
       scrollAmount: json['scrollAmount'] as int?,
+      swipeDirection: json['swipeDirection'] as String?,
+      swipeDistance: json['swipeDistance'] as int?,
+      swipeDuration: json['swipeDuration'] as int?,
+      swipeStartX: json['swipeStartX'] as int?,
+      swipeStartY: json['swipeStartY'] as int?,
+      swipeEndX: json['swipeEndX'] as int?,
+      swipeEndY: json['swipeEndY'] as int?,
       repeatCount: json['repeatCount'] as int?,
       conditionOperator: json['conditionOperator'] as String?,
       conditionAttribute: json['conditionAttribute'] as String?,
@@ -689,6 +763,13 @@ class DesktopFlowNode {
     if (delayMs != null) 'delayMs': delayMs,
     if (scrollDirection != null) 'scrollDirection': scrollDirection,
     if (scrollAmount != null) 'scrollAmount': scrollAmount,
+    if (swipeDirection != null) 'swipeDirection': swipeDirection,
+    if (swipeDistance != null) 'swipeDistance': swipeDistance,
+    if (swipeDuration != null) 'swipeDuration': swipeDuration,
+    if (swipeStartX != null) 'swipeStartX': swipeStartX,
+    if (swipeStartY != null) 'swipeStartY': swipeStartY,
+    if (swipeEndX != null) 'swipeEndX': swipeEndX,
+    if (swipeEndY != null) 'swipeEndY': swipeEndY,
     if (repeatCount != null) 'repeatCount': repeatCount,
     if (conditionOperator != null) 'conditionOperator': conditionOperator,
     if (conditionAttribute != null) 'conditionAttribute': conditionAttribute,
@@ -734,6 +815,11 @@ class DesktopFlowNode {
         return 'Capture screen';
       case DesktopFlowNodeType.scroll:
         return '${scrollDirection ?? "down"} ×${scrollAmount ?? 3}';
+      case DesktopFlowNodeType.swipe:
+        if (swipeEndX != null && swipeEndY != null) {
+          return '(${swipeStartX ?? 0},${swipeStartY ?? 0}) \u2192 ($swipeEndX,$swipeEndY)';
+        }
+        return '${swipeDirection ?? "down"} ${swipeDistance ?? 300}px';
       case DesktopFlowNodeType.repeat:
         return '${repeatCount ?? 1} iterations';
       case DesktopFlowNodeType.conditional:
@@ -768,6 +854,13 @@ class DesktopFlowNode {
     int? delayMs,
     String? scrollDirection,
     int? scrollAmount,
+    String? swipeDirection,
+    int? swipeDistance,
+    int? swipeDuration,
+    int? swipeStartX,
+    int? swipeStartY,
+    int? swipeEndX,
+    int? swipeEndY,
     int? repeatCount,
     String? conditionOperator,
     String? conditionAttribute,
@@ -798,6 +891,13 @@ class DesktopFlowNode {
       delayMs: delayMs ?? this.delayMs,
       scrollDirection: scrollDirection ?? this.scrollDirection,
       scrollAmount: scrollAmount ?? this.scrollAmount,
+      swipeDirection: swipeDirection ?? this.swipeDirection,
+      swipeDistance: swipeDistance ?? this.swipeDistance,
+      swipeDuration: swipeDuration ?? this.swipeDuration,
+      swipeStartX: swipeStartX ?? this.swipeStartX,
+      swipeStartY: swipeStartY ?? this.swipeStartY,
+      swipeEndX: swipeEndX ?? this.swipeEndX,
+      swipeEndY: swipeEndY ?? this.swipeEndY,
       repeatCount: repeatCount ?? this.repeatCount,
       conditionOperator: conditionOperator ?? this.conditionOperator,
       conditionAttribute: conditionAttribute ?? this.conditionAttribute,
