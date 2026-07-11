@@ -7,6 +7,7 @@ import io
 import hashlib
 import ctypes
 import subprocess
+import uuid
 from pathlib import Path
 from ctypes import wintypes
 
@@ -1946,6 +1947,85 @@ class DesktopAgent:
             eprint(f"select_ui_element error: {exc}")
             self.send_response(cmd_id, success=False, error=str(exc))
 
+    def _try_unlock_via_installed_helper(self, password):
+        """Use the installed SYSTEM scheduled task helper when available."""
+        if os.name != "nt":
+            return None
+
+        program_data = os.environ.get("ProgramData", r"C:\ProgramData")
+        unlock_dir = Path(program_data) / "Autonion Agent" / "Unlock"
+        request_path = unlock_dir / "request.json"
+        status_path = unlock_dir / "status.json"
+
+        if not unlock_dir.exists():
+            return None
+
+        request_id = uuid.uuid4().hex
+        payload = {
+            "requestId": request_id,
+            "passwordB64": base64.b64encode(
+                password.encode("utf-8")
+            ).decode("ascii"),
+            "createdAt": time.time(),
+        }
+
+        try:
+            status_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+        try:
+            unlock_dir.mkdir(parents=True, exist_ok=True)
+            request_path.write_text(json.dumps(payload), encoding="utf-8")
+        except Exception as exc:
+            raise RuntimeError(f"Could not write unlock helper request: {exc}")
+
+        result = subprocess.run(
+            ["schtasks", "/Run", "/TN", "Autonion Unlock Helper"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            try:
+                request_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+            output = (result.stderr or result.stdout or "").strip()
+            if "cannot find" in output.lower() or "does not exist" in output.lower():
+                return None
+            raise RuntimeError(output or "Failed to start unlock helper task")
+
+        deadline = time.time() + 25
+        last_status = None
+        while time.time() < deadline:
+            if status_path.exists():
+                try:
+                    status = json.loads(status_path.read_text(encoding="utf-8"))
+                    if status.get("requestId") == request_id:
+                        if status.get("success") is True:
+                            log = status.get("log") or ""
+                            for line in log.splitlines():
+                                if line:
+                                    eprint(f"  [unlock-helper] {line}")
+                            return {
+                                "status": "unlock_input_sent",
+                                "via": "scheduled_task_helper",
+                                "message": status.get("message"),
+                            }
+                        raise RuntimeError(
+                            status.get("message") or "Unlock helper failed"
+                        )
+                    last_status = status
+                except json.JSONDecodeError:
+                    pass
+            time.sleep(0.25)
+
+        raise RuntimeError(
+            f"Timed out waiting for unlock helper status "
+            f"(last status: {last_status})"
+        )
+
     # ═══════════════════════════════════════════════════════════════
     #  UNLOCK DESKTOP
     # ═══════════════════════════════════════════════════════════════
@@ -1964,12 +2044,26 @@ class DesktopAgent:
             self.send_response(cmd_id, success=False, error="No password provided")
             return
 
+        helper_error = None
         try:
-            import subprocess as _sp
+            helper_result = self._try_unlock_via_installed_helper(password)
+            if helper_result is not None:
+                self.send_response(cmd_id, success=True, data=helper_result)
+                return
+        except Exception as exc:
+            helper_error = str(exc)
+            eprint(f"Installed unlock helper failed: {helper_error}")
+
+        if os.name == "nt" and not ctypes.windll.shell32.IsUserAnAdmin():
+            message = "Unlock support is not installed or failed to start."
+            if helper_error:
+                message += f" Helper error: {helper_error}"
+            message += " Reinstall Autonion Agent as administrator to enable Unlock support without UAC at startup."
+            self.send_response(cmd_id, success=False, error=message)
+            return
+
+        try:
             import tempfile
-            import os
-            import uuid
-            import ctypes
             import ctypes.wintypes as wt
 
             # ═══════════════════════════════════════════════════════
