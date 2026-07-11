@@ -66,6 +66,10 @@ class DesktopAgent:
                     self.handle_select_ui_element(command)
                 elif action == "select_swipe_points":
                     self.handle_select_swipe_points(command)
+                elif action == "unlock_desktop":
+                    self.handle_unlock_desktop(command)
+                elif action == "enumerate_children":
+                    self.handle_enumerate_children(command)
                 else:
                     self.send_response(cmd_id, success=False, error=f"Unknown action: {action}")
             except Exception as exc:
@@ -1941,6 +1945,687 @@ class DesktopAgent:
         except Exception as exc:
             eprint(f"select_ui_element error: {exc}")
             self.send_response(cmd_id, success=False, error=str(exc))
+
+    # ═══════════════════════════════════════════════════════════════
+    #  UNLOCK DESKTOP
+    # ═══════════════════════════════════════════════════════════════
+
+    def handle_unlock_desktop(self, command):
+        """Unlock the Windows lock-screen by typing a password.
+
+        The password arrives via the local stdin JSON pipe (never over the
+        network).  It is used once, then discarded from all variables.
+        """
+        cmd_id = command.get("id")
+        payload = command.get("payload", {})
+        password = payload.get("password")
+
+        if not password:
+            self.send_response(cmd_id, success=False, error="No password provided")
+            return
+
+        try:
+            import subprocess as _sp
+            import tempfile
+            import os
+            import uuid
+            import ctypes
+            import ctypes.wintypes as wt
+
+            # ═══════════════════════════════════════════════════════
+            # Launch helper as SYSTEM in the USER'S session via
+            # CreateProcessAsUser with a token stolen from
+            # winlogon.exe.
+            #
+            # WHY: SendInput requires SYSTEM integrity to bypass
+            # UIPI for the lock screen (LogonUI.exe runs as
+            # SYSTEM). But schtasks /RU SYSTEM runs in session 0
+            # which has no desktop. We need SYSTEM + user's session.
+            #
+            # HOW: As admin, enable SeDebugPrivilege → open
+            # winlogon.exe in user's session → duplicate its
+            # SYSTEM token → CreateProcessAsUser on the Winlogon
+            # desktop.
+            # ═══════════════════════════════════════════════════════
+
+            # Check admin
+            is_admin = ctypes.windll.shell32.IsUserAnAdmin()
+            eprint(f"  Running as admin: {bool(is_admin)}")
+            if not is_admin:
+                raise RuntimeError(
+                    "Unlock requires administrator privileges. "
+                    "Please run the app from an elevated (admin) terminal."
+                )
+
+            advapi32 = ctypes.windll.advapi32
+            kernel32 = ctypes.windll.kernel32
+
+            # ── Enable SeDebugPrivilege + SeImpersonatePrivilege ──
+            TOKEN_ADJUST_PRIVILEGES = 0x0020
+            TOKEN_QUERY = 0x0008
+            SE_PRIVILEGE_ENABLED = 0x0002
+
+            class LUID(ctypes.Structure):
+                _fields_ = [("LowPart", wt.DWORD), ("HighPart", wt.LONG)]
+
+            class LUID_AND_ATTRIBUTES(ctypes.Structure):
+                _fields_ = [("Luid", LUID), ("Attributes", wt.DWORD)]
+
+            class TOKEN_PRIVILEGES(ctypes.Structure):
+                _fields_ = [
+                    ("PrivilegeCount", wt.DWORD),
+                    ("Privileges", LUID_AND_ATTRIBUTES * 1),
+                ]
+
+            # Set proper return types for Win32 calls
+            kernel32.GetCurrentProcess.restype = wt.HANDLE
+            advapi32.OpenProcessToken.argtypes = [
+                wt.HANDLE, wt.DWORD, ctypes.POINTER(wt.HANDLE)
+            ]
+            advapi32.OpenProcessToken.restype = wt.BOOL
+
+            def _enable_privilege(token_handle, priv_name):
+                luid = LUID()
+                advapi32.LookupPrivilegeValueW(
+                    None, priv_name, ctypes.byref(luid)
+                )
+                tp = TOKEN_PRIVILEGES()
+                tp.PrivilegeCount = 1
+                tp.Privileges[0].Luid = luid
+                tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED
+                advapi32.AdjustTokenPrivileges(
+                    token_handle, False, ctypes.byref(tp), 0, None, None
+                )
+                return kernel32.GetLastError()
+
+            h_proc_token = wt.HANDLE()
+            ok = advapi32.OpenProcessToken(
+                kernel32.GetCurrentProcess(),
+                TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY,
+                ctypes.byref(h_proc_token),
+            )
+            eprint(f"  OpenProcessToken: ok={ok}, handle={h_proc_token.value}")
+
+            err1 = _enable_privilege(h_proc_token, "SeDebugPrivilege")
+            err2 = _enable_privilege(h_proc_token, "SeImpersonatePrivilege")
+            kernel32.CloseHandle(h_proc_token)
+            eprint(f"  SeDebugPrivilege: err={err1} (0=OK)")
+            eprint(f"  SeImpersonatePrivilege: err={err2} (0=OK)")
+
+            # ── Find winlogon.exe in user's session ──────────────
+            TH32CS_SNAPPROCESS = 0x00000002
+
+            class PROCESSENTRY32W(ctypes.Structure):
+                _fields_ = [
+                    ("dwSize", wt.DWORD),
+                    ("cntUsage", wt.DWORD),
+                    ("th32ProcessID", wt.DWORD),
+                    ("th32DefaultHeapID", ctypes.POINTER(ctypes.c_ulong)),
+                    ("th32ModuleID", wt.DWORD),
+                    ("cntThreads", wt.DWORD),
+                    ("th32ParentProcessID", wt.DWORD),
+                    ("pcPriClassBase", wt.LONG),
+                    ("dwFlags", wt.DWORD),
+                    ("szExeFile", wt.WCHAR * 260),
+                ]
+
+            user_session = kernel32.WTSGetActiveConsoleSessionId()
+            eprint(f"  User session: {user_session}")
+
+            snap = kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+            pe = PROCESSENTRY32W()
+            pe.dwSize = ctypes.sizeof(PROCESSENTRY32W)
+
+            winlogon_pid = None
+            if kernel32.Process32FirstW(snap, ctypes.byref(pe)):
+                while True:
+                    if pe.szExeFile.lower() == "winlogon.exe":
+                        # Check session
+                        sess_id = wt.DWORD()
+                        kernel32.ProcessIdToSessionId(
+                            pe.th32ProcessID, ctypes.byref(sess_id)
+                        )
+                        if sess_id.value == user_session:
+                            winlogon_pid = pe.th32ProcessID
+                            break
+                    if not kernel32.Process32NextW(snap, ctypes.byref(pe)):
+                        break
+            kernel32.CloseHandle(snap)
+
+            if not winlogon_pid:
+                raise RuntimeError(
+                    f"Could not find winlogon.exe in session {user_session}"
+                )
+            eprint(f"  Found winlogon.exe: PID={winlogon_pid}")
+
+            # ── Duplicate winlogon's SYSTEM token ────────────────
+            PROCESS_QUERY_INFORMATION = 0x0400
+            TOKEN_DUPLICATE = 0x0002
+            TOKEN_ASSIGN_PRIMARY = 0x0001
+            TOKEN_ALL_ACCESS = 0x000F01FF
+            SecurityImpersonation = 2
+            TokenPrimary = 1
+
+            h_winlogon = kernel32.OpenProcess(
+                PROCESS_QUERY_INFORMATION, False, winlogon_pid
+            )
+            if not h_winlogon:
+                raise RuntimeError(
+                    f"OpenProcess(winlogon) failed: {kernel32.GetLastError()}"
+                )
+
+            h_token = wt.HANDLE()
+            if not advapi32.OpenProcessToken(
+                h_winlogon, TOKEN_DUPLICATE, ctypes.byref(h_token)
+            ):
+                kernel32.CloseHandle(h_winlogon)
+                raise RuntimeError(
+                    f"OpenProcessToken(winlogon) failed: {kernel32.GetLastError()}"
+                )
+
+            h_dup_token = wt.HANDLE()
+            if not advapi32.DuplicateTokenEx(
+                h_token,
+                TOKEN_ALL_ACCESS,
+                None,
+                SecurityImpersonation,
+                TokenPrimary,
+                ctypes.byref(h_dup_token),
+            ):
+                kernel32.CloseHandle(h_token)
+                kernel32.CloseHandle(h_winlogon)
+                raise RuntimeError(
+                    f"DuplicateTokenEx failed: {kernel32.GetLastError()}"
+                )
+            kernel32.CloseHandle(h_token)
+            kernel32.CloseHandle(h_winlogon)
+            eprint("  SYSTEM token duplicated OK")
+
+            # ── Prepare temp files ───────────────────────────────
+            tmp_dir = tempfile.gettempdir()
+            script_path = os.path.join(tmp_dir, f"_au_{uuid.uuid4().hex[:12]}.py")
+            pwd_path = os.path.join(tmp_dir, f"_au_{uuid.uuid4().hex[:12]}.dat")
+            log_path = os.path.join(tmp_dir, f"_au_{uuid.uuid4().hex[:12]}.log")
+            bat_path = os.path.join(tmp_dir, f"_au_{uuid.uuid4().hex[:12]}.cmd")
+
+            def _cleanup_temp_files():
+                for temp_path in [script_path, pwd_path, bat_path]:
+                    try:
+                        if temp_path == pwd_path and os.path.exists(temp_path):
+                            with open(temp_path, "w") as f:
+                                f.write("X" * 256)
+                        os.remove(temp_path)
+                    except FileNotFoundError:
+                        pass
+                    except Exception:
+                        pass
+
+            helper_code = (
+                "import ctypes, ctypes.wintypes as wt, sys, os, time\n"
+                "\n"
+                f'PWD_FILE = r"{pwd_path}"\n'
+                f'LOG_FILE = r"{log_path}"\n'
+                f'SCRIPT_FILE = r"{script_path}"\n'
+                "\n"
+                "def log(msg):\n"
+                "    print(msg, flush=True)\n"
+                "log('OK: helper started')\n"
+                "\n"
+                "\n"
+                "try:\n"
+                "    with open(PWD_FILE, 'r') as f:\n"
+                "        password = f.read().strip()\n"
+                "    with open(PWD_FILE, 'w') as f:\n"
+                "        f.write('X' * 256)\n"
+                "    os.remove(PWD_FILE)\n"
+                "    log('OK: password read and file shredded')\n"
+                "except Exception as e:\n"
+                "    log(f'ERROR reading password: {e}')\n"
+                "    sys.exit(1)\n"
+                "\n"
+                "if not password:\n"
+                "    log('ERROR: empty password')\n"
+                "    sys.exit(1)\n"
+                "\n"
+                "user32 = ctypes.windll.user32\n"
+                "kernel32 = ctypes.windll.kernel32\n"
+                "\n"
+                "INPUT_KEYBOARD = 1\n"
+                "KEYEVENTF_UNICODE = 0x0004\n"
+                "KEYEVENTF_KEYUP = 0x0002\n"
+                "VK_RETURN = 0x0D\n"
+                "VK_ESCAPE = 0x1B\n"
+                "DESKTOP_ALL_ACCESS = 0x01FF\n"
+                "\n"
+                "class KEYBDINPUT(ctypes.Structure):\n"
+                "    _fields_ = [('wVk', wt.WORD), ('wScan', wt.WORD),\n"
+                "                ('dwFlags', wt.DWORD), ('time', wt.DWORD),\n"
+                "                ('dwExtraInfo', ctypes.POINTER(ctypes.c_ulong))]\n"
+                "class MOUSEINPUT(ctypes.Structure):\n"
+                "    _fields_ = [('dx', wt.LONG), ('dy', wt.LONG),\n"
+                "                ('mouseData', wt.DWORD), ('dwFlags', wt.DWORD),\n"
+                "                ('time', wt.DWORD),\n"
+                "                ('dwExtraInfo', ctypes.POINTER(ctypes.c_ulong))]\n"
+                "class HARDWAREINPUT(ctypes.Structure):\n"
+                "    _fields_ = [('uMsg', wt.DWORD), ('wParamL', wt.WORD), ('wParamH', wt.WORD)]\n"
+                "class _U(ctypes.Union):\n"
+                "    _fields_ = [('mi', MOUSEINPUT), ('ki', KEYBDINPUT), ('hi', HARDWAREINPUT)]\n"
+                "class INPUT(ctypes.Structure):\n"
+                "    _fields_ = [('type', wt.DWORD), ('union', _U)]\n"
+                "user32.OpenInputDesktop.argtypes = [wt.DWORD, wt.BOOL, wt.DWORD]\n"
+                "user32.OpenInputDesktop.restype = wt.HANDLE\n"
+                "user32.OpenDesktopW.argtypes = [wt.LPCWSTR, wt.DWORD, wt.BOOL, wt.DWORD]\n"
+                "user32.OpenDesktopW.restype = wt.HANDLE\n"
+                "user32.SetThreadDesktop.argtypes = [wt.HANDLE]\n"
+                "user32.SetThreadDesktop.restype = wt.BOOL\n"
+                "user32.CloseDesktop.argtypes = [wt.HANDLE]\n"
+                "user32.CloseDesktop.restype = wt.BOOL\n"
+                "user32.SendInput.argtypes = [wt.UINT, ctypes.POINTER(INPUT), ctypes.c_int]\n"
+                "user32.SendInput.restype = wt.UINT\n"
+                "\n"
+                "\n"
+                "def send_vk(vk):\n"
+                "    inp = (INPUT * 2)()\n"
+                "    inp[0].type = INPUT_KEYBOARD; inp[0].union.ki.wVk = vk; inp[0].union.ki.dwFlags = 0\n"
+                "    inp[1].type = INPUT_KEYBOARD; inp[1].union.ki.wVk = vk; inp[1].union.ki.dwFlags = KEYEVENTF_KEYUP\n"
+                "    n = user32.SendInput(2, inp, ctypes.sizeof(INPUT))\n"
+                "    log(f'  send_vk(0x{vk:02X}) -> {n}')\n"
+                "    return n\n"
+                "\n"
+                "def send_char(ch):\n"
+                "    sc = ord(ch)\n"
+                "    inp = (INPUT * 2)()\n"
+                "    inp[0].type = INPUT_KEYBOARD; inp[0].union.ki.wVk = 0; inp[0].union.ki.wScan = sc; inp[0].union.ki.dwFlags = KEYEVENTF_UNICODE\n"
+                "    inp[1].type = INPUT_KEYBOARD; inp[1].union.ki.wVk = 0; inp[1].union.ki.wScan = sc; inp[1].union.ki.dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP\n"
+                "    n = user32.SendInput(2, inp, ctypes.sizeof(INPUT))\n"
+                "    return n\n"
+                "\n"
+                "desktop_ready = False\n"
+                "h_desktop = user32.OpenInputDesktop(0, True, DESKTOP_ALL_ACCESS)\n"
+                "if h_desktop:\n"
+                "    if user32.SetThreadDesktop(h_desktop):\n"
+                "        log('OK: switched to input desktop')\n"
+                "        desktop_ready = True\n"
+                "    else:\n"
+                "        log(f'WARN: SetThreadDesktop err={kernel32.GetLastError()}')\n"
+                "else:\n"
+                "    log(f'WARN: OpenInputDesktop err={kernel32.GetLastError()}')\n"
+                "    h_desktop = user32.OpenDesktopW('Winlogon', 0, True, DESKTOP_ALL_ACCESS)\n"
+                "    if h_desktop and user32.SetThreadDesktop(h_desktop):\n"
+                "        log('OK: switched to Winlogon desktop')\n"
+                "        desktop_ready = True\n"
+                "if not desktop_ready:\n"
+                "    log('ERROR: could not switch to lock-screen input desktop')\n"
+                "    sys.exit(4)\n"
+                "\n"
+                "log('Step 1: dismissing lock overlay...')\n"
+                "if send_vk(VK_ESCAPE) != 2:\n"
+                "    log('WARN: Escape key was not accepted by SendInput')\n"
+                "time.sleep(2.0)\n"
+                "\n"
+                "# Re-acquire the input desktop after transition.\n"
+                "# Pressing Escape switches the input desktop from\n"
+                "# LockApp overlay to LogonUI credential screen.\n"
+                "# Our thread is still on the OLD desktop - must switch.\n"
+                "if h_desktop:\n"
+                "    user32.CloseDesktop(h_desktop)\n"
+                "    h_desktop = None\n"
+                "desktop_ready = False\n"
+                "h_desktop = user32.OpenInputDesktop(0, True, DESKTOP_ALL_ACCESS)\n"
+                "if h_desktop:\n"
+                "    if user32.SetThreadDesktop(h_desktop):\n"
+                "        log('OK: re-acquired input desktop after transition')\n"
+                "        desktop_ready = True\n"
+                "    else:\n"
+                "        log(f'WARN: SetThreadDesktop(2) err={kernel32.GetLastError()}')\n"
+                "else:\n"
+                "    err = kernel32.GetLastError()\n"
+                "    log(f'WARN: OpenInputDesktop(2) err={err}')\n"
+                "    # Try explicit Winlogon desktop\n"
+                "    h_desktop = user32.OpenDesktopW('Winlogon', 0, True, DESKTOP_ALL_ACCESS)\n"
+                "    if h_desktop and user32.SetThreadDesktop(h_desktop):\n"
+                "        log('OK: re-acquired Winlogon desktop after transition')\n"
+                "        desktop_ready = True\n"
+                "if not desktop_ready:\n"
+                "    log('ERROR: could not re-acquire lock-screen input desktop')\n"
+                "    sys.exit(5)\n"
+                "\n"
+                "log(f'Step 2: typing password ({len(password)} chars)...')\n"
+                "typed = 0\n"
+                "for idx, ch in enumerate(password, 1):\n"
+                "    n = send_char(ch)\n"
+                "    if n == 2:\n"
+                "        typed += 1\n"
+                "    else:\n"
+                "        log(f'ERROR: char {idx} SendInput returned {n}')\n"
+                "    time.sleep(0.05)\n"
+                "log(f'  chars sent: {typed}/{len(password)}')\n"
+                "if typed != len(password):\n"
+                "    sys.exit(6)\n"
+                "time.sleep(0.3)\n"
+                "\n"
+                "log('Step 3: pressing Enter...')\n"
+                "enter_sent = send_vk(VK_RETURN)\n"
+                "if enter_sent != 2:\n"
+                "    log(f'WARN: Enter key returned {enter_sent}; continuing because password characters were sent')\n"
+                "time.sleep(3.0)\n"
+                "\n"
+                "if h_desktop:\n"
+                "    user32.CloseDesktop(h_desktop)\n"
+                "password = None\n"
+                "log('OK: unlock finished')\n"
+                "\n"
+                "try:\n"
+                "    os.remove(SCRIPT_FILE)\n"
+                "except Exception:\n"
+                "    pass\n"
+            )
+            python_exe = sys.executable
+
+            with open(script_path, "w", encoding="utf-8") as f:
+                f.write(helper_code)
+            with open(pwd_path, "w") as f:
+                f.write(password)
+            with open(bat_path, "w") as f:
+                f.write("@echo off\r\n")
+                f.write(f'"{python_exe}" "{script_path}" >> "{log_path}" 2>&1\r\n')
+                f.write("exit /b %ERRORLEVEL%\r\n")
+
+            # ── Launch as SYSTEM via CreateProcessAsUser ──────────
+            CREATE_NO_WINDOW = 0x08000000
+            CREATE_UNICODE_ENVIRONMENT = 0x00000400
+
+            class STARTUPINFOW(ctypes.Structure):
+                _fields_ = [
+                    ("cb", wt.DWORD), ("lpReserved", wt.LPWSTR),
+                    ("lpDesktop", wt.LPWSTR), ("lpTitle", wt.LPWSTR),
+                    ("dwX", wt.DWORD), ("dwY", wt.DWORD),
+                    ("dwXSize", wt.DWORD), ("dwYSize", wt.DWORD),
+                    ("dwXCountChars", wt.DWORD), ("dwYCountChars", wt.DWORD),
+                    ("dwFillAttribute", wt.DWORD), ("dwFlags", wt.DWORD),
+                    ("wShowWindow", wt.WORD), ("cbReserved2", wt.WORD),
+                    ("lpReserved2", ctypes.POINTER(ctypes.c_byte)),
+                    ("hStdInput", wt.HANDLE), ("hStdOutput", wt.HANDLE),
+                    ("hStdError", wt.HANDLE),
+                ]
+
+            class PROCESS_INFORMATION(ctypes.Structure):
+                _fields_ = [
+                    ("hProcess", wt.HANDLE), ("hThread", wt.HANDLE),
+                    ("dwProcessId", wt.DWORD), ("dwThreadId", wt.DWORD),
+                ]
+
+            cmd_exe = os.path.join(
+                os.environ.get("SystemRoot", r"C:\Windows"),
+                "System32",
+                "cmd.exe",
+            )
+            cmd_line = f'"{cmd_exe}" /d /c "{bat_path}"'
+            cmd_buffer = ctypes.create_unicode_buffer(cmd_line)
+
+            si = STARTUPINFOW()
+            si.cb = ctypes.sizeof(STARTUPINFOW)
+            si.lpDesktop = "winsta0\\Winlogon"
+            pi = PROCESS_INFORMATION()
+
+            # Use CreateProcessWithTokenW instead of CreateProcessAsUserW.
+            # CreateProcessAsUserW requires SeAssignPrimaryTokenPrivilege
+            # (only SYSTEM has it). CreateProcessWithTokenW only needs
+            # SeImpersonatePrivilege which admin accounts have.
+            LOGON_WITH_PROFILE = 0x00000001
+
+            advapi32.CreateProcessWithTokenW.restype = wt.BOOL
+            advapi32.CreateProcessWithTokenW.argtypes = [
+                wt.HANDLE,      # hToken
+                wt.DWORD,       # dwLogonFlags
+                wt.LPCWSTR,     # lpApplicationName
+                wt.LPWSTR,      # lpCommandLine
+                wt.DWORD,       # dwCreationFlags
+                ctypes.c_void_p,  # lpEnvironment
+                wt.LPCWSTR,     # lpCurrentDirectory
+                ctypes.POINTER(STARTUPINFOW),   # lpStartupInfo
+                ctypes.POINTER(PROCESS_INFORMATION),  # lpProcessInformation
+            ]
+
+            kernel32.WaitForSingleObject.argtypes = [wt.HANDLE, wt.DWORD]
+            kernel32.WaitForSingleObject.restype = wt.DWORD
+            kernel32.GetExitCodeProcess.argtypes = [wt.HANDLE, ctypes.POINTER(wt.DWORD)]
+            kernel32.GetExitCodeProcess.restype = wt.BOOL
+            kernel32.TerminateProcess.argtypes = [wt.HANDLE, wt.UINT]
+            kernel32.TerminateProcess.restype = wt.BOOL
+
+            eprint("  Launching SYSTEM process via CreateProcessWithTokenW...")
+            ok = advapi32.CreateProcessWithTokenW(
+                h_dup_token,
+                LOGON_WITH_PROFILE,
+                cmd_exe,
+                cmd_buffer,
+                CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT,
+                None,
+                None,
+                ctypes.byref(si),
+                ctypes.byref(pi),
+            )
+
+            if not ok:
+                err = kernel32.GetLastError()
+                kernel32.CloseHandle(h_dup_token)
+                _cleanup_temp_files()
+                raise RuntimeError(f"CreateProcessWithTokenW failed: err={err}")
+
+            eprint(f"  SYSTEM child PID={pi.dwProcessId}")
+            kernel32.CloseHandle(h_dup_token)
+
+            # Wait for the child to finish and verify that it really sent input.
+            WAIT_TIMEOUT = 0x00000102
+            WAIT_FAILED = 0xFFFFFFFF
+            STILL_ACTIVE = 259
+
+            wait_result = kernel32.WaitForSingleObject(pi.hProcess, 15000)
+            if wait_result == WAIT_TIMEOUT:
+                kernel32.TerminateProcess(pi.hProcess, 1)
+                kernel32.WaitForSingleObject(pi.hProcess, 2000)
+
+            exit_code = wt.DWORD(STILL_ACTIVE)
+            if not kernel32.GetExitCodeProcess(pi.hProcess, ctypes.byref(exit_code)):
+                exit_code.value = STILL_ACTIVE
+
+            kernel32.CloseHandle(pi.hProcess)
+            kernel32.CloseHandle(pi.hThread)
+
+            time.sleep(0.5)
+            log_lines = []
+            if os.path.exists(log_path):
+                with open(log_path, "r", errors="replace") as f:
+                    log_lines = [line.rstrip() for line in f.read().splitlines()]
+                for line in log_lines:
+                    if line:
+                        eprint(f"  [unlock-sys] {line}")
+                os.remove(log_path)
+            else:
+                eprint("  [unlock-sys] No log file found")
+
+            chars_line = next((
+                line for line in log_lines if "chars sent:" in line
+            ), None)
+            typed_ok = False
+            if chars_line:
+                try:
+                    sent_text = chars_line.split("chars sent:", 1)[1].strip()
+                    sent, total = sent_text.split("/", 1)
+                    typed_ok = int(sent) == int(total) and int(total) > 0
+                except Exception:
+                    typed_ok = False
+
+            helper_error = None
+            if wait_result == WAIT_TIMEOUT:
+                helper_error = "Unlock helper timed out before sending input"
+            elif wait_result == WAIT_FAILED:
+                helper_error = f"Unlock helper wait failed: {kernel32.GetLastError()}"
+            elif exit_code.value != 0:
+                helper_error = f"Unlock helper exited with code {exit_code.value}"
+            elif not log_lines:
+                helper_error = "Unlock helper produced no log output"
+            elif not any("OK: unlock finished" in line for line in log_lines):
+                helper_error = "Unlock helper did not finish"
+            elif not typed_ok:
+                helper_error = "Unlock helper did not send all password characters"
+
+            detail = "; ".join(log_lines[-8:])
+            _cleanup_temp_files()
+
+            if helper_error:
+                if detail:
+                    raise RuntimeError(f"{helper_error}. Helper log: {detail}")
+                raise RuntimeError(helper_error)
+
+            self.send_response(cmd_id, success=True, data={
+                "status": "unlock_input_sent",
+                "helperExitCode": exit_code.value,
+            })
+        except Exception as exc:
+            eprint(f"Unlock error: {exc}")
+            import traceback; traceback.print_exc(file=sys.stderr)
+            self.send_response(cmd_id, success=False, error=str(exc))
+        finally:
+            # Scrub password from local scope
+            password = None  # noqa: F841
+
+    # ═══════════════════════════════════════════════════════════════
+    #  ENUMERATE CHILDREN (for Data Iterator node)
+    # ═══════════════════════════════════════════════════════════════
+
+    def handle_enumerate_children(self, command):
+        """Find a UIA container element and return its direct children.
+
+        The container is identified by matching attributes (automationId,
+        className, name, role, stableId) against the live UIA tree.  The
+        returned children include bounding boxes and text for each item.
+        """
+        cmd_id = command.get("id")
+        payload = command.get("payload", {})
+        sort_by = payload.get("sortBy", "auto")  # "auto", "vertical", "horizontal"
+
+        # Identification attributes for the container
+        match_stable_id = payload.get("stableId")
+        match_automation_id = payload.get("automationId")
+        match_class_name = payload.get("className")
+        match_name = payload.get("name")
+        match_role = payload.get("role")
+
+        try:
+            # Refresh the accessibility tree so node_cache is populated
+            self._get_accessibility_tree()
+
+            # Step 1: find the container control
+            container = None
+
+            # Try stableId first (most reliable)
+            if match_stable_id and match_stable_id in self.node_cache:
+                container = self.node_cache[match_stable_id]
+
+            # Fallback: scan all cached controls for matching attributes
+            if container is None:
+                for key, control in self.node_cache.items():
+                    if not isinstance(key, str) or key.startswith("node_"):
+                        continue  # skip node_id entries, use stableId entries
+                    try:
+                        matches = True
+                        if match_automation_id:
+                            if self._safe_attr(control, "AutomationId", "") != match_automation_id:
+                                matches = False
+                        if match_class_name and matches:
+                            if self._safe_attr(control, "ClassName", "") != match_class_name:
+                                matches = False
+                        if match_name and matches:
+                            if self._safe_attr(control, "Name", "") != match_name:
+                                matches = False
+                        if match_role and matches:
+                            ctrl_role = self._get_role_name(self._safe_attr(control, "ControlType"))
+                            if ctrl_role != match_role:
+                                matches = False
+                        if matches:
+                            container = control
+                            break
+                    except Exception:
+                        continue
+
+            if container is None:
+                self.send_response(cmd_id, success=False,
+                                   error="Container element not found in the UIA tree")
+                return
+
+            # Step 2: enumerate direct children
+            try:
+                children = container.GetChildren()
+            except Exception as child_err:
+                self.send_response(cmd_id, success=False,
+                                   error=f"Failed to get children: {child_err}")
+                return
+
+            child_elements = []
+            for idx, child in enumerate(children):
+                try:
+                    rect = child.BoundingRectangle
+                    if rect.width() <= 0 or rect.height() <= 0:
+                        continue  # skip invisible/zero-size children
+
+                    name = self._truncate(self._safe_attr(child, "Name", ""))
+                    value = ""
+                    try:
+                        vp = child.GetValuePattern()
+                        if vp:
+                            value = self._truncate(vp.Value)
+                    except Exception:
+                        pass
+
+                    automation_id = self._safe_attr(child, "AutomationId", "")
+                    class_name = self._safe_attr(child, "ClassName", "")
+                    control_type = self._safe_attr(child, "ControlType")
+                    stable_id = self._stable_id(
+                        control=child, rect=rect, path=f"iter/{idx}",
+                        name=name, automation_id=automation_id,
+                        class_name=class_name,
+                    )
+
+                    child_elements.append({
+                        "index": idx,
+                        "name": name,
+                        "value": value,
+                        "role": self._get_role_name(control_type),
+                        "type": str(control_type),
+                        "automationId": automation_id,
+                        "className": class_name,
+                        "stableId": stable_id,
+                        "boundingBox": {
+                            "x": rect.left,
+                            "y": rect.top,
+                            "width": rect.width(),
+                            "height": rect.height(),
+                        },
+                        "centerX": rect.left + rect.width() // 2,
+                        "centerY": rect.top + rect.height() // 2,
+                        "isEnabled": bool(self._safe_attr(child, "IsEnabled", True)),
+                        "isOffscreen": bool(self._safe_attr(child, "IsOffscreen", False)),
+                    })
+                except Exception:
+                    continue
+
+            # Step 3: sort by the requested direction
+            if sort_by == "vertical":
+                child_elements.sort(key=lambda e: e["boundingBox"]["y"])
+            elif sort_by == "horizontal":
+                child_elements.sort(key=lambda e: e["boundingBox"]["x"])
+            # "auto" keeps tree order (already the order from GetChildren)
+
+            self.send_response(cmd_id, success=True, data={
+                "children": child_elements,
+                "count": len(child_elements),
+            })
+        except Exception as exc:
+            eprint(f"enumerate_children error: {exc}")
+            self.send_response(cmd_id, success=False, error=str(exc))
+
 
     def _capture_screenshot(self, tier):
         if tier == "accessibilityOnly":

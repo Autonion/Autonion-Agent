@@ -6,6 +6,7 @@ import '../models/desktop_flow_models.dart';
 import 'input_simulation_service.dart';
 import 'accessibility_tree_service.dart';
 import 'python_bridge_service.dart';
+import 'secure_credential_service.dart';
 import '../models/automation_tier.dart';
 import '../models/desktop_action.dart';
 import '../models/ui_element.dart';
@@ -77,10 +78,17 @@ class FlowExecutionService {
   final AccessibilityTreeService _a11y;
   final PythonBridgeService _bridge;
   final LoggingService _log;
+  final SecureCredentialService _credentials;
 
   bool _isRunning = false;
   bool _stopRequested = false;
   String? _currentFlowId;
+
+  /// Context variables populated during data iterator execution.
+  /// Keys like 'current_item', 'current_index', 'total_items' are set
+  /// per-iteration and can be referenced in downstream nodes via
+  /// the `{{variable_name}}` syntax.
+  final Map<String, String> _executionContext = {};
 
   bool get isRunning => _isRunning;
   String? get currentFlowId => _currentFlowId;
@@ -90,10 +98,12 @@ class FlowExecutionService {
     required AccessibilityTreeService a11y,
     required PythonBridgeService bridge,
     required LoggingService log,
+    required SecureCredentialService credentials,
   }) : _input = input,
        _a11y = a11y,
        _bridge = bridge,
-       _log = log;
+       _log = log,
+       _credentials = credentials;
 
   /// Execute a flow, reporting progress via callback.
   Future<FlowExecutionResult> executeFlow(
@@ -112,6 +122,7 @@ class FlowExecutionService {
     _isRunning = true;
     _stopRequested = false;
     _currentFlowId = flow.id;
+    _executionContext.clear();
 
     final stopwatch = Stopwatch()..start();
     int stepsExecuted = 0;
@@ -213,6 +224,36 @@ class FlowExecutionService {
         // For conditional nodes, pick the right branch
         if (currentNode.nodeType == DesktopFlowNodeType.conditional) {
           currentNode = await _resolveConditionalBranch(currentNode, flow);
+        } else if (currentNode.nodeType == DesktopFlowNodeType.dataIterator) {
+          // Data Iterator: run the full iteration, then follow the "done" edge
+          await executeDataIterator(
+            currentNode,
+            flow,
+            onProgress: onProgress,
+          );
+          // After iteration, follow the "done"/"success" edge (skip "body")
+          DesktopFlowNode? doneTarget;
+          for (final edge in flow.outgoingEdges(currentNode.id)) {
+            final label = edge.label?.toLowerCase();
+            if (label == 'done' || label == 'success') {
+              doneTarget = flow.findNode(edge.toNodeId);
+              break;
+            }
+          }
+          // Fallback: if no "done" edge, try the second outgoing edge
+          if (doneTarget == null) {
+            final outgoing = flow.nextNodes(currentNode.id);
+            if (outgoing.length > 1) {
+              doneTarget = outgoing[1]; // First is body, second is done
+            } else if (outgoing.isNotEmpty) {
+              doneTarget = outgoing.first;
+            }
+          }
+          if (doneTarget != null) {
+            currentNode = doneTarget;
+          } else {
+            break; // No "done" edge — flow ends
+          }
         } else {
           // For repeat nodes, handle looping
           if (currentNode.nodeType == DesktopFlowNodeType.repeat) {
@@ -406,6 +447,15 @@ class FlowExecutionService {
 
       case DesktopFlowNodeType.uiDetect:
         await _executeUIDetect(node);
+        break;
+
+      case DesktopFlowNodeType.unlock:
+        await _executeUnlock(node);
+        break;
+
+      case DesktopFlowNodeType.dataIterator:
+        // Data iterator traversal is handled in the main loop;
+        // the actual iteration is triggered from there.
         break;
     }
   }
@@ -723,7 +773,22 @@ class FlowExecutionService {
       await Future.delayed(const Duration(milliseconds: 150));
     }
 
-    await _input.execute(DesktopAction(type: 'type', text: node.text ?? ''));
+    // Apply context variable substitution (e.g. {{current_item}})
+    final rawText = node.text ?? '';
+    final resolvedText = _substituteContextVariables(rawText);
+
+    await _input.execute(DesktopAction(type: 'type', text: resolvedText));
+  }
+
+  /// Replace `{{key}}` placeholders in [text] with values from
+  /// the current execution context.
+  String _substituteContextVariables(String text) {
+    if (_executionContext.isEmpty || !text.contains('{{')) return text;
+    var result = text;
+    for (final entry in _executionContext.entries) {
+      result = result.replaceAll('{{${entry.key}}}', entry.value);
+    }
+    return result;
   }
 
   Future<void> _clickTarget(Map<String, dynamic> targetParams) {
@@ -1304,7 +1369,187 @@ class FlowExecutionService {
         return true;
     }
   }
+
+  // ═══════════════════════════════════════════════════════════════
+  //  UNLOCK NODE
+  // ═══════════════════════════════════════════════════════════════
+
+  Future<void> _executeUnlock(DesktopFlowNode node) async {
+    final password = await _credentials.getUnlockPassword(node.id);
+    if (password == null || password.isEmpty) {
+      throw FlowExecutionException(
+        'No unlock password configured for node "${node.label}"',
+      );
+    }
+
+    _log.info('FlowExec', 'Sending unlock command to desktop agent');
+
+    // sendCommand returns response['data'] on success, throws
+    // PythonBridgeException on failure — no need to check 'success' key.
+    await _bridge.sendCommand('unlock_desktop', {
+      'password': password,
+    });
+
+    _log.info('FlowExec', 'Unlock command completed');
+  }
+
+  // ═══════════════════════════════════════════════════════════════
+  //  DATA ITERATOR NODE
+  // ═══════════════════════════════════════════════════════════════
+
+  /// Executes the Data Iterator node: enumerates children of a container
+  /// element and runs a sub-flow for each child.
+  ///
+  /// The sub-flow is found by following the "body" edge from this node.
+  /// After all iterations, follows the "done"/"success" edge.
+  Future<void> executeDataIterator(
+    DesktopFlowNode node,
+    DesktopFlow flow, {
+    void Function(FlowStepProgress)? onProgress,
+  }) async {
+    final config = node.dataIteratorConfig ?? const DataIteratorConfig();
+    final containerTarget = node.containerTarget;
+
+    if (containerTarget == null) {
+      throw FlowExecutionException(
+        'No container element configured for Data Iterator "${node.label}"',
+      );
+    }
+
+    _log.info('FlowExec', 'Data Iterator: enumerating children...');
+
+    // Build payload from the container target's UIA attributes
+    final payload = <String, dynamic>{
+      'sortBy': config.direction.name,
+    };
+    if (containerTarget.stableId != null) {
+      payload['stableId'] = containerTarget.stableId;
+    }
+    if (containerTarget.automationId != null) {
+      payload['automationId'] = containerTarget.automationId;
+    }
+    if (containerTarget.className != null) {
+      payload['className'] = containerTarget.className;
+    }
+    if (containerTarget.name != null) {
+      payload['name'] = containerTarget.name;
+    }
+    if (containerTarget.role != null) {
+      payload['role'] = containerTarget.role;
+    }
+
+    // Ask Python agent to enumerate children
+    // sendCommand returns response['data'] on success, throws on failure.
+    final result = await _bridge.sendCommand(
+      'enumerate_children',
+      payload,
+    );
+
+    // result IS the data payload directly (not wrapped in success/data)
+    final data = result as Map<String, dynamic>? ?? {};
+    final children = (data['children'] as List<dynamic>?) ?? [];
+    final totalItems = children.length;
+
+    if (totalItems == 0) {
+      _log.info('FlowExec', 'Data Iterator: no children found, skipping');
+      return;
+    }
+
+    _log.info('FlowExec', 'Data Iterator: found $totalItems children');
+
+    // Find the "body" sub-flow target
+    DesktopFlowNode? bodyTarget;
+    for (final edge in flow.outgoingEdges(node.id)) {
+      final label = edge.label?.toLowerCase();
+      if (label == 'body') {
+        bodyTarget = flow.findNode(edge.toNodeId);
+        break;
+      }
+    }
+
+    // Fallback: use success edge as body if no explicit "body" edge
+    bodyTarget ??= _resolveSuccessBranch(node, flow);
+
+    if (bodyTarget == null) {
+      _log.info('FlowExec', 'Data Iterator: no body sub-flow connected');
+      return;
+    }
+
+    // Iterate through each child
+    for (int i = 0; i < totalItems; i++) {
+      if (_stopRequested) break;
+
+      final child = children[i] as Map<String, dynamic>;
+      final childName = child['name'] as String? ?? '';
+      final childValue = child['value'] as String? ?? '';
+      final centerX = child['centerX'] as int? ?? 0;
+      final centerY = child['centerY'] as int? ?? 0;
+
+      // Set context variables for this iteration
+      _executionContext[config.contextVariableName] =
+          childName.isNotEmpty ? childName : childValue;
+      _executionContext['current_index'] = i.toString();
+      _executionContext['total_items'] = totalItems.toString();
+
+      _log.info(
+        'FlowExec',
+        'Data Iterator: item ${i + 1}/$totalItems — '
+        '"${_executionContext[config.contextVariableName]}"',
+      );
+
+      onProgress?.call(FlowStepProgress(
+        flowId: flow.id,
+        status: 'iterator_step',
+        message: 'Iterating item ${i + 1}/$totalItems: '
+            '${_executionContext[config.contextVariableName]}',
+        currentStep: i + 1,
+        totalSteps: totalItems,
+        nodeLabel: node.label,
+        nodeId: node.id,
+      ));
+
+      // Click on the child element if configured
+      if (config.clickEachItem && centerX > 0 && centerY > 0) {
+        await _input.execute(DesktopAction(
+          type: 'click',
+          x: centerX.toDouble(),
+          y: centerY.toDouble(),
+          coordinateSpace: 'screen',
+        ));
+        await Future.delayed(const Duration(milliseconds: 200));
+      }
+
+      // Execute the body sub-flow chain
+      DesktopFlowNode? current = bodyTarget;
+      while (current != null && !_stopRequested) {
+        if (current.nodeType == DesktopFlowNodeType.done) break;
+        // Stop if we loop back to the iterator itself
+        if (current.id == node.id) break;
+
+        await _executeNode(current, flow);
+        await Future.delayed(const Duration(milliseconds: 100));
+
+        // Follow the success edge of each body node
+        current = _resolveSuccessBranch(current, flow);
+      }
+
+      // Delay between iterations
+      if (i < totalItems - 1 && config.delayBetweenMs > 0) {
+        await Future.delayed(
+          Duration(milliseconds: config.delayBetweenMs),
+        );
+      }
+    }
+
+    // Clear context variables after iteration completes
+    _executionContext.remove(config.contextVariableName);
+    _executionContext.remove('current_index');
+    _executionContext.remove('total_items');
+
+    _log.info('FlowExec', 'Data Iterator: completed all $totalItems items');
+  }
 }
+
 
 /// Thrown when a flow execution step fails.
 class FlowExecutionException implements Exception {

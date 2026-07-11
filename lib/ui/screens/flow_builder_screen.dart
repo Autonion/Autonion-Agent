@@ -755,6 +755,14 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
         widgets.add(_buildUIDetectSection(provider, node));
         break;
 
+      case DesktopFlowNodeType.unlock:
+        widgets.add(_buildUnlockSection(provider, node));
+        break;
+
+      case DesktopFlowNodeType.dataIterator:
+        widgets.add(_buildDataIteratorSection(provider, node));
+        break;
+
       default:
         break;
     }
@@ -1566,6 +1574,423 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
       ),
     );
   }
+
+  // ═══════════════════════════════════════════════════════
+  //  UNLOCK NODE CONFIG
+  // ═══════════════════════════════════════════════════════
+
+  Widget _buildUnlockSection(
+    FlowBuilderProvider provider,
+    DesktopFlowNode node,
+  ) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const SizedBox(height: 4),
+
+        // Security indicator
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(10),
+          decoration: BoxDecoration(
+            color: node.hasUnlockPassword
+                ? const Color(0xFF8b5cf6).withValues(alpha: 0.08)
+                : AppColors.warning.withValues(alpha: 0.08),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(
+              color: node.hasUnlockPassword
+                  ? const Color(0xFF8b5cf6).withValues(alpha: 0.4)
+                  : AppColors.warning.withValues(alpha: 0.4),
+            ),
+          ),
+          child: Row(
+            children: [
+              Icon(
+                node.hasUnlockPassword ? Icons.lock : Icons.warning_amber,
+                size: 16,
+                color: node.hasUnlockPassword
+                    ? const Color(0xFF8b5cf6)
+                    : AppColors.warning,
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  node.hasUnlockPassword
+                      ? 'Password saved securely (DPAPI)'
+                      : 'No password saved yet',
+                  style: TextStyle(
+                    color: node.hasUnlockPassword
+                        ? const Color(0xFF8b5cf6)
+                        : AppColors.warning,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+
+        const SizedBox(height: 12),
+
+        // Password input
+        _UnlockPasswordField(
+          hasPassword: node.hasUnlockPassword,
+          onSave: (password) async {
+            await provider.saveUnlockPassword(node.id, password);
+          },
+          onClear: () async {
+            await provider.deleteUnlockPassword(node.id);
+          },
+        ),
+
+        const SizedBox(height: 10),
+
+        // Security note
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(8),
+          decoration: BoxDecoration(
+            color: AppColors.surfaceVariant,
+            borderRadius: BorderRadius.circular(6),
+          ),
+          child: const Text(
+            '\u{1f512} Your password is stored using Windows DPAPI '
+            'encryption and never saved in the flow file.',
+            style: TextStyle(
+              color: AppColors.textMuted,
+              fontSize: 10,
+              fontStyle: FontStyle.italic,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  // ═══════════════════════════════════════════════════════
+  //  DATA ITERATOR NODE CONFIG
+  // ═══════════════════════════════════════════════════════
+
+  Widget _buildDataIteratorSection(
+    FlowBuilderProvider provider,
+    DesktopFlowNode node,
+  ) {
+    final target = node.containerTarget;
+    final config = node.dataIteratorConfig ?? const DataIteratorConfig();
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const SizedBox(height: 4),
+
+        // ── Pick Container button ──
+        SizedBox(
+          width: double.infinity,
+          child: ElevatedButton.icon(
+            onPressed: () => _selectContainerElement(provider, node),
+            icon: const Icon(Icons.ads_click, size: 18),
+            label: Text(
+              target != null
+                  ? 'Re-pick Container Element'
+                  : 'Pick Container Element',
+            ),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF06b6d4),
+              foregroundColor: Colors.white,
+              padding: const EdgeInsets.symmetric(vertical: 12),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(8),
+              ),
+            ),
+          ),
+        ),
+
+        const SizedBox(height: 10),
+
+        // ── Container element summary ──
+        if (target != null &&
+            ((target.name ?? '').isNotEmpty ||
+                (target.role ?? '').isNotEmpty ||
+                (target.automationId ?? '').isNotEmpty))
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: AppColors.background,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(
+                color: const Color(0xFF06b6d4).withValues(alpha: 0.4),
+              ),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Icon(
+                      Icons.check_circle,
+                      size: 14,
+                      color: AppColors.success,
+                    ),
+                    const SizedBox(width: 6),
+                    const Text(
+                      'CONTAINER ELEMENT',
+                      style: TextStyle(
+                        color: AppColors.textMuted,
+                        fontSize: 10,
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: 1.2,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                if ((target.name ?? '').isNotEmpty)
+                  _attributeRow('Name', target.name!),
+                if ((target.role ?? '').isNotEmpty)
+                  _attributeRow('Role', target.role!),
+                if ((target.automationId ?? '').isNotEmpty)
+                  _attributeRow('ID', target.automationId!),
+                if ((target.className ?? '').isNotEmpty)
+                  _attributeRow('Class', target.className!),
+              ],
+            ),
+          )
+        else
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: AppColors.background,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: AppColors.border),
+            ),
+            child: const Text(
+              'No container selected yet.\nPick a list, grid, or table element from the screen.',
+              style: TextStyle(
+                color: AppColors.textMuted,
+                fontSize: 11,
+                fontStyle: FontStyle.italic,
+              ),
+              textAlign: TextAlign.center,
+            ),
+          ),
+
+        const SizedBox(height: 12),
+
+        // ── Direction dropdown ──
+        _buildDropdown<String>(
+          label: 'Iteration Direction',
+          value: config.direction.name,
+          items: IterationDirection.values
+              .map((d) => DropdownMenuItem(
+                    value: d.name,
+                    child: Text(d.displayName),
+                  ))
+              .toList(),
+          onChanged: (value) {
+            if (value == null) return;
+            final dir = IterationDirection.values.firstWhere(
+              (d) => d.name == value,
+              orElse: () => IterationDirection.vertical,
+            );
+            node.dataIteratorConfig = DataIteratorConfig(
+              direction: dir,
+              contextVariableName: config.contextVariableName,
+              delayBetweenMs: config.delayBetweenMs,
+              clickEachItem: config.clickEachItem,
+            );
+            provider.updateNode(node);
+          },
+        ),
+
+        // ── Delay between iterations ──
+        _configField(
+          'Delay between items (ms)',
+          config.delayBetweenMs.toString(),
+          (val) {
+            node.dataIteratorConfig = DataIteratorConfig(
+              direction: config.direction,
+              contextVariableName: config.contextVariableName,
+              delayBetweenMs: int.tryParse(val) ?? 500,
+              clickEachItem: config.clickEachItem,
+            );
+            provider.updateNode(node);
+          },
+          isNumber: true,
+        ),
+
+        // ── Click each item toggle ──
+        SwitchListTile(
+          value: config.clickEachItem,
+          contentPadding: EdgeInsets.zero,
+          activeColor: const Color(0xFF06b6d4),
+          title: const Text(
+            'Click each item before body',
+            style: TextStyle(color: AppColors.textPrimary, fontSize: 13),
+          ),
+          subtitle: const Text(
+            'Clicks the child element to select/focus it',
+            style: TextStyle(color: AppColors.textMuted, fontSize: 10),
+          ),
+          onChanged: (value) {
+            node.dataIteratorConfig = DataIteratorConfig(
+              direction: config.direction,
+              contextVariableName: config.contextVariableName,
+              delayBetweenMs: config.delayBetweenMs,
+              clickEachItem: value,
+            );
+            provider.updateNode(node);
+          },
+        ),
+
+        const SizedBox(height: 8),
+
+        // ── Context variables info ──
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(10),
+          decoration: BoxDecoration(
+            color: const Color(0xFF06b6d4).withValues(alpha: 0.06),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(
+              color: const Color(0xFF06b6d4).withValues(alpha: 0.25),
+            ),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'CONTEXT VARIABLES',
+                style: TextStyle(
+                  color: AppColors.textMuted,
+                  fontSize: 10,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: 1.2,
+                ),
+              ),
+              const SizedBox(height: 6),
+              _variableRow('{{${config.contextVariableName}}}',
+                  "Current item's text"),
+              _variableRow('{{current_index}}', 'Iteration index (0-based)'),
+              _variableRow('{{total_items}}', 'Total number of items'),
+              const SizedBox(height: 6),
+              const Text(
+                'Use these in a Type Text node to insert per-item data.',
+                style: TextStyle(
+                  color: AppColors.textMuted,
+                  fontSize: 10,
+                  fontStyle: FontStyle.italic,
+                ),
+              ),
+            ],
+          ),
+        ),
+
+        const SizedBox(height: 8),
+
+        // ── Variable name field ──
+        _configField(
+          'Variable name',
+          config.contextVariableName,
+          (val) {
+            node.dataIteratorConfig = DataIteratorConfig(
+              direction: config.direction,
+              contextVariableName: val.isNotEmpty ? val : 'current_item',
+              delayBetweenMs: config.delayBetweenMs,
+              clickEachItem: config.clickEachItem,
+            );
+            provider.updateNode(node);
+          },
+        ),
+      ],
+    );
+  }
+
+  Widget _variableRow(String variable, String description) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 2),
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+            decoration: BoxDecoration(
+              color: const Color(0xFF06b6d4).withValues(alpha: 0.15),
+              borderRadius: BorderRadius.circular(3),
+            ),
+            child: Text(
+              variable,
+              style: const TextStyle(
+                color: Color(0xFF06b6d4),
+                fontSize: 10,
+                fontFamily: 'monospace',
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              description,
+              style: const TextStyle(
+                color: AppColors.textMuted,
+                fontSize: 10,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Pick a container element for the Data Iterator node.
+  /// Reuses the existing UI element picker mechanism.
+  Future<void> _selectContainerElement(
+    FlowBuilderProvider provider,
+    DesktopFlowNode node,
+  ) async {
+    try {
+      await windowManager.hide();
+    } catch (_) {}
+
+    try {
+      final result = await provider.selectUIElement();
+      if (result == null || !mounted) return;
+
+      final element = result['element'];
+      if (element is! Map) return;
+
+      final el = element.map((k, v) => MapEntry(k.toString(), v));
+
+      node.containerTarget = UITargetSelector(
+        mode: UITargetMode.uiaAttribute,
+        name: el['name'] as String?,
+        role: el['role'] as String?,
+        automationId: el['automationId'] as String?,
+        className: el['className'] as String?,
+        stableId: el['stableId'] as String?,
+      );
+      provider.updateNode(node);
+
+      if (!mounted) return;
+      final elName =
+          el['name'] as String? ?? el['role'] as String? ?? 'container';
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Container selected: $elName')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Container selection failed: $e')),
+      );
+    } finally {
+      try {
+        await windowManager.show();
+      } catch (_) {}
+    }
+  }
+
 
   Widget _buildTargetSection(
     FlowBuilderProvider provider,
@@ -2757,6 +3182,10 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
         return Icons.image_search;
       case DesktopFlowNodeType.uiDetect:
         return Icons.find_in_page;
+      case DesktopFlowNodeType.unlock:
+        return Icons.lock_open;
+      case DesktopFlowNodeType.dataIterator:
+        return Icons.playlist_play;
       case DesktopFlowNodeType.done:
         return Icons.check_circle;
     }
@@ -2998,6 +3427,10 @@ class _PaletteItem extends StatelessWidget {
         return AppColors.secondary;
       case DesktopFlowNodeType.uiDetect:
         return AppColors.accent;
+      case DesktopFlowNodeType.unlock:
+        return const Color(0xFF8b5cf6); // Purple — security/lock
+      case DesktopFlowNodeType.dataIterator:
+        return const Color(0xFF06b6d4); // Cyan — iteration/loop
       default:
         return AppColors.textMuted;
     }
@@ -3140,6 +3573,10 @@ class _NodeCard extends StatelessWidget {
         return Icons.image_search;
       case DesktopFlowNodeType.uiDetect:
         return Icons.find_in_page;
+      case DesktopFlowNodeType.unlock:
+        return Icons.lock_open;
+      case DesktopFlowNodeType.dataIterator:
+        return Icons.playlist_play;
       case DesktopFlowNodeType.done:
         return Icons.check_circle;
     }
@@ -3173,6 +3610,10 @@ class _NodeCard extends StatelessWidget {
         return AppColors.secondary;
       case DesktopFlowNodeType.uiDetect:
         return AppColors.accent;
+      case DesktopFlowNodeType.unlock:
+        return const Color(0xFF8b5cf6);
+      case DesktopFlowNodeType.dataIterator:
+        return const Color(0xFF06b6d4);
       case DesktopFlowNodeType.done:
         return AppColors.success;
     }
@@ -3468,6 +3909,163 @@ class _EdgeCutButtonState extends State<_EdgeCutButton> {
           ),
         ),
       ),
+    );
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  UNLOCK PASSWORD FIELD WIDGET
+// ═══════════════════════════════════════════════════════════════════
+
+/// A self-contained password input widget for the Unlock node config panel.
+///
+/// Shows an obscured text field with Save / Clear buttons.
+/// The password is never displayed after saving — only the indicator changes.
+class _UnlockPasswordField extends StatefulWidget {
+  final bool hasPassword;
+  final Future<void> Function(String password) onSave;
+  final Future<void> Function() onClear;
+
+  const _UnlockPasswordField({
+    required this.hasPassword,
+    required this.onSave,
+    required this.onClear,
+  });
+
+  @override
+  State<_UnlockPasswordField> createState() => _UnlockPasswordFieldState();
+}
+
+class _UnlockPasswordFieldState extends State<_UnlockPasswordField> {
+  final _controller = TextEditingController();
+  bool _obscure = true;
+  bool _saving = false;
+
+  @override
+  void dispose() {
+    // Clear sensitive text from memory
+    _controller.clear();
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'PASSWORD',
+          style: TextStyle(
+            color: AppColors.textMuted,
+            fontSize: 11,
+            fontWeight: FontWeight.w600,
+            letterSpacing: 1.2,
+          ),
+        ),
+        const SizedBox(height: 6),
+        TextField(
+          controller: _controller,
+          obscureText: _obscure,
+          style: const TextStyle(color: AppColors.textPrimary, fontSize: 13),
+          decoration: InputDecoration(
+            hintText: widget.hasPassword
+                ? 'Enter new password to update'
+                : 'Enter your Windows password',
+            hintStyle: TextStyle(
+              color: AppColors.textMuted.withValues(alpha: 0.6),
+              fontSize: 12,
+            ),
+            filled: true,
+            fillColor: AppColors.background,
+            contentPadding:
+                const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(8),
+              borderSide: const BorderSide(color: AppColors.border),
+            ),
+            enabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(8),
+              borderSide: const BorderSide(color: AppColors.border),
+            ),
+            focusedBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(8),
+              borderSide:
+                  const BorderSide(color: Color(0xFF8b5cf6), width: 1.5),
+            ),
+            suffixIcon: IconButton(
+              icon: Icon(
+                _obscure ? Icons.visibility_off : Icons.visibility,
+                size: 18,
+                color: AppColors.textMuted,
+              ),
+              onPressed: () => setState(() => _obscure = !_obscure),
+            ),
+          ),
+        ),
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            Expanded(
+              child: ElevatedButton(
+                onPressed: _saving || _controller.text.isEmpty
+                    ? null
+                    : () async {
+                        setState(() => _saving = true);
+                        try {
+                          await widget.onSave(_controller.text);
+                          _controller.clear();
+                          if (mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                content: Text('Password saved securely'),
+                              ),
+                            );
+                          }
+                        } finally {
+                          if (mounted) setState(() => _saving = false);
+                        }
+                      },
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF8b5cf6),
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(vertical: 10),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                ),
+                child: _saving
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: Colors.white,
+                        ),
+                      )
+                    : const Text('Save Password'),
+              ),
+            ),
+            if (widget.hasPassword) ...[
+              const SizedBox(width: 8),
+              TextButton(
+                onPressed: () async {
+                  await widget.onClear();
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('Password cleared')),
+                    );
+                  }
+                },
+                style: TextButton.styleFrom(
+                  foregroundColor: AppColors.error,
+                ),
+                child: const Text('Clear'),
+              ),
+            ],
+          ],
+        ),
+      ],
     );
   }
 }

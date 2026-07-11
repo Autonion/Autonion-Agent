@@ -12,6 +12,7 @@ import '../services/accessibility_tree_service.dart';
 import '../services/flow_execution_service.dart';
 import '../services/flow_storage_service.dart';
 import '../services/python_bridge_service.dart';
+import '../services/secure_credential_service.dart';
 
 /// State management for the flow builder canvas and flow list.
 ///
@@ -23,6 +24,7 @@ class FlowBuilderProvider extends ChangeNotifier {
   final AccessibilityTreeService _a11y;
   final PythonBridgeService _bridge;
   final LoggingService _log;
+  final SecureCredentialService _credentials;
 
   FlowBuilderProvider({
     required FlowStorageService storage,
@@ -30,11 +32,13 @@ class FlowBuilderProvider extends ChangeNotifier {
     required AccessibilityTreeService a11y,
     required PythonBridgeService bridge,
     required LoggingService log,
+    required SecureCredentialService credentials,
   }) : _storage = storage,
        _execution = execution,
        _a11y = a11y,
        _bridge = bridge,
-       _log = log;
+       _log = log,
+       _credentials = credentials;
 
   // ── State ──────────────────────────────────────────────
 
@@ -165,6 +169,10 @@ class FlowBuilderProvider extends ChangeNotifier {
       node.detectAction = 'click_first';
       node.detectOutputKey = 'detected_element';
       node.target = const UITargetSelector(mode: UITargetMode.uiaAttribute);
+    } else if (type == DesktopFlowNodeType.unlock) {
+      node.unlockMethod = 'password';
+    } else if (type == DesktopFlowNodeType.dataIterator) {
+      node.dataIteratorConfig = const DataIteratorConfig();
     }
 
     _currentFlow!.nodes.add(node);
@@ -176,6 +184,12 @@ class FlowBuilderProvider extends ChangeNotifier {
   /// Remove a node and all its connected edges.
   void removeNode(String nodeId) {
     if (_currentFlow == null) return;
+
+    // Clean up secure credentials for unlock nodes
+    final node = _currentFlow!.findNode(nodeId);
+    if (node != null && node.nodeType == DesktopFlowNodeType.unlock) {
+      _credentials.deleteUnlockPassword(nodeId);
+    }
 
     _currentFlow!.nodes.removeWhere((n) => n.id == nodeId);
     _currentFlow!.edges.removeWhere(
@@ -524,5 +538,37 @@ class FlowBuilderProvider extends ChangeNotifier {
     _execution.stopFlow();
     _executingNodeId = null;
     notifyListeners();
+  }
+
+  // ── Unlock credential delegates ──────────────────────────
+
+  /// Save an unlock password for a node to secure storage.
+  Future<void> saveUnlockPassword(String nodeId, String password) async {
+    await _credentials.saveUnlockPassword(nodeId, password);
+
+    // Update the node's flag so the UI shows the 🔒 indicator
+    final node = _currentFlow?.findNode(nodeId);
+    if (node != null) {
+      node.hasUnlockPassword = true;
+      _isDirty = true;
+      notifyListeners();
+    }
+  }
+
+  /// Delete the unlock password for a node.
+  Future<void> deleteUnlockPassword(String nodeId) async {
+    await _credentials.deleteUnlockPassword(nodeId);
+
+    final node = _currentFlow?.findNode(nodeId);
+    if (node != null) {
+      node.hasUnlockPassword = false;
+      _isDirty = true;
+      notifyListeners();
+    }
+  }
+
+  /// Check if an unlock password exists for a node.
+  Future<bool> hasUnlockPassword(String nodeId) async {
+    return _credentials.hasUnlockPassword(nodeId);
   }
 }

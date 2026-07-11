@@ -8,6 +8,7 @@ import 'features/desktop_automation/services/accessibility_tree_service.dart';
 import 'features/desktop_automation/services/flow_execution_service.dart';
 import 'features/desktop_automation/services/flow_storage_service.dart';
 import 'features/desktop_automation/services/python_bridge_service.dart';
+import 'features/desktop_automation/services/secure_credential_service.dart';
 import 'ui/theme/app_theme.dart';
 import 'ui/app_shell.dart';
 
@@ -26,6 +27,7 @@ class AutonionApp extends StatelessWidget {
           a11y: getIt<AccessibilityTreeService>(),
           bridge: getIt<PythonBridgeService>(),
           log: getIt<LoggingService>(),
+          credentials: getIt<SecureCredentialService>(),
         ),
         child: MaterialApp(
           title: 'Autonion Agent',

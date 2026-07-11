@@ -15,6 +15,7 @@ import '../../features/desktop_automation/services/input_simulation_service.dart
 import '../../features/desktop_automation/services/python_bridge_service.dart';
 import '../../features/desktop_automation/services/flow_storage_service.dart';
 import '../../features/desktop_automation/services/flow_execution_service.dart';
+import '../../features/desktop_automation/services/secure_credential_service.dart';
 import '../../features/system/services/startup_service.dart';
 import '../../features/system/services/system_tray_service.dart';
 import '../../features/system/services/update_service.dart';
@@ -94,11 +95,15 @@ Future<void> setupServiceLocator() async {
     final flowStorage = FlowStorageService(log: log);
     getIt.registerSingleton<FlowStorageService>(flowStorage);
 
+    final secureCredentials = SecureCredentialService(log: log);
+    getIt.registerSingleton<SecureCredentialService>(secureCredentials);
+
     final flowExecution = FlowExecutionService(
       input: inputSim,
       a11y: a11y,
       bridge: pythonBridge,
       log: log,
+      credentials: secureCredentials,
     );
     getIt.registerSingleton<FlowExecutionService>(flowExecution);
   }

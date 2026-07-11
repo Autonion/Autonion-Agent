@@ -25,6 +25,8 @@ enum DesktopFlowNodeType {
   conditional,
   visualTrigger,
   uiDetect,
+  unlock,
+  dataIterator,
   done;
 
   String get displayName {
@@ -61,6 +63,10 @@ enum DesktopFlowNodeType {
         return 'UI Attribute';
       case DesktopFlowNodeType.swipe:
         return 'Swipe';
+      case DesktopFlowNodeType.unlock:
+        return 'Unlock';
+      case DesktopFlowNodeType.dataIterator:
+        return 'Data Iterator';
       case DesktopFlowNodeType.done:
         return 'Done';
     }
@@ -100,6 +106,10 @@ enum DesktopFlowNodeType {
         return 'find_in_page';
       case DesktopFlowNodeType.swipe:
         return 'swipe';
+      case DesktopFlowNodeType.unlock:
+        return 'lock_open';
+      case DesktopFlowNodeType.dataIterator:
+        return 'playlist_play';
       case DesktopFlowNodeType.done:
         return 'check_circle';
     }
@@ -475,6 +485,87 @@ class KeyboardNodeConfig {
 }
 
 // ═══════════════════════════════════════════════════════════════════
+//  DATA ITERATOR CONFIG
+// ═══════════════════════════════════════════════════════════════════
+
+/// How to order child elements when iterating a container.
+enum IterationDirection {
+  /// Sort children by Y coordinate (top → bottom).
+  vertical,
+
+  /// Sort children by X coordinate (left → right).
+  horizontal,
+
+  /// Use the accessibility tree's native order.
+  auto;
+
+  String get displayName {
+    switch (this) {
+      case IterationDirection.vertical:
+        return 'Vertical (Top → Bottom)';
+      case IterationDirection.horizontal:
+        return 'Horizontal (Left → Right)';
+      case IterationDirection.auto:
+        return 'Auto (Tree Order)';
+    }
+  }
+}
+
+/// Configuration for a `dataIterator` node.
+///
+/// Defines how to iterate through child elements of a UIA container
+/// (list, grid, table, etc.) discovered via the accessibility tree.
+class DataIteratorConfig {
+  /// How to sort/order the discovered child elements.
+  final IterationDirection direction;
+
+  /// Name of the context variable holding the current item's text.
+  /// Downstream nodes can reference this via `{{current_item}}`.
+  final String contextVariableName;
+
+  /// Delay between iterations in milliseconds.
+  final int delayBetweenMs;
+
+  /// Whether to click each child element before running the body sub-flow.
+  final bool clickEachItem;
+
+  const DataIteratorConfig({
+    this.direction = IterationDirection.vertical,
+    this.contextVariableName = 'current_item',
+    this.delayBetweenMs = 500,
+    this.clickEachItem = true,
+  });
+
+  factory DataIteratorConfig.fromJson(Map<String, dynamic> json) {
+    return DataIteratorConfig(
+      direction: IterationDirection.values.firstWhere(
+        (d) => d.name == json['direction'],
+        orElse: () => IterationDirection.vertical,
+      ),
+      contextVariableName:
+          json['contextVariableName'] as String? ?? 'current_item',
+      delayBetweenMs: json['delayBetweenMs'] as int? ?? 500,
+      clickEachItem: json['clickEachItem'] as bool? ?? true,
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+    'direction': direction.name,
+    'contextVariableName': contextVariableName,
+    'delayBetweenMs': delayBetweenMs,
+    'clickEachItem': clickEachItem,
+  };
+
+  /// User-readable summary, e.g. "Vertical, click each, 500ms".
+  String get summary {
+    final parts = <String>[direction.displayName];
+    if (clickEachItem) parts.add('click each');
+    parts.add('${delayBetweenMs}ms');
+    return parts.join(', ');
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════
 //  FLOW TRIGGER
 // ═══════════════════════════════════════════════════════════════════
 
@@ -660,6 +751,19 @@ class DesktopFlowNode {
   /// For uiDetect: context key to store results for downstream nodes.
   String? detectOutputKey;
 
+  /// For unlock: whether a password has been saved in secure storage.
+  /// The actual password is NEVER stored in the flow JSON.
+  bool hasUnlockPassword;
+
+  /// For unlock: method used to unlock ('password', 'pin'). Future-proof.
+  String? unlockMethod;
+
+  /// For dataIterator: the container element (list/grid/table) to iterate.
+  UITargetSelector? containerTarget;
+
+  /// For dataIterator: iteration configuration.
+  DataIteratorConfig? dataIteratorConfig;
+
   DesktopFlowNode({
     String? id,
     required this.nodeType,
@@ -696,6 +800,10 @@ class DesktopFlowNode {
     this.visualAction,
     this.detectAction,
     this.detectOutputKey,
+    this.hasUnlockPassword = false,
+    this.unlockMethod,
+    this.containerTarget,
+    this.dataIteratorConfig,
   }) : id = id ?? const Uuid().v4();
 
   factory DesktopFlowNode.fromJson(Map<String, dynamic> json) {
@@ -744,6 +852,16 @@ class DesktopFlowNode {
       visualAction: json['visualAction'] as String?,
       detectAction: json['detectAction'] as String?,
       detectOutputKey: json['detectOutputKey'] as String?,
+      hasUnlockPassword: json['hasUnlockPassword'] as bool? ?? false,
+      unlockMethod: json['unlockMethod'] as String?,
+      containerTarget: json['containerTarget'] != null
+          ? UITargetSelector.fromJson(
+              json['containerTarget'] as Map<String, dynamic>)
+          : null,
+      dataIteratorConfig: json['dataIteratorConfig'] != null
+          ? DataIteratorConfig.fromJson(
+              json['dataIteratorConfig'] as Map<String, dynamic>)
+          : null,
     );
   }
 
@@ -783,6 +901,11 @@ class DesktopFlowNode {
     if (visualAction != null) 'visualAction': visualAction,
     if (detectAction != null) 'detectAction': detectAction,
     if (detectOutputKey != null) 'detectOutputKey': detectOutputKey,
+    if (hasUnlockPassword) 'hasUnlockPassword': hasUnlockPassword,
+    if (unlockMethod != null) 'unlockMethod': unlockMethod,
+    if (containerTarget != null) 'containerTarget': containerTarget!.toJson(),
+    if (dataIteratorConfig != null)
+      'dataIteratorConfig': dataIteratorConfig!.toJson(),
   };
 
   /// Short summary shown on the node card in the builder UI.
@@ -833,6 +956,11 @@ class DesktopFlowNode {
         final action = detectAction ?? 'click_first';
         final targetDesc = target?.summary ?? 'No target';
         return '$action: $targetDesc';
+      case DesktopFlowNodeType.unlock:
+        return hasUnlockPassword ? '🔒 Password saved' : '⚠ No password';
+      case DesktopFlowNodeType.dataIterator:
+        if (containerTarget == null) return 'No container set';
+        return dataIteratorConfig?.summary ?? 'Configured';
       case DesktopFlowNodeType.done:
         return 'End';
     }
@@ -874,6 +1002,10 @@ class DesktopFlowNode {
     String? visualAction,
     String? detectAction,
     String? detectOutputKey,
+    bool? hasUnlockPassword,
+    String? unlockMethod,
+    UITargetSelector? containerTarget,
+    DataIteratorConfig? dataIteratorConfig,
   }) {
     return DesktopFlowNode(
       id: id ?? this.id,
@@ -911,6 +1043,10 @@ class DesktopFlowNode {
       visualAction: visualAction ?? this.visualAction,
       detectAction: detectAction ?? this.detectAction,
       detectOutputKey: detectOutputKey ?? this.detectOutputKey,
+      hasUnlockPassword: hasUnlockPassword ?? this.hasUnlockPassword,
+      unlockMethod: unlockMethod ?? this.unlockMethod,
+      containerTarget: containerTarget ?? this.containerTarget,
+      dataIteratorConfig: dataIteratorConfig ?? this.dataIteratorConfig,
     );
   }
 
