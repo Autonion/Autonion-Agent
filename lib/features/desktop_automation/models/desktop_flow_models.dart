@@ -529,11 +529,16 @@ class DataIteratorConfig {
   /// Whether to click each child element before running the body sub-flow.
   final bool clickEachItem;
 
+  /// If true, a body-node failure skips to the next item instead of
+  /// aborting the entire iteration.
+  final bool continueOnError;
+
   const DataIteratorConfig({
     this.direction = IterationDirection.vertical,
     this.contextVariableName = 'current_item',
     this.delayBetweenMs = 500,
     this.clickEachItem = true,
+    this.continueOnError = true,
   });
 
   factory DataIteratorConfig.fromJson(Map<String, dynamic> json) {
@@ -546,6 +551,7 @@ class DataIteratorConfig {
           json['contextVariableName'] as String? ?? 'current_item',
       delayBetweenMs: json['delayBetweenMs'] as int? ?? 500,
       clickEachItem: json['clickEachItem'] as bool? ?? true,
+      continueOnError: json['continueOnError'] as bool? ?? true,
     );
   }
 
@@ -554,6 +560,7 @@ class DataIteratorConfig {
     'contextVariableName': contextVariableName,
     'delayBetweenMs': delayBetweenMs,
     'clickEachItem': clickEachItem,
+    'continueOnError': continueOnError,
   };
 
   /// User-readable summary, e.g. "Vertical, click each, 500ms".
@@ -561,6 +568,7 @@ class DataIteratorConfig {
     final parts = <String>[direction.displayName];
     if (clickEachItem) parts.add('click each');
     parts.add('${delayBetweenMs}ms');
+    if (!continueOnError) parts.add('stop on error');
     return parts.join(', ');
   }
 }

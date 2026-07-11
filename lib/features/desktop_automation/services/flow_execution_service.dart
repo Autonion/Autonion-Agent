@@ -231,28 +231,45 @@ class FlowExecutionService {
             flow,
             onProgress: onProgress,
           );
-          // After iteration, follow the "done"/"success" edge (skip "body")
+
+          // After iteration, find the correct continuation node.
+          // The body chain was already executed inside executeDataIterator(),
+          // so we must skip past it to avoid double-executing body nodes.
+
+          // 1. Try an explicit "done" edge (separate from the body edge)
           DesktopFlowNode? doneTarget;
+          DesktopFlowNode? bodyStart;
           for (final edge in flow.outgoingEdges(currentNode.id)) {
             final label = edge.label?.toLowerCase();
-            if (label == 'done' || label == 'success') {
+            if (label == 'done') {
               doneTarget = flow.findNode(edge.toNodeId);
-              break;
+            } else if (label == 'body') {
+              bodyStart = flow.findNode(edge.toNodeId);
             }
           }
-          // Fallback: if no "done" edge, try the second outgoing edge
-          if (doneTarget == null) {
-            final outgoing = flow.nextNodes(currentNode.id);
-            if (outgoing.length > 1) {
-              doneTarget = outgoing[1]; // First is body, second is done
-            } else if (outgoing.isNotEmpty) {
-              doneTarget = outgoing.first;
-            }
-          }
+
           if (doneTarget != null) {
+            // Explicit "done" edge exists — use it directly
             currentNode = doneTarget;
           } else {
-            break; // No "done" edge — flow ends
+            // No explicit "done" edge — the "success" edge was used as the
+            // body chain. Walk it (without executing) to find the terminal
+            // node so we don't re-execute nodes the iterator already ran.
+            bodyStart ??= _resolveSuccessBranch(currentNode, flow);
+
+            if (bodyStart == null) {
+              break; // No outgoing edges — flow ends
+            }
+
+            DesktopFlowNode chainNode = bodyStart;
+            while (true) {
+              if (chainNode.nodeType == DesktopFlowNodeType.done) break;
+              if (chainNode.id == currentNode.id) break; // loop back
+              final next = _resolveSuccessBranch(chainNode, flow);
+              if (next == null) break;
+              chainNode = next;
+            }
+            currentNode = chainNode;
           }
         } else {
           // For repeat nodes, handle looping
@@ -1416,7 +1433,14 @@ class FlowExecutionService {
       );
     }
 
-    _log.info('FlowExec', 'Data Iterator: enumerating children...');
+    _log.info(
+      'FlowExec',
+      'Data Iterator: enumerating children of container '
+      '(class=${containerTarget.className ?? "?"}, '
+      'autoId=${containerTarget.automationId ?? "?"}, '
+      'role=${containerTarget.role ?? "?"}, '
+      'name=${containerTarget.name ?? "?"})...',
+    );
 
     // Build payload from the container target's UIA attributes
     final payload = <String, dynamic>{
@@ -1451,7 +1475,14 @@ class FlowExecutionService {
     final totalItems = children.length;
 
     if (totalItems == 0) {
-      _log.info('FlowExec', 'Data Iterator: no children found, skipping');
+      _log.info(
+        'FlowExec',
+        'Data Iterator: no children found in container '
+        '(class=${containerTarget.className ?? "?"}, '
+        'role=${containerTarget.role ?? "?"}). '
+        'Ensure the container is a List, Group, or similar '
+        'element with child items — not a leaf element like Image.',
+      );
       return;
     }
 
@@ -1509,28 +1540,40 @@ class FlowExecutionService {
       ));
 
       // Click on the child element if configured
-      if (config.clickEachItem && centerX > 0 && centerY > 0) {
-        await _input.execute(DesktopAction(
-          type: 'click',
-          x: centerX.toDouble(),
-          y: centerY.toDouble(),
-          coordinateSpace: 'screen',
-        ));
-        await Future.delayed(const Duration(milliseconds: 200));
-      }
+      try {
+        if (config.clickEachItem && centerX > 0 && centerY > 0) {
+          await _input.execute(DesktopAction(
+            type: 'click',
+            x: centerX.toDouble(),
+            y: centerY.toDouble(),
+            coordinateSpace: 'screen',
+          ));
+          await Future.delayed(const Duration(milliseconds: 200));
+        }
 
-      // Execute the body sub-flow chain
-      DesktopFlowNode? current = bodyTarget;
-      while (current != null && !_stopRequested) {
-        if (current.nodeType == DesktopFlowNodeType.done) break;
-        // Stop if we loop back to the iterator itself
-        if (current.id == node.id) break;
+        // Execute the body sub-flow chain
+        DesktopFlowNode? current = bodyTarget;
+        while (current != null && !_stopRequested) {
+          if (current.nodeType == DesktopFlowNodeType.done) break;
+          // Stop if we loop back to the iterator itself
+          if (current.id == node.id) break;
 
-        await _executeNode(current, flow);
-        await Future.delayed(const Duration(milliseconds: 100));
+          await _executeNode(current, flow);
+          await Future.delayed(const Duration(milliseconds: 100));
 
-        // Follow the success edge of each body node
-        current = _resolveSuccessBranch(current, flow);
+          // Follow the success edge of each body node
+          current = _resolveSuccessBranch(current, flow);
+        }
+      } catch (e) {
+        if (config.continueOnError) {
+          _log.warn(
+            'FlowExec',
+            'Data Iterator: item ${i + 1}/$totalItems failed — $e '
+            '(continuing to next item)',
+          );
+        } else {
+          rethrow;
+        }
       }
 
       // Delay between iterations

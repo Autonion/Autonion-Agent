@@ -1800,6 +1800,7 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
               contextVariableName: config.contextVariableName,
               delayBetweenMs: config.delayBetweenMs,
               clickEachItem: config.clickEachItem,
+              continueOnError: config.continueOnError,
             );
             provider.updateNode(node);
           },
@@ -1815,6 +1816,7 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
               contextVariableName: config.contextVariableName,
               delayBetweenMs: int.tryParse(val) ?? 500,
               clickEachItem: config.clickEachItem,
+              continueOnError: config.continueOnError,
             );
             provider.updateNode(node);
           },
@@ -1840,6 +1842,32 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
               contextVariableName: config.contextVariableName,
               delayBetweenMs: config.delayBetweenMs,
               clickEachItem: value,
+              continueOnError: config.continueOnError,
+            );
+            provider.updateNode(node);
+          },
+        ),
+
+        // ── Continue on error toggle ──
+        SwitchListTile(
+          value: config.continueOnError,
+          contentPadding: EdgeInsets.zero,
+          activeColor: const Color(0xFF06b6d4),
+          title: const Text(
+            'Continue on error',
+            style: TextStyle(color: AppColors.textPrimary, fontSize: 13),
+          ),
+          subtitle: const Text(
+            'Skip failed items and continue iterating',
+            style: TextStyle(color: AppColors.textMuted, fontSize: 10),
+          ),
+          onChanged: (value) {
+            node.dataIteratorConfig = DataIteratorConfig(
+              direction: config.direction,
+              contextVariableName: config.contextVariableName,
+              delayBetweenMs: config.delayBetweenMs,
+              clickEachItem: config.clickEachItem,
+              continueOnError: value,
             );
             provider.updateNode(node);
           },
@@ -1900,6 +1928,7 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
               contextVariableName: val.isNotEmpty ? val : 'current_item',
               delayBetweenMs: config.delayBetweenMs,
               clickEachItem: config.clickEachItem,
+              continueOnError: config.continueOnError,
             );
             provider.updateNode(node);
           },
