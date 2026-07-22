@@ -248,8 +248,11 @@ class FlowBuilderProvider extends ChangeNotifier {
 
     final node = _currentFlow!.findNode(nodeId);
     if (node != null) {
-      node.x = x;
-      node.y = y;
+      // Clamp to keep nodes within the visible canvas area.
+      // Prevents dragging into negative coords where the grid isn't drawn
+      // and hit-testing fails (nodes become stuck).
+      node.x = x.clamp(0.0, 19800.0); // canvasSize(20000) - nodeWidth(~170)
+      node.y = y.clamp(0.0, 19900.0); // canvasSize(20000) - nodeHeight(~80)
       _isDirty = true;
       notifyListeners();
     }

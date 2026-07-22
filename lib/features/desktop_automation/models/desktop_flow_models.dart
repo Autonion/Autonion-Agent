@@ -1251,14 +1251,14 @@ class DesktopFlow {
     final startNode = DesktopFlowNode(
       nodeType: DesktopFlowNodeType.start,
       label: 'Start',
-      x: 100,
-      y: 300,
+      x: 9900,
+      y: 10000,
     );
     final doneNode = DesktopFlowNode(
       nodeType: DesktopFlowNodeType.done,
       label: 'Done',
-      x: 600,
-      y: 300,
+      x: 10400,
+      y: 10000,
     );
 
     return DesktopFlow(

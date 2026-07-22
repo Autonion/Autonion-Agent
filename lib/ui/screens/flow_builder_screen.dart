@@ -36,9 +36,49 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
   String? _pendingEdgeLabel; // "success" or "failure"
 
   @override
+  void initState() {
+    super.initState();
+    // Center the camera on the middle of the canvas so the initial
+    // Start/Done nodes are visible and users have room in every direction.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _centerCameraOnNodes();
+    });
+  }
+
+  @override
   void dispose() {
     _transformCtrl.dispose();
     super.dispose();
+  }
+
+  /// Centers the camera viewport on the Start node (or canvas center).
+  void _centerCameraOnNodes() {
+    final provider = context.read<FlowBuilderProvider>();
+    final flow = provider.currentFlow;
+    if (flow == null) return;
+
+    // Find the Start node or fall back to canvas center
+    double targetX = _canvasSize / 2;
+    double targetY = _canvasSize / 2;
+    for (final node in flow.nodes) {
+      if (node.nodeType == DesktopFlowNodeType.start) {
+        targetX = node.x + _nodeWidth / 2;
+        targetY = node.y + _nodeHeight / 2;
+        break;
+      }
+    }
+
+    // Compute offset to center the target in the viewport
+    final viewSize = context.size;
+    if (viewSize == null) return;
+    // Account for the palette sidebar (180px)
+    final viewportW = viewSize.width - 180;
+    final viewportH = viewSize.height;
+
+    final dx = -(targetX - viewportW / 2);
+    final dy = -(targetY - viewportH / 2);
+
+    _transformCtrl.value = Matrix4.translationValues(dx, dy, 0);
   }
 
   @override
