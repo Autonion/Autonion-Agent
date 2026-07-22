@@ -181,6 +181,11 @@ class ConnectionProvider extends ChangeNotifier {
       return;
     }
 
+    if (command['type'] == 'stop_flow') {
+      _handleFlowStop(command);
+      return;
+    }
+
     // Natural language prompts → forward to LLM
     if (command.containsKey('prompt')) {
       await _handlePrompt(command);
@@ -1247,6 +1252,38 @@ RULES:
   //  FLOW SYSTEM HANDLERS
   // ═══════════════════════════════════════════════════════════
 
+  /// Handle a stop_flow request from Android.
+  /// Stops the currently running flow and acknowledges back.
+  void _handleFlowStop(Map<String, dynamic> command) {
+    final transactionId = command['transactionId']?.toString() ?? '';
+    final flowId = command['flowId']?.toString() ?? '';
+
+    _log.info('CMD', 'Flow stop request (txn=$transactionId)');
+
+    try {
+      final flowExec = getIt<FlowExecutionService>();
+      if (flowExec.isRunning) {
+        flowExec.stopFlow();
+        _sendFlowResponse(
+          transactionId,
+          flowId,
+          'stopped',
+          'Flow stopped by user.',
+        );
+      } else {
+        _sendFlowResponse(
+          transactionId,
+          flowId,
+          'stopped',
+          'No flow is currently running.',
+        );
+      }
+    } catch (e) {
+      _log.error('CMD', 'Flow stop error: $e');
+      _sendFlowResponse(transactionId, flowId, 'failed', 'Error: $e');
+    }
+  }
+
   /// Handle a trigger_flow request from Android.
   /// Looks up the flow by ID, executes it, and streams progress back.
   Future<void> _handleFlowTrigger(Map<String, dynamic> command) async {
@@ -1261,6 +1298,17 @@ RULES:
     _log.info('CMD', 'Flow trigger request: $flowId (txn=$transactionId)');
 
     try {
+      final execution = getIt<FlowExecutionService>();
+
+      // Guard: reject if a flow is already running
+      if (execution.isRunning) {
+        _sendFlowResponse(
+          transactionId, flowId, 'failed',
+          'Another flow is already running',
+        );
+        return;
+      }
+
       final storage = getIt<FlowStorageService>();
       final flow = await storage.loadFlow(flowId);
 
@@ -1275,7 +1323,6 @@ RULES:
         transactionId, flowId, 'started', 'Running flow: ${flow.name}',
       );
 
-      final execution = getIt<FlowExecutionService>();
       final result = await execution.executeFlow(
         flow,
         onProgress: (progress) {
@@ -1299,10 +1346,11 @@ RULES:
             ? 'Flow completed (${result.stepsExecuted} steps, ${result.elapsed.inMilliseconds}ms)'
             : 'Flow failed: ${result.errorMessage}',
         step: result.stepsExecuted,
+        isFinal: true,
       );
     } catch (e) {
       _log.error('CMD', 'Flow trigger error: $e');
-      _sendFlowResponse(transactionId, flowId, 'failed', 'Error: $e');
+      _sendFlowResponse(transactionId, flowId, 'failed', 'Error: $e', isFinal: true);
     }
   }
 
@@ -1344,6 +1392,7 @@ RULES:
     int? step,
     int? total,
     String? nodeLabel,
+    bool isFinal = false,
   }) {
     if (transactionId.isEmpty) return;
     _ws.broadcastEvent({
@@ -1355,6 +1404,7 @@ RULES:
       if (step != null) 'currentStep': step,
       if (total != null) 'totalSteps': total,
       if (nodeLabel != null) 'nodeLabel': nodeLabel,
+      'isFinal': isFinal,
       'timestamp': DateTime.now().toIso8601String(),
     });
   }

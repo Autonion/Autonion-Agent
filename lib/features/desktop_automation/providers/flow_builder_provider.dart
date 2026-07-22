@@ -103,6 +103,8 @@ class FlowBuilderProvider extends ChangeNotifier {
   Future<void> openFlow(String id) async {
     final flow = await _storage.loadFlow(id);
     if (flow != null) {
+      // Auto-migrate old Data Iterator edges: success → body
+      _migrateDataIteratorEdges(flow);
       _currentFlow = flow;
       _selectedNodeId = null;
       _connectingFromNodeId = null;
@@ -111,6 +113,33 @@ class FlowBuilderProvider extends ChangeNotifier {
       _progressLog.clear();
       _lastResult = null;
       notifyListeners();
+    }
+  }
+
+  /// Migrate old flows: for Data Iterator nodes, rename 'success' edges
+  /// to 'body' if there's no explicit 'body' edge already.
+  void _migrateDataIteratorEdges(DesktopFlow flow) {
+    bool migrated = false;
+    for (final node in flow.nodes) {
+      if (node.nodeType != DesktopFlowNodeType.dataIterator) continue;
+
+      final outgoing = flow.outgoingEdges(node.id).toList();
+      final hasBody = outgoing.any(
+        (e) => e.label?.toLowerCase() == 'body',
+      );
+      if (hasBody) continue; // already migrated
+
+      for (final edge in outgoing) {
+        if (edge.label?.toLowerCase() == 'success') {
+          edge.label = 'body';
+          migrated = true;
+          break; // only rename the first success edge
+        }
+      }
+    }
+    if (migrated) {
+      // Save the migrated flow silently
+      _storage.saveFlow(flow);
     }
   }
 

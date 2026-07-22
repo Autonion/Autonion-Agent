@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:math';
 
+import 'package:flutter/foundation.dart';
+
 import '../../../core/services/logging_service.dart';
 import '../models/desktop_flow_models.dart';
 import 'input_simulation_service.dart';
@@ -73,7 +75,7 @@ class FlowExecutionResult {
 /// At each node, executes the mapped action, waits for a configurable
 /// settle time, then follows the success edge. On failure, follows
 /// the failure edge (if defined) or stops.
-class FlowExecutionService {
+class FlowExecutionService extends ChangeNotifier {
   final InputSimulationService _input;
   final AccessibilityTreeService _a11y;
   final PythonBridgeService _bridge;
@@ -83,6 +85,7 @@ class FlowExecutionService {
   bool _isRunning = false;
   bool _stopRequested = false;
   String? _currentFlowId;
+  FlowStepProgress? _currentProgress;
 
   /// Context variables populated during data iterator execution.
   /// Keys like 'current_item', 'current_index', 'total_items' are set
@@ -91,7 +94,9 @@ class FlowExecutionService {
   final Map<String, String> _executionContext = {};
 
   bool get isRunning => _isRunning;
+  bool get stopRequested => _stopRequested;
   String? get currentFlowId => _currentFlowId;
+  FlowStepProgress? get currentProgress => _currentProgress;
 
   FlowExecutionService({
     required InputSimulationService input,
@@ -122,10 +127,17 @@ class FlowExecutionService {
     _isRunning = true;
     _stopRequested = false;
     _currentFlowId = flow.id;
+    _currentProgress = null;
     _executionContext.clear();
 
     final stopwatch = Stopwatch()..start();
     int stepsExecuted = 0;
+
+    void emitProgress(FlowStepProgress progress) {
+      _currentProgress = progress;
+      onProgress?.call(progress);
+      notifyListeners();
+    }
 
     // Count executable nodes (exclude start and done)
     final executableNodes = flow.nodes.where(
@@ -137,7 +149,7 @@ class FlowExecutionService {
 
     _log.info('FlowExec', 'Starting flow: "${flow.name}" ($totalSteps steps)');
 
-    onProgress?.call(
+    emitProgress(
       FlowStepProgress(
         flowId: flow.id,
         status: 'started',
@@ -165,10 +177,17 @@ class FlowExecutionService {
         }
 
         // Execute the node (skip Start — it's just an entry point)
+        // Also skip node types whose execution is handled directly below
+        // in the traversal logic (dataIterator, conditional, repeat).
+        final isTraversalHandled =
+            currentNode.nodeType == DesktopFlowNodeType.dataIterator ||
+            currentNode.nodeType == DesktopFlowNodeType.conditional ||
+            currentNode.nodeType == DesktopFlowNodeType.repeat;
+
         if (currentNode.nodeType != DesktopFlowNodeType.start) {
           stepsExecuted++;
 
-          onProgress?.call(
+          emitProgress(
             FlowStepProgress(
               flowId: flow.id,
               status: 'step_executing',
@@ -180,37 +199,39 @@ class FlowExecutionService {
             ),
           );
 
-          try {
-            await _executeNode(currentNode, flow);
+          if (!isTraversalHandled) {
+            try {
+              await _executeNode(currentNode, flow);
 
-            onProgress?.call(
-              FlowStepProgress(
-                flowId: flow.id,
-                status: 'step_completed',
-                message: '${currentNode.label} completed',
-                currentStep: stepsExecuted,
-                totalSteps: totalSteps,
-                nodeLabel: currentNode.label,
-                nodeId: currentNode.id,
-              ),
-            );
-          } catch (e) {
-            _log.error('FlowExec', 'Node "${currentNode.label}" failed: $e');
-
-            final failureTarget = _resolveFailureBranch(currentNode, flow);
-            if (failureTarget != null) {
-              _log.info(
-                'FlowExec',
-                'Following failure edge to: ${failureTarget.label}',
+              emitProgress(
+                FlowStepProgress(
+                  flowId: flow.id,
+                  status: 'step_completed',
+                  message: '${currentNode.label} completed',
+                  currentStep: stepsExecuted,
+                  totalSteps: totalSteps,
+                  nodeLabel: currentNode.label,
+                  nodeId: currentNode.id,
+                ),
               );
-              currentNode = failureTarget;
-              continue;
-            }
+            } catch (e) {
+              _log.error('FlowExec', 'Node "${currentNode.label}" failed: $e');
 
-            // No failure edge - stop
-            throw FlowExecutionException(
-              'Node "${currentNode.label}" failed: $e',
-            );
+              final failureTarget = _resolveFailureBranch(currentNode, flow);
+              if (failureTarget != null) {
+                _log.info(
+                  'FlowExec',
+                  'Following failure edge to: ${failureTarget.label}',
+                );
+                currentNode = failureTarget;
+                continue;
+              }
+
+              // No failure edge - stop
+              throw FlowExecutionException(
+                'Node "${currentNode.label}" failed: $e',
+              );
+            }
           }
         }
 
@@ -225,51 +246,28 @@ class FlowExecutionService {
         if (currentNode.nodeType == DesktopFlowNodeType.conditional) {
           currentNode = await _resolveConditionalBranch(currentNode, flow);
         } else if (currentNode.nodeType == DesktopFlowNodeType.dataIterator) {
-          // Data Iterator: run the full iteration, then follow the "done" edge
-          await executeDataIterator(
-            currentNode,
-            flow,
-            onProgress: onProgress,
+          // Data Iterator is disabled (Coming Soon) — skip gracefully.
+          _log.info(
+            'FlowExec',
+            'Data Iterator "${currentNode.label}" skipped — feature coming in future updates.',
           );
 
-          // After iteration, find the correct continuation node.
-          // The body chain was already executed inside executeDataIterator(),
-          // so we must skip past it to avoid double-executing body nodes.
-
-          // 1. Try an explicit "done" edge (separate from the body edge)
+          // Follow the "done" edge if present, otherwise fall through to
+          // the default success-edge resolution below.
           DesktopFlowNode? doneTarget;
-          DesktopFlowNode? bodyStart;
           for (final edge in flow.outgoingEdges(currentNode.id)) {
-            final label = edge.label?.toLowerCase();
-            if (label == 'done') {
+            if (edge.label?.toLowerCase() == 'done') {
               doneTarget = flow.findNode(edge.toNodeId);
-            } else if (label == 'body') {
-              bodyStart = flow.findNode(edge.toNodeId);
+              break;
             }
           }
-
           if (doneTarget != null) {
-            // Explicit "done" edge exists — use it directly
             currentNode = doneTarget;
           } else {
-            // No explicit "done" edge — the "success" edge was used as the
-            // body chain. Walk it (without executing) to find the terminal
-            // node so we don't re-execute nodes the iterator already ran.
-            bodyStart ??= _resolveSuccessBranch(currentNode, flow);
-
-            if (bodyStart == null) {
-              break; // No outgoing edges — flow ends
-            }
-
-            DesktopFlowNode chainNode = bodyStart;
-            while (true) {
-              if (chainNode.nodeType == DesktopFlowNodeType.done) break;
-              if (chainNode.id == currentNode.id) break; // loop back
-              final next = _resolveSuccessBranch(chainNode, flow);
-              if (next == null) break;
-              chainNode = next;
-            }
-            currentNode = chainNode;
+            // No done edge — try normal success edge
+            final next = _resolveSuccessBranch(currentNode, flow);
+            if (next == null) break;
+            currentNode = next;
           }
         } else {
           // For repeat nodes, handle looping
@@ -295,8 +293,11 @@ class FlowExecutionService {
           }
         }
 
-        // Small settle time between nodes
-        await Future.delayed(const Duration(milliseconds: 200));
+        // Per-node settle delay (defaults to 200ms if not configured)
+        final settleMs = currentNode.settleDelayMs ?? 200;
+        if (settleMs > 0) {
+          await _delayInterruptibly(Duration(milliseconds: settleMs));
+        }
       }
 
       stopwatch.stop();
@@ -306,7 +307,7 @@ class FlowExecutionService {
           'FlowExec',
           'Flow stopped by user after $stepsExecuted steps',
         );
-        onProgress?.call(
+        emitProgress(
           FlowStepProgress(
             flowId: flow.id,
             status: 'failed',
@@ -328,7 +329,7 @@ class FlowExecutionService {
         'Flow "${flow.name}" completed successfully ($stepsExecuted steps, ${stopwatch.elapsed.inMilliseconds}ms)',
       );
 
-      onProgress?.call(
+      emitProgress(
         FlowStepProgress(
           flowId: flow.id,
           status: 'completed',
@@ -345,7 +346,7 @@ class FlowExecutionService {
       );
     } on FlowExecutionException catch (e) {
       stopwatch.stop();
-      onProgress?.call(
+      emitProgress(
         FlowStepProgress(
           flowId: flow.id,
           status: 'failed',
@@ -363,7 +364,7 @@ class FlowExecutionService {
     } catch (e) {
       stopwatch.stop();
       _log.error('FlowExec', 'Unexpected error: $e');
-      onProgress?.call(
+      emitProgress(
         FlowStepProgress(
           flowId: flow.id,
           status: 'failed',
@@ -380,7 +381,9 @@ class FlowExecutionService {
       );
     } finally {
       _isRunning = false;
+      _stopRequested = false;
       _currentFlowId = null;
+      notifyListeners();
     }
   }
 
@@ -389,6 +392,7 @@ class FlowExecutionService {
     if (_isRunning) {
       _stopRequested = true;
       _log.info('FlowExec', 'Stop requested for flow: $_currentFlowId');
+      notifyListeners();
     }
   }
 
@@ -735,6 +739,18 @@ class FlowExecutionService {
     return double.tryParse(value?.toString() ?? '') ?? 0;
   }
 
+  Future<void> _delayInterruptibly(Duration duration) async {
+    final end = DateTime.now().add(duration);
+    while (!_stopRequested) {
+      final remaining = end.difference(DateTime.now());
+      if (remaining <= Duration.zero) break;
+      final slice = remaining > const Duration(milliseconds: 100)
+          ? const Duration(milliseconds: 100)
+          : remaining;
+      await Future.delayed(slice);
+    }
+  }
+
   Future<void> _executeClickAction(
     DesktopFlowNode node,
     String clickType,
@@ -752,7 +768,7 @@ class FlowExecutionService {
     );
     // For double-click, click twice quickly
     if (clickType == 'double_click') {
-      await Future.delayed(const Duration(milliseconds: 50));
+      await _delayInterruptibly(const Duration(milliseconds: 50));
       await _input.execute(
         DesktopAction(
           type: 'click',
@@ -787,7 +803,7 @@ class FlowExecutionService {
     }
 
     if (focused) {
-      await Future.delayed(const Duration(milliseconds: 150));
+      await _delayInterruptibly(const Duration(milliseconds: 150));
     }
 
     // Apply context variable substitution (e.g. {{current_item}})
@@ -859,14 +875,14 @@ class FlowExecutionService {
           for (final key in config.keys) {
             if (_stopRequested) break;
             await _input.execute(DesktopAction(type: 'hotkey', keys: [key]));
-            await Future.delayed(const Duration(milliseconds: 50));
+            await _delayInterruptibly(const Duration(milliseconds: 50));
           }
           break;
       }
 
       // Delay between repetitions
       if (i < config.repeatCount - 1) {
-        await Future.delayed(Duration(milliseconds: config.delayBetweenMs));
+        await _delayInterruptibly(Duration(milliseconds: config.delayBetweenMs));
       }
     }
   }
@@ -891,13 +907,13 @@ class FlowExecutionService {
       await _input.execute(DesktopAction(type: 'launch_app', appName: app));
     }
 
-    await Future.delayed(const Duration(milliseconds: 500));
+    await _delayInterruptibly(const Duration(milliseconds: 500));
   }
 
   Future<void> _executeDelay(DesktopFlowNode node) async {
     final ms = node.delayMs ?? 1000;
     _log.info('FlowExec', 'Waiting ${ms}ms...');
-    await Future.delayed(Duration(milliseconds: ms));
+    await _delayInterruptibly(Duration(milliseconds: ms));
   }
 
   Future<void> _executeScreenshot() async {
@@ -1103,7 +1119,7 @@ class FlowExecutionService {
         break;
       }
 
-      await Future.delayed(pollInterval);
+      await _delayInterruptibly(pollInterval);
     }
 
     if (_stopRequested) {
@@ -1275,7 +1291,7 @@ class FlowExecutionService {
             _log.info('FlowExec', 'UI Detect: Element became visible');
             return;
           }
-          await Future.delayed(const Duration(milliseconds: 500));
+          await _delayInterruptibly(const Duration(milliseconds: 500));
         }
         throw FlowExecutionException(
           'UI Detect: Element did not appear within timeout',
@@ -1427,6 +1443,12 @@ class FlowExecutionService {
     final config = node.dataIteratorConfig ?? const DataIteratorConfig();
     final containerTarget = node.containerTarget;
 
+    void emitProgress(FlowStepProgress progress) {
+      _currentProgress = progress;
+      onProgress?.call(progress);
+      notifyListeners();
+    }
+
     if (containerTarget == null) {
       throw FlowExecutionException(
         'No container element configured for Data Iterator "${node.label}"',
@@ -1445,6 +1467,7 @@ class FlowExecutionService {
     // Build payload from the container target's UIA attributes
     final payload = <String, dynamic>{
       'sortBy': config.direction.name,
+      'itemMode': config.itemMode.name,
     };
     if (containerTarget.stableId != null) {
       payload['stableId'] = containerTarget.stableId;
@@ -1462,6 +1485,16 @@ class FlowExecutionService {
       payload['role'] = containerTarget.role;
     }
 
+    // Child filters — only iterate children matching these criteria
+    if (config.childRoleFilter != null &&
+        config.childRoleFilter!.isNotEmpty) {
+      payload['childRoleFilter'] = config.childRoleFilter;
+    }
+    if (config.childClassNameFilter != null &&
+        config.childClassNameFilter!.isNotEmpty) {
+      payload['childClassNameFilter'] = config.childClassNameFilter;
+    }
+
     // Ask Python agent to enumerate children
     // sendCommand returns response['data'] on success, throws on failure.
     final result = await _bridge.sendCommand(
@@ -1475,18 +1508,41 @@ class FlowExecutionService {
     final totalItems = children.length;
 
     if (totalItems == 0) {
+      final suitability = data['containerSuitability'] as String? ?? 'unknown';
+      final hint = suitability == 'pane' || suitability == 'unknown'
+          ? ' The selected element is a "${suitability.toUpperCase()}" — '
+            'try picking a List, Grid, or Tree element instead.'
+          : '';
       _log.info(
         'FlowExec',
         'Data Iterator: no children found in container '
         '(class=${containerTarget.className ?? "?"}, '
-        'role=${containerTarget.role ?? "?"}). '
-        'Ensure the container is a List, Group, or similar '
-        'element with child items — not a leaf element like Image.',
+        'role=${containerTarget.role ?? "?"}, '
+        'suitability=$suitability).$hint',
       );
       return;
     }
 
-    _log.info('FlowExec', 'Data Iterator: found $totalItems children');
+    final unfilteredCount = data['unfilteredCount'] as int?;
+    final directChildCount = data['directChildCount'] as int?;
+    final itemModeUsed = data['itemModeUsed'] as String?;
+
+    if (itemModeUsed == 'visualGroups' &&
+        directChildCount != null &&
+        directChildCount != totalItems) {
+      _log.info(
+        'FlowExec',
+        'Data Iterator: found $totalItems visual items '
+        '(grouped from $directChildCount child elements)',
+      );
+    } else if (unfilteredCount != null && unfilteredCount != totalItems) {
+      _log.info(
+        'FlowExec',
+        'Data Iterator: found $totalItems children (filtered from $unfilteredCount)',
+      );
+    } else {
+      _log.info('FlowExec', 'Data Iterator: found $totalItems children');
+    }
 
     // Find the "body" sub-flow target
     DesktopFlowNode? bodyTarget;
@@ -1513,8 +1569,8 @@ class FlowExecutionService {
       final child = children[i] as Map<String, dynamic>;
       final childName = child['name'] as String? ?? '';
       final childValue = child['value'] as String? ?? '';
-      final centerX = child['centerX'] as int? ?? 0;
-      final centerY = child['centerY'] as int? ?? 0;
+      final centerX = (child['centerX'] as num?)?.toDouble() ?? 0;
+      final centerY = (child['centerY'] as num?)?.toDouble() ?? 0;
 
       // Set context variables for this iteration
       _executionContext[config.contextVariableName] =
@@ -1528,7 +1584,7 @@ class FlowExecutionService {
         '"${_executionContext[config.contextVariableName]}"',
       );
 
-      onProgress?.call(FlowStepProgress(
+      emitProgress(FlowStepProgress(
         flowId: flow.id,
         status: 'iterator_step',
         message: 'Iterating item ${i + 1}/$totalItems: '
@@ -1544,11 +1600,11 @@ class FlowExecutionService {
         if (config.clickEachItem && centerX > 0 && centerY > 0) {
           await _input.execute(DesktopAction(
             type: 'click',
-            x: centerX.toDouble(),
-            y: centerY.toDouble(),
+            x: centerX,
+            y: centerY,
             coordinateSpace: 'screen',
           ));
-          await Future.delayed(const Duration(milliseconds: 200));
+          await _delayInterruptibly(const Duration(milliseconds: 200));
         }
 
         // Execute the body sub-flow chain
@@ -1559,7 +1615,7 @@ class FlowExecutionService {
           if (current.id == node.id) break;
 
           await _executeNode(current, flow);
-          await Future.delayed(const Duration(milliseconds: 100));
+          await _delayInterruptibly(const Duration(milliseconds: 100));
 
           // Follow the success edge of each body node
           current = _resolveSuccessBranch(current, flow);
@@ -1578,7 +1634,7 @@ class FlowExecutionService {
 
       // Delay between iterations
       if (i < totalItems - 1 && config.delayBetweenMs > 0) {
-        await Future.delayed(
+        await _delayInterruptibly(
           Duration(milliseconds: config.delayBetweenMs),
         );
       }

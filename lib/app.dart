@@ -11,6 +11,7 @@ import 'features/desktop_automation/services/python_bridge_service.dart';
 import 'features/desktop_automation/services/secure_credential_service.dart';
 import 'ui/theme/app_theme.dart';
 import 'ui/app_shell.dart';
+import 'ui/widgets/flow_run_overlay.dart';
 
 /// The root MaterialApp widget for Autonion Agent.
 class AutonionApp extends StatelessWidget {
@@ -33,7 +34,7 @@ class AutonionApp extends StatelessWidget {
           title: 'Autonion Agent',
           debugShowCheckedModeBanner: false,
           theme: AppTheme.dark,
-          home: const AppShell(),
+          home: const FlowRunOverlay(child: AppShell()),
         ),
       );
     }

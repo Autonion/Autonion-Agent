@@ -9,8 +9,10 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:window_manager/window_manager.dart';
 
+import '../../core/di/service_locator.dart';
 import '../../features/desktop_automation/models/desktop_flow_models.dart';
 import '../../features/desktop_automation/providers/flow_builder_provider.dart';
+import '../../features/desktop_automation/services/python_bridge_service.dart';
 import '../theme/app_colors.dart';
 
 /// Production-grade visual flow builder with infinite canvas, draggable nodes,
@@ -282,6 +284,11 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
                 return _PaletteItem(
                   type: type,
                   onTap: () {
+                    // Data Iterator — redirect to Coming Soon dialog
+                    if (type == DesktopFlowNodeType.dataIterator) {
+                      _showComingSoonDialog();
+                      return;
+                    }
                     final sceneCenter = _transformCtrl.toScene(
                       const Offset(520, 280),
                     );
@@ -444,32 +451,65 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
             ),
 
             if (node.nodeType != DesktopFlowNodeType.done)
-              Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  _buildOutputPort(
-                    provider: provider,
-                    node: node,
-                    label: node.nodeType == DesktopFlowNodeType.conditional
-                        ? 'true'
-                        : 'success',
-                    color: AppColors.success,
-                    isConnectionSource: isConnectionSource,
-                    portOffsetX: _nodeWidth / 2 - 16,
-                  ),
-                  const SizedBox(width: 8),
-                  _buildOutputPort(
-                    provider: provider,
-                    node: node,
-                    label: node.nodeType == DesktopFlowNodeType.conditional
-                        ? 'false'
-                        : 'failure',
-                    color: AppColors.error,
-                    isConnectionSource: isConnectionSource,
-                    portOffsetX: _nodeWidth / 2 + 16,
-                  ),
-                ],
-              )
+              node.nodeType == DesktopFlowNodeType.dataIterator
+                  // Data Iterator: body / done / failure
+                  ? Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        _buildOutputPort(
+                          provider: provider,
+                          node: node,
+                          label: 'body',
+                          color: const Color(0xFF06b6d4),
+                          isConnectionSource: isConnectionSource,
+                          portOffsetX: _nodeWidth / 2 - 32,
+                        ),
+                        const SizedBox(width: 4),
+                        _buildOutputPort(
+                          provider: provider,
+                          node: node,
+                          label: 'done',
+                          color: AppColors.success,
+                          isConnectionSource: isConnectionSource,
+                          portOffsetX: _nodeWidth / 2,
+                        ),
+                        const SizedBox(width: 4),
+                        _buildOutputPort(
+                          provider: provider,
+                          node: node,
+                          label: 'failure',
+                          color: AppColors.error,
+                          isConnectionSource: isConnectionSource,
+                          portOffsetX: _nodeWidth / 2 + 32,
+                        ),
+                      ],
+                    )
+                  : Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        _buildOutputPort(
+                          provider: provider,
+                          node: node,
+                          label: node.nodeType == DesktopFlowNodeType.conditional
+                              ? 'true'
+                              : 'success',
+                          color: AppColors.success,
+                          isConnectionSource: isConnectionSource,
+                          portOffsetX: _nodeWidth / 2 - 16,
+                        ),
+                        const SizedBox(width: 8),
+                        _buildOutputPort(
+                          provider: provider,
+                          node: node,
+                          label: node.nodeType == DesktopFlowNodeType.conditional
+                              ? 'false'
+                              : 'failure',
+                          color: AppColors.error,
+                          isConnectionSource: isConnectionSource,
+                          portOffsetX: _nodeWidth / 2 + 16,
+                        ),
+                      ],
+                    )
             else
               const SizedBox(height: 12),
           ],
@@ -760,7 +800,7 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
         break;
 
       case DesktopFlowNodeType.dataIterator:
-        widgets.add(_buildDataIteratorSection(provider, node));
+        widgets.add(_buildComingSoonSection());
         break;
 
       default:
@@ -1669,7 +1709,123 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
   }
 
   // ═══════════════════════════════════════════════════════
-  //  DATA ITERATOR NODE CONFIG
+  //  DATA ITERATOR — COMING SOON
+  // ═══════════════════════════════════════════════════════
+
+  /// Shows a styled "Coming Soon" dialog when the user taps
+  /// the Data Iterator node in the palette.
+  void _showComingSoonDialog() {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.surface,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+          side: BorderSide(
+            color: const Color(0xFF06b6d4).withValues(alpha: 0.3),
+          ),
+        ),
+        contentPadding: const EdgeInsets.fromLTRB(24, 20, 24, 16),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: const Color(0xFF06b6d4).withValues(alpha: 0.1),
+              ),
+              child: const Icon(
+                Icons.rocket_launch_rounded,
+                color: Color(0xFF06b6d4),
+                size: 36,
+              ),
+            ),
+            const SizedBox(height: 16),
+            const Text(
+              'Data Iterator',
+              style: TextStyle(
+                color: AppColors.textPrimary,
+                fontSize: 18,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              'Coming in Future updates,\nstay tuned!',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: AppColors.textSecondary,
+                fontSize: 14,
+                height: 1.5,
+              ),
+            ),
+            const SizedBox(height: 20),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton(
+                onPressed: () => Navigator.of(ctx).pop(),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF06b6d4),
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                ),
+                child: const Text('Got it'),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Builds a "Coming Soon" placeholder widget shown in the config panel
+  /// when a Data Iterator node is selected (e.g. from an old saved flow).
+  Widget _buildComingSoonSection() {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(vertical: 24, horizontal: 16),
+      decoration: BoxDecoration(
+        color: const Color(0xFF06b6d4).withValues(alpha: 0.06),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: const Color(0xFF06b6d4).withValues(alpha: 0.25),
+        ),
+      ),
+      child: Column(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: const Color(0xFF06b6d4).withValues(alpha: 0.12),
+            ),
+            child: const Icon(
+              Icons.rocket_launch_rounded,
+              color: Color(0xFF06b6d4),
+              size: 28,
+            ),
+          ),
+          const SizedBox(height: 12),
+          const Text(
+            'Coming in Future updates,\nstay tuned!',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              color: AppColors.textSecondary,
+              fontSize: 13,
+              height: 1.5,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ═══════════════════════════════════════════════════════
+  //  DATA ITERATOR NODE CONFIG (kept for backward compat)
   // ═══════════════════════════════════════════════════════
 
   Widget _buildDataIteratorSection(
@@ -1749,7 +1905,10 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
                 if ((target.name ?? '').isNotEmpty)
                   _attributeRow('Name', target.name!),
                 if ((target.role ?? '').isNotEmpty)
-                  _attributeRow('Role', target.role!),
+                  _attributeRow(
+                    'Role',
+                    '${target.role!} (${_uiaRoleName(target.role!)})',
+                  ),
                 if ((target.automationId ?? '').isNotEmpty)
                   _attributeRow('ID', target.automationId!),
                 if ((target.className ?? '').isNotEmpty)
@@ -1776,6 +1935,27 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
               textAlign: TextAlign.center,
             ),
           ),
+
+        // ── Preview Children button ──
+        if (target != null) ...[
+          const SizedBox(height: 8),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              onPressed: () => _previewChildren(provider, node),
+              icon: const Icon(Icons.visibility_outlined, size: 16),
+              label: const Text('Preview Children'),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: const Color(0xFF06b6d4),
+                side: const BorderSide(color: Color(0xFF06b6d4), width: 1),
+                padding: const EdgeInsets.symmetric(vertical: 10),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(8),
+                ),
+              ),
+            ),
+          ),
+        ],
 
         const SizedBox(height: 12),
 
@@ -2017,6 +2197,258 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
       try {
         await windowManager.show();
       } catch (_) {}
+    }
+  }
+
+  /// Preview children of the selected container element.
+  Future<void> _previewChildren(
+    FlowBuilderProvider provider,
+    DesktopFlowNode node,
+  ) async {
+    final target = node.containerTarget;
+    if (target == null) return;
+
+    final bridge = getIt<PythonBridgeService>();
+
+    // Show loading dialog
+    if (!mounted) return;
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const Center(child: CircularProgressIndicator()),
+    );
+
+    try {
+      final payload = <String, dynamic>{};
+      if (target.stableId != null) payload['stableId'] = target.stableId;
+      if (target.automationId != null) payload['automationId'] = target.automationId;
+      if (target.className != null) payload['className'] = target.className;
+      if (target.name != null) payload['name'] = target.name;
+      if (target.role != null) payload['role'] = target.role;
+
+      final result = await bridge.sendCommand('preview_children', payload);
+      if (!mounted) return;
+      Navigator.of(context).pop(); // dismiss loading
+
+      final data = result as Map<String, dynamic>? ?? {};
+      final count = data['count'] as int? ?? 0;
+      final items = (data['items'] as List<dynamic>?) ?? [];
+      final suitability = data['containerSuitability'] as String? ?? 'unknown';
+      final autoCorrected = data['autoCorrected'] as bool? ?? false;
+      final error = data['error'] as String?;
+
+      if (!mounted) return;
+      showDialog(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          backgroundColor: AppColors.surface,
+          title: Row(
+            children: [
+              Icon(
+                _suitabilityIcon(suitability),
+                color: _suitabilityColor(suitability),
+                size: 20,
+              ),
+              const SizedBox(width: 8),
+              Text(
+                'Container Preview',
+                style: const TextStyle(
+                  color: AppColors.textPrimary,
+                  fontSize: 16,
+                ),
+              ),
+            ],
+          ),
+          content: SizedBox(
+            width: 360,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // Suitability badge
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: _suitabilityColor(suitability).withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Text(
+                    'Type: ${suitability.toUpperCase()}',
+                    style: TextStyle(
+                      color: _suitabilityColor(suitability),
+                      fontSize: 11,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+                if (autoCorrected) ...[
+                  const SizedBox(height: 6),
+                  Container(
+                    padding: const EdgeInsets.all(6),
+                    decoration: BoxDecoration(
+                      color: AppColors.warning.withValues(alpha: 0.1),
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: const Text(
+                      '⚠ Auto-corrected: selected element was a Pane, '
+                      'using inner list container instead.',
+                      style: TextStyle(
+                        color: AppColors.warning,
+                        fontSize: 10,
+                      ),
+                    ),
+                  ),
+                ],
+                if (error != null) ...[
+                  const SizedBox(height: 6),
+                  Text(
+                    error,
+                    style: const TextStyle(
+                      color: AppColors.error,
+                      fontSize: 11,
+                    ),
+                  ),
+                ],
+                const SizedBox(height: 10),
+                Text(
+                  '$count children found',
+                  style: const TextStyle(
+                    color: AppColors.textPrimary,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                if (items.isNotEmpty) ...[
+                  const SizedBox(height: 8),
+                  ...items.take(10).map((item) {
+                    final m = item as Map<String, dynamic>;
+                    final name = m['name'] as String? ?? '';
+                    final cn = m['className'] as String? ?? '';
+                    final role = m['role'] as String? ?? '';
+                    return Padding(
+                      padding: const EdgeInsets.only(bottom: 4),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.subdirectory_arrow_right,
+                              size: 14, color: AppColors.textMuted),
+                          const SizedBox(width: 4),
+                          Expanded(
+                            child: Text(
+                              name.isNotEmpty ? name : '($cn / $role)',
+                              style: const TextStyle(
+                                color: AppColors.textSecondary,
+                                fontSize: 11,
+                              ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        ],
+                      ),
+                    );
+                  }),
+                  if (count > 10)
+                    Text(
+                      '... and ${count - 10} more',
+                      style: const TextStyle(
+                        color: AppColors.textMuted,
+                        fontSize: 10,
+                        fontStyle: FontStyle.italic,
+                      ),
+                    ),
+                ],
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('Close'),
+            ),
+          ],
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      Navigator.of(context).pop(); // dismiss loading
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Preview failed: $e')),
+      );
+    }
+  }
+
+  /// Human-readable UIA control type names.
+  static String _uiaRoleName(String role) {
+    const names = <String, String>{
+      '50000': 'Button',
+      '50001': 'Calendar',
+      '50002': 'CheckBox',
+      '50003': 'ComboBox',
+      '50004': 'Edit',
+      '50005': 'Hyperlink',
+      '50006': 'Image',
+      '50007': 'ListItem',
+      '50008': 'List',
+      '50009': 'Menu',
+      '50010': 'MenuBar',
+      '50011': 'MenuItem',
+      '50012': 'DataGrid',
+      '50013': 'RadioButton',
+      '50014': 'ScrollBar',
+      '50016': 'Slider',
+      '50017': 'Spinner',
+      '50018': 'StatusBar',
+      '50019': 'Tab',
+      '50020': 'Text',
+      '50021': 'ToolBar',
+      '50022': 'ToolTip',
+      '50023': 'Tree',
+      '50024': 'TreeItem',
+      '50025': 'TabItem',
+      '50026': 'Custom',
+      '50027': 'Group',
+      '50028': 'Thumb',
+      '50030': 'DataItem',
+      '50031': 'Document',
+      '50032': 'Window',
+      '50033': 'Pane',
+      '50034': 'Header',
+      '50035': 'HeaderItem',
+      '50036': 'Table',
+      '50037': 'TitleBar',
+      '50038': 'Separator',
+    };
+    return names[role] ?? 'Unknown';
+  }
+
+  static IconData _suitabilityIcon(String suitability) {
+    switch (suitability) {
+      case 'list':
+        return Icons.list;
+      case 'tree':
+        return Icons.account_tree;
+      case 'grid':
+        return Icons.grid_view;
+      case 'tab':
+        return Icons.tab;
+      case 'pane':
+        return Icons.warning_amber;
+      default:
+        return Icons.help_outline;
+    }
+  }
+
+  static Color _suitabilityColor(String suitability) {
+    switch (suitability) {
+      case 'list':
+      case 'tree':
+      case 'grid':
+      case 'tab':
+        return AppColors.success;
+      case 'pane':
+        return AppColors.warning;
+      default:
+        return AppColors.textMuted;
     }
   }
 
@@ -3699,19 +4131,37 @@ class _EdgePainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     const nodeWidth = 170.0;
     const nodeHeight = 80.0;
-    // Port X offsets (must match _buildOutputPort portOffsetX)
+    // Standard 2-port layout
     const successPortOffsetX = nodeWidth / 2 - 16;
     const failurePortOffsetX = nodeWidth / 2 + 16;
+    // Data Iterator 3-port layout
+    const bodyPortOffsetX = nodeWidth / 2 - 32;
+    const donePortOffsetX = nodeWidth / 2;
+    const iterFailurePortOffsetX = nodeWidth / 2 + 32;
 
     for (final edge in edges) {
       final fromNode = _findNode(edge.fromNodeId);
       final toNode = _findNode(edge.toNodeId);
       if (fromNode == null || toNode == null) continue;
 
-      // Choose start X based on edge label
-      final portOffsetX = _isFailureLabel(edge.label)
-          ? failurePortOffsetX
-          : successPortOffsetX;
+      // Choose start X based on edge label and node type
+      double portOffsetX;
+      if (fromNode.nodeType == DesktopFlowNodeType.dataIterator) {
+        final label = edge.label?.toLowerCase();
+        if (label == 'body') {
+          portOffsetX = bodyPortOffsetX;
+        } else if (label == 'done') {
+          portOffsetX = donePortOffsetX;
+        } else if (_isFailureLabel(label)) {
+          portOffsetX = iterFailurePortOffsetX;
+        } else {
+          portOffsetX = bodyPortOffsetX; // legacy: success → body
+        }
+      } else {
+        portOffsetX = _isFailureLabel(edge.label)
+            ? failurePortOffsetX
+            : successPortOffsetX;
+      }
 
       final from = Offset(
         fromNode.x + portOffsetX,
@@ -3719,7 +4169,7 @@ class _EdgePainter extends CustomPainter {
       );
       final to = Offset(
         toNode.x + nodeWidth / 2,
-        toNode.y, // above input port
+        toNode.y,
       );
 
       // Color by label
@@ -3728,6 +4178,10 @@ class _EdgePainter extends CustomPainter {
         edgeColor = AppColors.warning;
       } else if (_isFailureLabel(edge.label)) {
         edgeColor = AppColors.error.withValues(alpha: 0.7);
+      } else if (edge.label?.toLowerCase() == 'body') {
+        edgeColor = const Color(0xFF06b6d4).withValues(alpha: 0.8);
+      } else if (edge.label?.toLowerCase() == 'done') {
+        edgeColor = AppColors.success.withValues(alpha: 0.8);
       } else {
         edgeColor = AppColors.success.withValues(alpha: 0.7);
       }
@@ -3749,7 +4203,6 @@ class _EdgePainter extends CustomPainter {
           ),
           textDirection: TextDirection.ltr,
         )..layout();
-        // Draw a small background pill
         final bgRect = RRect.fromRectAndRadius(
           Rect.fromCenter(
             center: Offset(midX, midY),
@@ -3771,9 +4224,16 @@ class _EdgePainter extends CustomPainter {
 
     // Draw rubber-band (pending) edge
     if (pendingEdgeStart != null && pendingEdgeEnd != null) {
-      final rubberColor = _isFailureLabel(pendingEdgeLabel)
-          ? AppColors.error.withValues(alpha: 0.6)
-          : AppColors.success.withValues(alpha: 0.6);
+      Color rubberColor;
+      if (_isFailureLabel(pendingEdgeLabel)) {
+        rubberColor = AppColors.error.withValues(alpha: 0.6);
+      } else if (pendingEdgeLabel == 'body') {
+        rubberColor = const Color(0xFF06b6d4).withValues(alpha: 0.6);
+      } else if (pendingEdgeLabel == 'done') {
+        rubberColor = AppColors.success.withValues(alpha: 0.6);
+      } else {
+        rubberColor = AppColors.success.withValues(alpha: 0.6);
+      }
       _drawBezierEdge(
         canvas,
         pendingEdgeStart!,
@@ -3796,7 +4256,6 @@ class _EdgePainter extends CustomPainter {
       ..strokeWidth = 2
       ..style = PaintingStyle.stroke;
 
-    // Vertical Bézier — control points offset vertically
     final dy = (to.dy - from.dy).abs() * 0.5;
     final path = Path()
       ..moveTo(from.dx, from.dy)
@@ -3804,7 +4263,6 @@ class _EdgePainter extends CustomPainter {
 
     canvas.drawPath(path, paint);
 
-    // Arrowhead
     final arrowPaint = Paint()
       ..color = color
       ..style = PaintingStyle.fill;
@@ -3829,6 +4287,12 @@ class _EdgePainter extends CustomPainter {
     }
     if (label == 'failure' || label == 'false') {
       return '${String.fromCharCode(0x2717)} False';
+    }
+    if (label == 'body') {
+      return '↻ Body';
+    }
+    if (label == 'done') {
+      return '${String.fromCharCode(0x2713)} Done';
     }
     return '';
   }

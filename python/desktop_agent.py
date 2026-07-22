@@ -30,7 +30,7 @@ class DesktopAgent:
     def __init__(self):
         self._enable_dpi_awareness()
         auto.SetGlobalSearchTimeout(1.0)
-        pyautogui.FAILSAFE = True
+        pyautogui.FAILSAFE = False
         pyautogui.PAUSE = 0.05
         self.node_cache = {}
         self.active_window_info = {}
@@ -71,6 +71,12 @@ class DesktopAgent:
                     self.handle_unlock_desktop(command)
                 elif action == "enumerate_children":
                     self.handle_enumerate_children(command)
+                elif action == "preview_children":
+                    self.handle_preview_children(command)
+                elif action == "get_foreground_hwnd":
+                    self.handle_get_foreground_hwnd(command)
+                elif action == "focus_window":
+                    self.handle_focus_window(command)
                 else:
                     self.send_response(cmd_id, success=False, error=f"Unknown action: {action}")
             except Exception as exc:
@@ -2589,6 +2595,182 @@ class DesktopAgent:
     #  ENUMERATE CHILDREN (for Data Iterator node)
     # ═══════════════════════════════════════════════════════════════
 
+    def _iterator_items_for_mode(self, child_elements, sort_by, item_mode, has_child_filter):
+        """Return logical iterator items without losing explicit leaf iteration."""
+        if has_child_filter or item_mode == "directChildren" or len(child_elements) < 4:
+            return child_elements, "directChildren"
+
+        grouped = self._infer_visual_iterator_items(child_elements, sort_by)
+        if item_mode == "visualGroups":
+            return (grouped, "visualGroups") if grouped else (child_elements, "directChildren")
+
+        if grouped and 1 < len(grouped) < len(child_elements):
+            return grouped, "visualGroups"
+        return child_elements, "directChildren"
+
+    def _infer_visual_iterator_items(self, child_elements, sort_by):
+        visible = [
+            e for e in child_elements
+            if not e.get("isOffscreen") and e.get("boundingBox", {}).get("width", 0) > 0
+            and e.get("boundingBox", {}).get("height", 0) > 0
+        ]
+        if len(visible) < 4:
+            return []
+
+        rows = self._cluster_iterator_rows(visible)
+        groups = []
+        for row in rows:
+            cells = self._cluster_iterator_columns(row)
+            if len(cells) == 1 and len(row) <= 1:
+                continue
+            groups.extend(cells)
+
+        logical_items = []
+        for index, group in enumerate(groups):
+            if len(group) <= 1:
+                logical_items.extend(group)
+                continue
+            logical_items.append(self._make_visual_iterator_item(group, index))
+
+        if len(logical_items) >= len(child_elements):
+            return []
+        if sort_by == "horizontal":
+            logical_items.sort(key=lambda e: (e["boundingBox"]["x"], e["boundingBox"]["y"]))
+        else:
+            logical_items.sort(key=lambda e: (e["boundingBox"]["y"], e["boundingBox"]["x"]))
+        return logical_items
+
+    def _cluster_iterator_rows(self, elements):
+        ordered = sorted(elements, key=lambda e: (e["boundingBox"]["y"], e["boundingBox"]["x"]))
+        heights = [max(1, e["boundingBox"]["height"]) for e in ordered]
+        gap_threshold = max(48, self._median(heights) * 2.0)
+        rows = []
+        current = []
+        current_bottom = None
+
+        for element in ordered:
+            box = element["boundingBox"]
+            top = box["y"]
+            bottom = top + box["height"]
+            if current and current_bottom is not None and top - current_bottom > gap_threshold:
+                rows.append(current)
+                current = [element]
+                current_bottom = bottom
+            else:
+                current.append(element)
+                current_bottom = bottom if current_bottom is None else max(current_bottom, bottom)
+
+        if current:
+            rows.append(current)
+        return rows
+
+    def _cluster_iterator_columns(self, row):
+        if len(row) <= 2:
+            return [row]
+
+        ordered = sorted(row, key=lambda e: self._center_x(e))
+        centers = [self._center_x(e) for e in ordered]
+        gaps = [centers[i + 1] - centers[i] for i in range(len(centers) - 1)]
+        positive_gaps = [gap for gap in gaps if gap > 0]
+        if not positive_gaps:
+            return [row]
+
+        threshold = max(96, self._median(positive_gaps) * 2.5)
+        cells = []
+        current = [ordered[0]]
+        for index, gap in enumerate(gaps):
+            if gap > threshold:
+                cells.append(current)
+                current = [ordered[index + 1]]
+            else:
+                current.append(ordered[index + 1])
+        if current:
+            cells.append(current)
+        return cells
+
+    def _make_visual_iterator_item(self, group, index):
+        left = min(e["boundingBox"]["x"] for e in group)
+        top = min(e["boundingBox"]["y"] for e in group)
+        right = max(e["boundingBox"]["x"] + e["boundingBox"]["width"] for e in group)
+        bottom = max(e["boundingBox"]["y"] + e["boundingBox"]["height"] for e in group)
+        text_parts = []
+        seen = set()
+        for element in sorted(group, key=lambda e: (e["boundingBox"]["y"], e["boundingBox"]["x"])):
+            value = (element.get("name") or element.get("value") or "").strip()
+            if value and value not in seen:
+                text_parts.append(value)
+                seen.add(value)
+        name = self._truncate(" | ".join(text_parts)) if text_parts else ""
+        stable_seed = "|".join(str(e.get("stableId") or e.get("index") or "") for e in group)
+        stable_seed += f"|{left},{top},{right},{bottom}"
+        stable_id = "iter_group_" + hashlib.sha1(stable_seed.encode("utf-8", errors="ignore")).hexdigest()[:16]
+        width = right - left
+        height = bottom - top
+        return {
+            "index": index,
+            "name": name,
+            "value": name,
+            "role": "visual_group",
+            "type": "visual_group",
+            "automationId": "",
+            "className": "AutonionVisualItem",
+            "stableId": stable_id,
+            "boundingBox": {
+                "x": left,
+                "y": top,
+                "width": width,
+                "height": height,
+            },
+            "centerX": left + width // 2,
+            "centerY": top + height // 2,
+            "isEnabled": any(e.get("isEnabled", True) for e in group),
+            "isOffscreen": all(e.get("isOffscreen", False) for e in group),
+            "sourceChildCount": len(group),
+        }
+
+    def _center_x(self, element):
+        box = element["boundingBox"]
+        return box["x"] + box["width"] / 2
+
+    def _median(self, values):
+        if not values:
+            return 0
+        ordered = sorted(values)
+        mid = len(ordered) // 2
+        if len(ordered) % 2:
+            return ordered[mid]
+        return (ordered[mid - 1] + ordered[mid]) / 2
+
+    def handle_get_foreground_hwnd(self, command):
+        """Return the HWND of the current foreground window."""
+        cmd_id = command.get("id")
+        try:
+            user32 = ctypes.windll.user32
+            hwnd = user32.GetForegroundWindow()
+            self.send_response(cmd_id, success=True, data={"hwnd": int(hwnd)})
+        except Exception as exc:
+            self.send_response(cmd_id, success=False, error=str(exc))
+
+    def handle_focus_window(self, command):
+        """Set the foreground window to the given HWND."""
+        cmd_id = command.get("id")
+        payload = command.get("payload", {})
+        hwnd = payload.get("hwnd", 0)
+        try:
+            if not hwnd:
+                self.send_response(cmd_id, success=False, error="No HWND provided")
+                return
+            user32 = ctypes.windll.user32
+            # ShowWindow SW_RESTORE (9) to unminimize if needed
+            if user32.IsIconic(int(hwnd)):
+                user32.ShowWindow(int(hwnd), 9)
+            # AllowSetForegroundWindow for our process
+            user32.AllowSetForegroundWindow(-1)  # ASFW_ANY
+            result = user32.SetForegroundWindow(int(hwnd))
+            self.send_response(cmd_id, success=bool(result), data={"hwnd": int(hwnd)})
+        except Exception as exc:
+            self.send_response(cmd_id, success=False, error=str(exc))
+
     def handle_enumerate_children(self, command):
         """Find a UIA container element and return its direct children.
 
@@ -2599,6 +2781,7 @@ class DesktopAgent:
         cmd_id = command.get("id")
         payload = command.get("payload", {})
         sort_by = payload.get("sortBy", "auto")  # "auto", "vertical", "horizontal"
+        item_mode = payload.get("itemMode", "auto")
 
         # Identification attributes for the container
         match_stable_id = payload.get("stableId")
@@ -2606,6 +2789,10 @@ class DesktopAgent:
         match_class_name = payload.get("className")
         match_name = payload.get("name")
         match_role = payload.get("role")
+
+        # Optional child filters (only iterate children matching these)
+        child_role_filter = payload.get("childRoleFilter")  # e.g. "50006"
+        child_class_filter = payload.get("childClassNameFilter")  # e.g. "Image"
 
         try:
             # Refresh the accessibility tree so node_cache is populated
@@ -2643,6 +2830,51 @@ class DesktopAgent:
                             break
                     except Exception:
                         continue
+
+            # Fallback: search from the desktop root by walking the UIA tree.
+            # This handles the case where the target app is not the
+            # foreground window (e.g. the Autonion overlay is on top).
+            if container is None:
+                try:
+                    root = auto.GetRootControl()
+
+                    def _find_container(control, depth=0):
+                        """DFS to find a control matching the target attributes."""
+                        if depth > 12 or not control:
+                            return None
+                        try:
+                            ok = True
+                            if match_class_name and ok:
+                                if self._safe_attr(control, "ClassName", "") != match_class_name:
+                                    ok = False
+                            if match_automation_id and ok:
+                                if self._safe_attr(control, "AutomationId", "") != match_automation_id:
+                                    ok = False
+                            if match_name and ok:
+                                if self._safe_attr(control, "Name", "") != match_name:
+                                    ok = False
+                            if match_role and ok:
+                                ctrl_role = self._get_role_name(self._safe_attr(control, "ControlType"))
+                                if ctrl_role != match_role:
+                                    ok = False
+                            if ok:
+                                return control
+                        except Exception:
+                            pass
+                        try:
+                            for child in control.GetChildren():
+                                result = _find_container(child, depth + 1)
+                                if result is not None:
+                                    return result
+                        except Exception:
+                            pass
+                        return None
+
+                    found = _find_container(root)
+                    if found:
+                        container = found
+                except Exception as root_err:
+                    eprint(f"enumerate_children root fallback error: {root_err}")
 
             if container is None:
                 self.send_response(cmd_id, success=False,
@@ -2705,21 +2937,309 @@ class DesktopAgent:
                 except Exception:
                     continue
 
-            # Step 3: sort by the requested direction
+            # Step 3: apply child filters (if any)
+            unfiltered_count = len(child_elements)
+            if child_role_filter:
+                child_elements = [
+                    e for e in child_elements
+                    if e["role"] == child_role_filter
+                ]
+            if child_class_filter:
+                child_elements = [
+                    e for e in child_elements
+                    if e["className"] == child_class_filter
+                ]
+
+            # Step 4: infer logical visual items unless direct leaf mode was requested.
+            direct_child_count = len(child_elements)
+            child_elements, item_mode_used = self._iterator_items_for_mode(
+                child_elements, sort_by, item_mode, bool(child_role_filter or child_class_filter)
+            )
+
+            # Step 5: sort by the requested direction
             if sort_by == "vertical":
                 child_elements.sort(key=lambda e: e["boundingBox"]["y"])
             elif sort_by == "horizontal":
                 child_elements.sort(key=lambda e: e["boundingBox"]["x"])
             # "auto" keeps tree order (already the order from GetChildren)
 
+            # Step 6: auto-recurse if container is a Pane with 0 items
+            # Common mistake: user picks a parent wrapper (e.g. CtrlNotifySink)
+            # instead of the inner list (e.g. DUIListView). Check children
+            # for a List/Grid/Tree and use that instead.
+            if len(child_elements) == 0 and container is not None:
+                inner = self._find_inner_iterable_container(container)
+                if inner is not None:
+                    eprint("enumerate_children: auto-correcting to inner iterable container")
+                    try:
+                        inner_children = inner.GetChildren()
+                        child_elements = []
+                        for idx2, ch in enumerate(inner_children):
+                            try:
+                                rect2 = ch.BoundingRectangle
+                                if rect2.width() <= 0 or rect2.height() <= 0:
+                                    continue
+                                name2 = self._truncate(self._safe_attr(ch, "Name", ""))
+                                value2 = ""
+                                try:
+                                    vp2 = ch.GetValuePattern()
+                                    if vp2:
+                                        value2 = self._truncate(vp2.Value)
+                                except Exception:
+                                    pass
+                                aid2 = self._safe_attr(ch, "AutomationId", "")
+                                cn2 = self._safe_attr(ch, "ClassName", "")
+                                ct2 = self._safe_attr(ch, "ControlType")
+                                sid2 = self._stable_id(
+                                    control=ch, rect=rect2, path=f"iter/{idx2}",
+                                    name=name2, automation_id=aid2, class_name=cn2,
+                                )
+                                child_elements.append({
+                                    "index": idx2,
+                                    "name": name2,
+                                    "value": value2,
+                                    "role": self._get_role_name(ct2),
+                                    "type": str(ct2),
+                                    "automationId": aid2,
+                                    "className": cn2,
+                                    "stableId": sid2,
+                                    "boundingBox": {
+                                        "x": rect2.left,
+                                        "y": rect2.top,
+                                        "width": rect2.width(),
+                                        "height": rect2.height(),
+                                    },
+                                    "centerX": rect2.left + rect2.width() // 2,
+                                    "centerY": rect2.top + rect2.height() // 2,
+                                    "isEnabled": bool(self._safe_attr(ch, "IsEnabled", True)),
+                                    "isOffscreen": bool(self._safe_attr(ch, "IsOffscreen", False)),
+                                })
+                            except Exception:
+                                continue
+                        unfiltered_count = len(child_elements)
+                        direct_child_count = len(child_elements)
+                        item_mode_used = "directChildren"
+                    except Exception:
+                        pass
+
+            # Step 7: determine container suitability
+            suitability = self._container_suitability(container)
+
             self.send_response(cmd_id, success=True, data={
                 "children": child_elements,
                 "count": len(child_elements),
+                "unfilteredCount": unfiltered_count,
+                "directChildCount": direct_child_count,
+                "itemModeUsed": item_mode_used,
+                "containerSuitability": suitability,
             })
         except Exception as exc:
             eprint(f"enumerate_children error: {exc}")
             self.send_response(cmd_id, success=False, error=str(exc))
 
+
+    # ═══════════════════════════════════════════════════════════════
+    #  CONTAINER SUITABILITY & AUTO-RECURSE HELPERS
+    # ═══════════════════════════════════════════════════════════════
+
+    # UIA control type IDs for iterable containers
+    _ITERABLE_CONTROL_TYPES = {
+        50008,   # List
+        50012,   # DataGrid
+        50023,   # Tree
+        50025,   # Tab
+    }
+
+    # ClassNames that typically indicate iterable containers
+    _ITERABLE_CLASS_HINTS = {
+        "listview", "duilistview", "syslistview32", "listbox",
+        "datagridview", "treeview", "systreeview32", "tabcontrol",
+        "gridview", "itemscontrol", "scrollviewer",
+    }
+
+    def _container_suitability(self, container):
+        """Return a suitability label for the container element.
+
+        Returns one of: "list", "tree", "grid", "tab", "pane", "unknown".
+        """
+        if container is None:
+            return "unknown"
+        try:
+            ct = self._safe_attr(container, "ControlType")
+            ct_int = int(ct) if ct else 0
+        except (ValueError, TypeError):
+            ct_int = 0
+
+        if ct_int == 50008:
+            return "list"
+        if ct_int == 50023:
+            return "tree"
+        if ct_int == 50012:
+            return "grid"
+        if ct_int == 50025:
+            return "tab"
+
+        # Check className as a hint
+        cn = self._safe_attr(container, "ClassName", "").lower()
+        aid = self._safe_attr(container, "AutomationId", "").lower()
+        for hint in self._ITERABLE_CLASS_HINTS:
+            if hint in cn or hint in aid:
+                return "list"
+
+        if ct_int == 50033:  # Pane
+            return "pane"
+        return "unknown"
+
+    def _find_inner_iterable_container(self, container, depth=0):
+        """Recursively search immediate children for an iterable container.
+
+        If the selected element is a generic Pane, look up to 3 levels deep
+        for a child that is a List, Grid, Tree, etc.
+        """
+        if depth > 3 or container is None:
+            return None
+        try:
+            for child in container.GetChildren():
+                try:
+                    ct = self._safe_attr(child, "ControlType")
+                    ct_int = int(ct) if ct else 0
+                except (ValueError, TypeError):
+                    ct_int = 0
+
+                if ct_int in self._ITERABLE_CONTROL_TYPES:
+                    return child
+
+                cn = self._safe_attr(child, "ClassName", "").lower()
+                aid = self._safe_attr(child, "AutomationId", "").lower()
+                for hint in self._ITERABLE_CLASS_HINTS:
+                    if hint in cn or hint in aid:
+                        return child
+
+                # Recurse into Pane children
+                if ct_int == 50033:
+                    inner = self._find_inner_iterable_container(child, depth + 1)
+                    if inner is not None:
+                        return inner
+        except Exception:
+            pass
+        return None
+
+    def handle_preview_children(self, command):
+        """Lightweight preview: returns count and first 10 items.
+
+        Uses the same container-finding logic as enumerate_children but
+        returns only summaries for the UI preview dialog.
+        """
+        cmd_id = command.get("id")
+        payload = command.get("payload", {})
+
+        match_stable_id = payload.get("stableId")
+        match_automation_id = payload.get("automationId")
+        match_class_name = payload.get("className")
+        match_name = payload.get("name")
+        match_role = payload.get("role")
+
+        try:
+            self._get_accessibility_tree()
+
+            container = None
+            if match_stable_id and match_stable_id in self.node_cache:
+                container = self.node_cache[match_stable_id]
+
+            if container is None:
+                for key, control in self.node_cache.items():
+                    if not isinstance(key, str) or key.startswith("node_"):
+                        continue
+                    try:
+                        matches = True
+                        if match_automation_id:
+                            if self._safe_attr(control, "AutomationId", "") != match_automation_id:
+                                matches = False
+                        if match_class_name and matches:
+                            if self._safe_attr(control, "ClassName", "") != match_class_name:
+                                matches = False
+                        if match_name and matches:
+                            if self._safe_attr(control, "Name", "") != match_name:
+                                matches = False
+                        if match_role and matches:
+                            ctrl_role = self._get_role_name(self._safe_attr(control, "ControlType"))
+                            if ctrl_role != match_role:
+                                matches = False
+                        if matches:
+                            container = control
+                            break
+                    except Exception:
+                        continue
+
+            if container is None:
+                self.send_response(cmd_id, success=True, data={
+                    "count": 0,
+                    "items": [],
+                    "containerSuitability": "unknown",
+                    "error": "Container not found in the accessibility tree",
+                })
+                return
+
+            suitability = self._container_suitability(container)
+            children = container.GetChildren()
+
+            items = []
+            total = 0
+            for idx, child in enumerate(children):
+                try:
+                    rect = child.BoundingRectangle
+                    if rect.width() <= 0 or rect.height() <= 0:
+                        continue
+                    total += 1
+                    if len(items) < 10:
+                        name = self._truncate(self._safe_attr(child, "Name", ""), 60)
+                        cn = self._safe_attr(child, "ClassName", "")
+                        ct = self._safe_attr(child, "ControlType")
+                        items.append({
+                            "name": name,
+                            "className": cn,
+                            "role": self._get_role_name(ct),
+                        })
+                except Exception:
+                    continue
+
+            # If zero children but has inner iterable, report that
+            auto_corrected = False
+            if total == 0:
+                inner = self._find_inner_iterable_container(container)
+                if inner is not None:
+                    auto_corrected = True
+                    suitability = self._container_suitability(inner)
+                    try:
+                        for idx, ch in enumerate(inner.GetChildren()):
+                            try:
+                                rect = ch.BoundingRectangle
+                                if rect.width() <= 0 or rect.height() <= 0:
+                                    continue
+                                total += 1
+                                if len(items) < 10:
+                                    name = self._truncate(self._safe_attr(ch, "Name", ""), 60)
+                                    cn = self._safe_attr(ch, "ClassName", "")
+                                    ct = self._safe_attr(ch, "ControlType")
+                                    items.append({
+                                        "name": name,
+                                        "className": cn,
+                                        "role": self._get_role_name(ct),
+                                    })
+                            except Exception:
+                                continue
+                    except Exception:
+                        pass
+
+            self.send_response(cmd_id, success=True, data={
+                "count": total,
+                "items": items,
+                "containerSuitability": suitability,
+                "autoCorrected": auto_corrected,
+            })
+        except Exception as exc:
+            eprint(f"preview_children error: {exc}")
+            self.send_response(cmd_id, success=False, error=str(exc))
 
     def _capture_screenshot(self, tier):
         if tier == "accessibilityOnly":

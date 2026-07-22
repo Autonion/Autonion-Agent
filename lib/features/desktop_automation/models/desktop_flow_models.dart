@@ -511,6 +511,29 @@ enum IterationDirection {
   }
 }
 
+/// How the iterator turns container children into logical items.
+enum DataIteratorItemMode {
+  /// Infer visual item groups when the container exposes card subparts.
+  auto,
+
+  /// Always group nearby child elements into repeated visual cards/rows.
+  visualGroups,
+
+  /// Use the UIA container's direct children exactly as reported.
+  directChildren;
+
+  String get displayName {
+    switch (this) {
+      case DataIteratorItemMode.auto:
+        return 'Auto visual items';
+      case DataIteratorItemMode.visualGroups:
+        return 'Visual groups';
+      case DataIteratorItemMode.directChildren:
+        return 'Direct children';
+    }
+  }
+}
+
 /// Configuration for a `dataIterator` node.
 ///
 /// Defines how to iterate through child elements of a UIA container
@@ -518,6 +541,9 @@ enum IterationDirection {
 class DataIteratorConfig {
   /// How to sort/order the discovered child elements.
   final IterationDirection direction;
+
+  /// How to detect logical items within the selected container.
+  final DataIteratorItemMode itemMode;
 
   /// Name of the context variable holding the current item's text.
   /// Downstream nodes can reference this via `{{current_item}}`.
@@ -533,12 +559,23 @@ class DataIteratorConfig {
   /// aborting the entire iteration.
   final bool continueOnError;
 
+  /// Optional filter: only iterate children whose UIA role matches.
+  /// E.g. "50006" for Image, "50007" for ListItem, "50020" for Text.
+  final String? childRoleFilter;
+
+  /// Optional filter: only iterate children whose UIA className matches.
+  /// E.g. "Image", "ListViewItem", "TextBlock".
+  final String? childClassNameFilter;
+
   const DataIteratorConfig({
     this.direction = IterationDirection.vertical,
+    this.itemMode = DataIteratorItemMode.auto,
     this.contextVariableName = 'current_item',
     this.delayBetweenMs = 500,
     this.clickEachItem = true,
     this.continueOnError = true,
+    this.childRoleFilter,
+    this.childClassNameFilter,
   });
 
   factory DataIteratorConfig.fromJson(Map<String, dynamic> json) {
@@ -547,28 +584,45 @@ class DataIteratorConfig {
         (d) => d.name == json['direction'],
         orElse: () => IterationDirection.vertical,
       ),
+      itemMode: DataIteratorItemMode.values.firstWhere(
+        (m) => m.name == json['itemMode'],
+        orElse: () => DataIteratorItemMode.auto,
+      ),
       contextVariableName:
           json['contextVariableName'] as String? ?? 'current_item',
       delayBetweenMs: json['delayBetweenMs'] as int? ?? 500,
       clickEachItem: json['clickEachItem'] as bool? ?? true,
       continueOnError: json['continueOnError'] as bool? ?? true,
+      childRoleFilter: json['childRoleFilter'] as String?,
+      childClassNameFilter: json['childClassNameFilter'] as String?,
     );
   }
 
   Map<String, dynamic> toJson() => {
     'direction': direction.name,
+    'itemMode': itemMode.name,
     'contextVariableName': contextVariableName,
     'delayBetweenMs': delayBetweenMs,
     'clickEachItem': clickEachItem,
     'continueOnError': continueOnError,
+    if (childRoleFilter != null && childRoleFilter!.isNotEmpty)
+      'childRoleFilter': childRoleFilter,
+    if (childClassNameFilter != null && childClassNameFilter!.isNotEmpty)
+      'childClassNameFilter': childClassNameFilter,
   };
 
   /// User-readable summary, e.g. "Vertical, click each, 500ms".
   String get summary {
-    final parts = <String>[direction.displayName];
+    final parts = <String>[direction.displayName, itemMode.displayName];
     if (clickEachItem) parts.add('click each');
     parts.add('${delayBetweenMs}ms');
     if (!continueOnError) parts.add('stop on error');
+    if (childRoleFilter != null && childRoleFilter!.isNotEmpty) {
+      parts.add('role=$childRoleFilter');
+    }
+    if (childClassNameFilter != null && childClassNameFilter!.isNotEmpty) {
+      parts.add('class=$childClassNameFilter');
+    }
     return parts.join(', ');
   }
 }
@@ -772,6 +826,10 @@ class DesktopFlowNode {
   /// For dataIterator: iteration configuration.
   DataIteratorConfig? dataIteratorConfig;
 
+  /// Optional settle delay in milliseconds, applied after this node finishes
+  /// before the next node starts executing. If null, uses the default (200ms).
+  int? settleDelayMs;
+
   DesktopFlowNode({
     String? id,
     required this.nodeType,
@@ -812,6 +870,7 @@ class DesktopFlowNode {
     this.unlockMethod,
     this.containerTarget,
     this.dataIteratorConfig,
+    this.settleDelayMs,
   }) : id = id ?? const Uuid().v4();
 
   factory DesktopFlowNode.fromJson(Map<String, dynamic> json) {
@@ -870,6 +929,7 @@ class DesktopFlowNode {
           ? DataIteratorConfig.fromJson(
               json['dataIteratorConfig'] as Map<String, dynamic>)
           : null,
+      settleDelayMs: json['settleDelayMs'] as int?,
     );
   }
 
@@ -914,6 +974,7 @@ class DesktopFlowNode {
     if (containerTarget != null) 'containerTarget': containerTarget!.toJson(),
     if (dataIteratorConfig != null)
       'dataIteratorConfig': dataIteratorConfig!.toJson(),
+    if (settleDelayMs != null) 'settleDelayMs': settleDelayMs,
   };
 
   /// Short summary shown on the node card in the builder UI.
@@ -1014,6 +1075,7 @@ class DesktopFlowNode {
     String? unlockMethod,
     UITargetSelector? containerTarget,
     DataIteratorConfig? dataIteratorConfig,
+    int? settleDelayMs,
   }) {
     return DesktopFlowNode(
       id: id ?? this.id,
@@ -1055,6 +1117,7 @@ class DesktopFlowNode {
       unlockMethod: unlockMethod ?? this.unlockMethod,
       containerTarget: containerTarget ?? this.containerTarget,
       dataIteratorConfig: dataIteratorConfig ?? this.dataIteratorConfig,
+      settleDelayMs: settleDelayMs ?? this.settleDelayMs,
     );
   }
 
