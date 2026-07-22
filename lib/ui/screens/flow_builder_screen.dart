@@ -3858,6 +3858,12 @@ class _PaletteItem extends StatelessWidget {
         return Icons.image_search;
       case DesktopFlowNodeType.uiDetect:
         return Icons.find_in_page;
+      case DesktopFlowNodeType.swipe:
+        return Icons.swipe;
+      case DesktopFlowNodeType.unlock:
+        return Icons.lock_open;
+      case DesktopFlowNodeType.dataIterator:
+        return Icons.playlist_play;
       default:
         return Icons.circle;
     }
