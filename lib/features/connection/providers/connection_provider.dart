@@ -186,6 +186,11 @@ class ConnectionProvider extends ChangeNotifier {
       return;
     }
 
+    if (command['type'] == 'save_prompt_as_flow') {
+      await _handleSavePromptAsFlow(command);
+      return;
+    }
+
     // Natural language prompts → forward to LLM
     if (command.containsKey('prompt')) {
       await _handlePrompt(command);
@@ -494,10 +499,16 @@ class ConnectionProvider extends ChangeNotifier {
             desktopProvider.lastError ?? 'Desktop task failed.',
           );
         } else {
+          // Include action history so Android can offer "Save as Flow"
+          final actionHistory = desktopProvider.lastActionHistory;
+          final hasActions = actionHistory.isNotEmpty;
           _sendPromptResponse(
             transactionId,
             'completed',
             'Desktop task completed successfully.',
+            data: hasActions
+                ? {'action_history': jsonEncode(actionHistory)}
+                : null,
           );
         }
       } on NeedsBrowserException catch (e) {
@@ -1380,6 +1391,75 @@ RULES:
         'error': '$e',
         'timestamp': DateTime.now().toIso8601String(),
       });
+    }
+  }
+
+  /// Handle "Save as Flow" request from Android.
+  ///
+  /// The Android app sends this after a successful prompt execution,
+  /// carrying the action history that was included in the 'completed' response.
+  Future<void> _handleSavePromptAsFlow(Map<String, dynamic> command) async {
+    final transactionId = command['transactionId']?.toString() ?? '';
+    final flowName = command['flowName']?.toString() ?? 'AI-Generated Flow';
+    final rawHistory = command['actionHistory'];
+
+    List<Map<String, dynamic>> actionHistory;
+    if (rawHistory is String) {
+      try {
+        final decoded = jsonDecode(rawHistory);
+        actionHistory = (decoded as List)
+            .map((e) => Map<String, dynamic>.from(e as Map))
+            .toList();
+      } catch (e) {
+        _log.error('CMD', 'Failed to parse action history JSON: $e');
+        _sendPromptResponse(
+          transactionId,
+          'failed',
+          'Failed to parse action history.',
+        );
+        return;
+      }
+    } else if (rawHistory is List) {
+      actionHistory = rawHistory
+          .map((e) => Map<String, dynamic>.from(e as Map))
+          .toList();
+    } else {
+      _sendPromptResponse(
+        transactionId,
+        'failed',
+        'No action history provided.',
+      );
+      return;
+    }
+
+    try {
+      final storage = getIt<FlowStorageService>();
+      final flow = await storage.createFlowFromActionHistory(
+        flowName,
+        actionHistory,
+      );
+
+      if (flow != null) {
+        _log.info('CMD', 'Created flow "${flow.name}" from AI prompt actions');
+        _sendPromptResponse(
+          transactionId,
+          'completed',
+          'Flow "${flow.name}" saved successfully!',
+        );
+      } else {
+        _sendPromptResponse(
+          transactionId,
+          'failed',
+          'Failed to create flow from actions.',
+        );
+      }
+    } catch (e) {
+      _log.error('CMD', 'Failed to save prompt as flow: $e');
+      _sendPromptResponse(
+        transactionId,
+        'failed',
+        'Error saving flow: $e',
+      );
     }
   }
 

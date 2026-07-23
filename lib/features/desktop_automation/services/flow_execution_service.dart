@@ -82,6 +82,9 @@ class FlowExecutionService extends ChangeNotifier {
   final LoggingService _log;
   final SecureCredentialService _credentials;
 
+  static const _targetResolveTimeout = Duration(seconds: 30);
+  static const _targetResolvePollInterval = Duration(milliseconds: 300);
+
   bool _isRunning = false;
   bool _stopRequested = false;
   String? _currentFlowId;
@@ -170,6 +173,8 @@ class FlowExecutionService extends ChangeNotifier {
       var currentNode = startNode;
 
       while (!_stopRequested) {
+        final stepNode = currentNode;
+
         // If this is a terminal node, we're done
         if (currentNode.nodeType == DesktopFlowNodeType.done) {
           _log.info('FlowExec', 'Reached Done node — flow complete');
@@ -294,7 +299,7 @@ class FlowExecutionService extends ChangeNotifier {
         }
 
         // Per-node settle delay (defaults to 200ms if not configured)
-        final settleMs = currentNode.settleDelayMs ?? 200;
+        final settleMs = stepNode.settleDelayMs ?? 200;
         if (settleMs > 0) {
           await _delayInterruptibly(Duration(milliseconds: settleMs));
         }
@@ -531,8 +536,12 @@ class FlowExecutionService extends ChangeNotifier {
     return null;
   }
 
-  /// Resolve click coordinates from a UITargetSelector.
-  /// For UIA modes, queries the accessibility tree and uses the element center.
+  /// Resolve a target from the current screen state.
+  ///
+  /// Saved flows can run faster than target apps become interactive. For
+  /// element-based targets, wait until the current accessibility tree contains
+  /// the target and then click its current center point. This avoids replaying
+  /// stale stable IDs from a previous AI observation/cache.
   Future<Map<String, dynamic>> _resolveTarget(UITargetSelector? target) async {
     if (target == null) {
       throw FlowExecutionException('No target specified for action');
@@ -548,31 +557,50 @@ class FlowExecutionService extends ChangeNotifier {
         return {'x': x, 'y': y};
 
       case UITargetMode.stableId:
-        if (target.stableId == null) {
-          throw FlowExecutionException('Stable ID not set');
-        }
-        await _a11y.getScreenState(AutomationTier.accessibilityOnly);
-        return {'targetStableId': target.stableId};
-
       case UITargetMode.uiaAttribute:
-        return await _findElementByAttributes(target);
+        final element = await _waitForTargetElement(target);
+        return _targetParamsForElement(element);
     }
   }
 
-  /// Search the accessibility tree for an element matching UIA attributes.
-  Future<Map<String, dynamic>> _findElementByAttributes(
-    UITargetSelector target,
-  ) async {
-    final screenState = await _a11y.getScreenState(
-      AutomationTier.accessibilityOnly,
-    );
-    final element = _findElementInList(screenState.elements, target);
-    if (element == null) {
-      throw FlowExecutionException(
-        'Element not found matching: ${target.summary}',
+  Future<UIElement> _waitForTargetElement(
+    UITargetSelector target, {
+    Duration timeout = _targetResolveTimeout,
+    bool requireEditable = false,
+  }) async {
+    final deadline = DateTime.now().add(timeout);
+    var loggedWaiting = false;
+
+    while (!_stopRequested) {
+      final screenState = await _a11y.getScreenState(
+        AutomationTier.accessibilityOnly,
       );
+      final element = _findElementInList(
+        screenState.elements,
+        target,
+        requireEditable: requireEditable,
+      );
+      if (element != null) {
+        if (loggedWaiting) {
+          _log.info('FlowExec', 'Target ready: ${target.summary}');
+        }
+        return element;
+      }
+
+      if (!loggedWaiting) {
+        _log.info('FlowExec', 'Waiting for target: ${target.summary}');
+        loggedWaiting = true;
+      }
+      if (DateTime.now().isAfter(deadline)) break;
+      await _delayInterruptibly(_targetResolvePollInterval);
     }
-    return _targetParamsForElement(element);
+
+    if (_stopRequested) {
+      throw FlowExecutionException('Target resolution stopped');
+    }
+    throw FlowExecutionException(
+      'Target did not become available within ${timeout.inSeconds}s: ${target.summary}',
+    );
   }
 
   Future<UIElement?> _findCurrentElement(
@@ -614,6 +642,10 @@ class FlowExecutionService extends ChangeNotifier {
       }
     }).toList();
 
+    if (candidates.isEmpty) return null;
+    if (target.mode == UITargetMode.uiaAttribute) {
+      return _pickBestMatch(candidates, target);
+    }
     return _bestElement(candidates, requireEditable: requireEditable);
   }
 
@@ -680,9 +712,6 @@ class FlowExecutionService extends ChangeNotifier {
   }
 
   Map<String, dynamic> _targetParamsForElement(UIElement element) {
-    if (element.stableId != null && element.stableId!.isNotEmpty) {
-      return {'targetStableId': element.stableId};
-    }
     final bbox = element.boundingBox;
     final cx = _asDouble(bbox['x']) + _asDouble(bbox['width']) / 2;
     final cy = _asDouble(bbox['y']) + _asDouble(bbox['height']) / 2;
@@ -882,7 +911,9 @@ class FlowExecutionService extends ChangeNotifier {
 
       // Delay between repetitions
       if (i < config.repeatCount - 1) {
-        await _delayInterruptibly(Duration(milliseconds: config.delayBetweenMs));
+        await _delayInterruptibly(
+          Duration(milliseconds: config.delayBetweenMs),
+        );
       }
     }
   }
@@ -917,9 +948,7 @@ class FlowExecutionService extends ChangeNotifier {
   }
 
   Future<void> _executeScreenshot() async {
-    await _input.execute(
-      const DesktopAction(type: 'take_screenshot'),
-    );
+    await _input.execute(const DesktopAction(type: 'take_screenshot'));
     _log.info('FlowExec', 'Screenshot captured via Python bridge');
   }
 
@@ -970,7 +999,7 @@ class FlowExecutionService extends ChangeNotifier {
     _log.info(
       'FlowExec',
       'Swipe: (${startX.toInt()}, ${startY.toInt()}) -> '
-      '(${endX.toInt()}, ${endY.toInt()}) ${duration}ms',
+          '(${endX.toInt()}, ${endY.toInt()}) ${duration}ms',
     );
 
     await _input.execute(
@@ -1242,9 +1271,9 @@ class FlowExecutionService extends ChangeNotifier {
         _log.info(
           'FlowExec',
           'UI Detect: Clicking best match at '
-          '(${params['x']?.toStringAsFixed(0) ?? params['targetStableId']}'
-          '${params['y'] != null ? ', ${params['y']!.toStringAsFixed(0)}' : ''})'
-          ' from ${matches.length} candidates',
+              '(${params['x']?.toStringAsFixed(0) ?? params['targetStableId']}'
+              '${params['y'] != null ? ', ${params['y']!.toStringAsFixed(0)}' : ''})'
+              ' from ${matches.length} candidates',
         );
         await _input.execute(
           DesktopAction(
@@ -1327,10 +1356,10 @@ class FlowExecutionService extends ChangeNotifier {
 
       // 2. Size similarity penalty (amplified to differentiate same-area elements)
       if (target.hintWidth != null && target.hintHeight != null) {
-        final wRatio = (elW - target.hintWidth!).abs() /
-            max(target.hintWidth!, 1.0);
-        final hRatio = (elH - target.hintHeight!).abs() /
-            max(target.hintHeight!, 1.0);
+        final wRatio =
+            (elW - target.hintWidth!).abs() / max(target.hintWidth!, 1.0);
+        final hRatio =
+            (elH - target.hintHeight!).abs() / max(target.hintHeight!, 1.0);
         score += (wRatio + hRatio) * 50;
       }
 
@@ -1350,17 +1379,7 @@ class FlowExecutionService extends ChangeNotifier {
 
     _log.info(
       'FlowExec',
-      'UI Detect: Best match score=${
-        bestScore.toStringAsFixed(1)
-      } at (${
-        _asDouble(best!.boundingBox['x']).toStringAsFixed(0)
-      }, ${
-        _asDouble(best.boundingBox['y']).toStringAsFixed(0)
-      }) hint=(${
-        target.hintX?.toStringAsFixed(0) ?? '?'
-      }, ${
-        target.hintY?.toStringAsFixed(0) ?? '?'
-      })',
+      'UI Detect: Best match score=${bestScore.toStringAsFixed(1)} at (${_asDouble(best!.boundingBox['x']).toStringAsFixed(0)}, ${_asDouble(best.boundingBox['y']).toStringAsFixed(0)}) hint=(${target.hintX?.toStringAsFixed(0) ?? '?'}, ${target.hintY?.toStringAsFixed(0) ?? '?'})',
     );
 
     return best;
@@ -1419,9 +1438,7 @@ class FlowExecutionService extends ChangeNotifier {
 
     // sendCommand returns response['data'] on success, throws
     // PythonBridgeException on failure — no need to check 'success' key.
-    await _bridge.sendCommand('unlock_desktop', {
-      'password': password,
-    });
+    await _bridge.sendCommand('unlock_desktop', {'password': password});
 
     _log.info('FlowExec', 'Unlock command completed');
   }
@@ -1458,10 +1475,10 @@ class FlowExecutionService extends ChangeNotifier {
     _log.info(
       'FlowExec',
       'Data Iterator: enumerating children of container '
-      '(class=${containerTarget.className ?? "?"}, '
-      'autoId=${containerTarget.automationId ?? "?"}, '
-      'role=${containerTarget.role ?? "?"}, '
-      'name=${containerTarget.name ?? "?"})...',
+          '(class=${containerTarget.className ?? "?"}, '
+          'autoId=${containerTarget.automationId ?? "?"}, '
+          'role=${containerTarget.role ?? "?"}, '
+          'name=${containerTarget.name ?? "?"})...',
     );
 
     // Build payload from the container target's UIA attributes
@@ -1486,8 +1503,7 @@ class FlowExecutionService extends ChangeNotifier {
     }
 
     // Child filters — only iterate children matching these criteria
-    if (config.childRoleFilter != null &&
-        config.childRoleFilter!.isNotEmpty) {
+    if (config.childRoleFilter != null && config.childRoleFilter!.isNotEmpty) {
       payload['childRoleFilter'] = config.childRoleFilter;
     }
     if (config.childClassNameFilter != null &&
@@ -1497,10 +1513,7 @@ class FlowExecutionService extends ChangeNotifier {
 
     // Ask Python agent to enumerate children
     // sendCommand returns response['data'] on success, throws on failure.
-    final result = await _bridge.sendCommand(
-      'enumerate_children',
-      payload,
-    );
+    final result = await _bridge.sendCommand('enumerate_children', payload);
 
     // result IS the data payload directly (not wrapped in success/data)
     final data = result as Map<String, dynamic>? ?? {};
@@ -1511,14 +1524,14 @@ class FlowExecutionService extends ChangeNotifier {
       final suitability = data['containerSuitability'] as String? ?? 'unknown';
       final hint = suitability == 'pane' || suitability == 'unknown'
           ? ' The selected element is a "${suitability.toUpperCase()}" — '
-            'try picking a List, Grid, or Tree element instead.'
+                'try picking a List, Grid, or Tree element instead.'
           : '';
       _log.info(
         'FlowExec',
         'Data Iterator: no children found in container '
-        '(class=${containerTarget.className ?? "?"}, '
-        'role=${containerTarget.role ?? "?"}, '
-        'suitability=$suitability).$hint',
+            '(class=${containerTarget.className ?? "?"}, '
+            'role=${containerTarget.role ?? "?"}, '
+            'suitability=$suitability).$hint',
       );
       return;
     }
@@ -1533,7 +1546,7 @@ class FlowExecutionService extends ChangeNotifier {
       _log.info(
         'FlowExec',
         'Data Iterator: found $totalItems visual items '
-        '(grouped from $directChildCount child elements)',
+            '(grouped from $directChildCount child elements)',
       );
     } else if (unfilteredCount != null && unfilteredCount != totalItems) {
       _log.info(
@@ -1573,37 +1586,43 @@ class FlowExecutionService extends ChangeNotifier {
       final centerY = (child['centerY'] as num?)?.toDouble() ?? 0;
 
       // Set context variables for this iteration
-      _executionContext[config.contextVariableName] =
-          childName.isNotEmpty ? childName : childValue;
+      _executionContext[config.contextVariableName] = childName.isNotEmpty
+          ? childName
+          : childValue;
       _executionContext['current_index'] = i.toString();
       _executionContext['total_items'] = totalItems.toString();
 
       _log.info(
         'FlowExec',
         'Data Iterator: item ${i + 1}/$totalItems — '
-        '"${_executionContext[config.contextVariableName]}"',
+            '"${_executionContext[config.contextVariableName]}"',
       );
 
-      emitProgress(FlowStepProgress(
-        flowId: flow.id,
-        status: 'iterator_step',
-        message: 'Iterating item ${i + 1}/$totalItems: '
-            '${_executionContext[config.contextVariableName]}',
-        currentStep: i + 1,
-        totalSteps: totalItems,
-        nodeLabel: node.label,
-        nodeId: node.id,
-      ));
+      emitProgress(
+        FlowStepProgress(
+          flowId: flow.id,
+          status: 'iterator_step',
+          message:
+              'Iterating item ${i + 1}/$totalItems: '
+              '${_executionContext[config.contextVariableName]}',
+          currentStep: i + 1,
+          totalSteps: totalItems,
+          nodeLabel: node.label,
+          nodeId: node.id,
+        ),
+      );
 
       // Click on the child element if configured
       try {
         if (config.clickEachItem && centerX > 0 && centerY > 0) {
-          await _input.execute(DesktopAction(
-            type: 'click',
-            x: centerX,
-            y: centerY,
-            coordinateSpace: 'screen',
-          ));
+          await _input.execute(
+            DesktopAction(
+              type: 'click',
+              x: centerX,
+              y: centerY,
+              coordinateSpace: 'screen',
+            ),
+          );
           await _delayInterruptibly(const Duration(milliseconds: 200));
         }
 
@@ -1625,7 +1644,7 @@ class FlowExecutionService extends ChangeNotifier {
           _log.warn(
             'FlowExec',
             'Data Iterator: item ${i + 1}/$totalItems failed — $e '
-            '(continuing to next item)',
+                '(continuing to next item)',
           );
         } else {
           rethrow;
@@ -1648,7 +1667,6 @@ class FlowExecutionService extends ChangeNotifier {
     _log.info('FlowExec', 'Data Iterator: completed all $totalItems items');
   }
 }
-
 
 /// Thrown when a flow execution step fails.
 class FlowExecutionException implements Exception {

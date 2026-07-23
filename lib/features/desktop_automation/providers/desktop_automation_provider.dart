@@ -41,6 +41,10 @@ class DesktopAutomationProvider extends ChangeNotifier {
   bool get isBridgeReady => _bridge.isReady;
   bool get hasError => _agent.status == AgentStatus.error;
   String? get lastError => _agent.lastError;
+
+  /// The action history from the most recent task execution.
+  List<Map<String, dynamic>> get lastActionHistory => _agent.actionHistory;
+
   PythonBridgeService get bridge => _bridge;
 
   void setTier(AutomationTier t) {

@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 
@@ -521,6 +522,64 @@ class FlowBuilderProvider extends ChangeNotifier {
     await _storage.duplicateFlow(id);
     await loadFlows();
     notifyListeners();
+  }
+
+  /// Export a flow to a user-chosen file.
+  Future<bool> exportFlow(String id) async {
+    final flow = _flows.firstWhere(
+      (f) => f.id == id,
+      orElse: () => DesktopFlow(name: ''),
+    );
+    if (flow.name.isEmpty) return false;
+
+    final result = await FilePicker.platform.saveFile(
+      dialogTitle: 'Export Flow',
+      fileName: '${flow.name}.autonion.json',
+      type: FileType.custom,
+      allowedExtensions: ['json'],
+    );
+
+    if (result == null) return false; // User cancelled
+
+    final success = await _storage.exportFlowToFile(id, result);
+    if (success) {
+      _log.info('FlowBuilder', 'Flow exported: "${flow.name}" → $result');
+    }
+    return success;
+  }
+
+  /// Import a flow from a user-chosen JSON file.
+  Future<bool> importFlow() async {
+    final result = await FilePicker.platform.pickFiles(
+      dialogTitle: 'Import Flow',
+      type: FileType.custom,
+      allowedExtensions: ['json'],
+      allowMultiple: false,
+    );
+
+    if (result == null || result.files.isEmpty) return false;
+
+    final filePath = result.files.single.path;
+    if (filePath == null) return false;
+
+    final flow = await _storage.importFlowFromFile(filePath);
+    if (flow != null) {
+      await loadFlows();
+      notifyListeners();
+      _log.info('FlowBuilder', 'Flow imported: "${flow.name}" from $filePath');
+      return true;
+    }
+    return false;
+  }
+
+  /// Export the currently-open flow in the builder.
+  Future<bool> exportCurrentFlow() async {
+    if (_currentFlow == null) return false;
+
+    // Save first to ensure we export the latest state
+    if (_isDirty) await saveFlow();
+
+    return exportFlow(_currentFlow!.id);
   }
 
   // ── Execution ──────────────────────────────────────────

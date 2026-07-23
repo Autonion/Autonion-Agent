@@ -195,6 +195,13 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
             onPressed: provider.isDirty ? () => provider.saveFlow() : null,
           ),
           const SizedBox(width: 8),
+          // Export button
+          _toolbarButton(
+            icon: Icons.file_upload_outlined,
+            label: 'Export',
+            onPressed: () => provider.exportCurrentFlow(),
+          ),
+          const SizedBox(width: 8),
           // Run / Stop button
           provider.isExecuting
               ? _toolbarButton(

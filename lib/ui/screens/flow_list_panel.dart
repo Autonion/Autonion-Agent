@@ -72,6 +72,21 @@ class FlowListPanel extends StatelessWidget {
           ],
         ),
         const Spacer(),
+        // Import Flow button
+        OutlinedButton.icon(
+          onPressed: () => provider.importFlow(),
+          icon: const Icon(Icons.file_download_outlined, size: 18),
+          label: const Text('Import'),
+          style: OutlinedButton.styleFrom(
+            foregroundColor: AppColors.textSecondary,
+            side: const BorderSide(color: AppColors.border),
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(10),
+            ),
+          ),
+        ),
+        const SizedBox(width: 10),
         _CreateFlowButton(provider: provider),
       ],
     );
@@ -452,6 +467,9 @@ class _FlowCard extends StatelessWidget {
       ),
       onSelected: (value) async {
         switch (value) {
+          case 'export':
+            await provider.exportFlow(flow.id);
+            break;
           case 'duplicate':
             await provider.duplicateFlow(flow.id);
             break;
@@ -497,6 +515,19 @@ class _FlowCard extends StatelessWidget {
         }
       },
       itemBuilder: (context) => [
+        const PopupMenuItem(
+          value: 'export',
+          child: Row(
+            children: [
+              Icon(Icons.file_upload_outlined, size: 16, color: AppColors.textSecondary),
+              SizedBox(width: 8),
+              Text(
+                'Export',
+                style: TextStyle(color: AppColors.textPrimary, fontSize: 13),
+              ),
+            ],
+          ),
+        ),
         const PopupMenuItem(
           value: 'duplicate',
           child: Row(

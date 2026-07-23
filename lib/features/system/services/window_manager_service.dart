@@ -4,6 +4,11 @@ import '../../../core/services/logging_service.dart';
 
 /// Manages the desktop window: prevent close, hide/show, size, position.
 class WindowManagerService with WindowListener {
+  static const _normalSize = Size(1100, 750);
+  static const _normalMinSize = Size(800, 550);
+  static const _stuckOverlayMaxWidth = 500.0;
+  static const _stuckOverlayMaxHeight = 300.0;
+
   LoggingService? _loggingService;
   bool _isVisible = true;
   bool _startedInBackground = false;
@@ -19,8 +24,8 @@ class WindowManagerService with WindowListener {
     await windowManager.ensureInitialized();
 
     const windowOptions = WindowOptions(
-      size: Size(1100, 750),
-      minimumSize: Size(800, 550),
+      size: _normalSize,
+      minimumSize: _normalMinSize,
       center: true,
       title: 'Autonion Agent',
       titleBarStyle: TitleBarStyle.normal,
@@ -65,6 +70,19 @@ class WindowManagerService with WindowListener {
   }
 
   Future<void> show() async {
+    await windowManager.setAlwaysOnTop(false);
+    await windowManager.setResizable(true);
+    await windowManager.setTitle('Autonion Agent');
+    await windowManager.setTitleBarStyle(TitleBarStyle.normal);
+    await windowManager.setMinimumSize(_normalMinSize);
+
+    final bounds = await windowManager.getBounds();
+    if (bounds.width < _stuckOverlayMaxWidth ||
+        bounds.height < _stuckOverlayMaxHeight) {
+      await windowManager.setSize(_normalSize);
+      await windowManager.center();
+    }
+
     await windowManager.setSkipTaskbar(false);
     await windowManager.show();
     await windowManager.focus();
