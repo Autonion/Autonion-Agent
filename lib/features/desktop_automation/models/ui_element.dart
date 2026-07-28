@@ -10,6 +10,10 @@ class UIElement {
   final String? frameworkId;
   final int? processId;
   final String? hierarchyPath;
+  final String? windowTitle;
+  final String? windowClassName;
+  final int? windowHandle;
+  final bool isSystemSurface;
   final Map<String, dynamic> boundingBox; // {x, y, width, height}
   final bool isClickable;
   final bool isKeyboardFocusable;
@@ -29,6 +33,10 @@ class UIElement {
     this.frameworkId,
     this.processId,
     this.hierarchyPath,
+    this.windowTitle,
+    this.windowClassName,
+    this.windowHandle,
+    this.isSystemSurface = false,
     required this.boundingBox,
     this.isClickable = false,
     this.isKeyboardFocusable = false,
@@ -50,6 +58,10 @@ class UIElement {
       frameworkId: json['frameworkId'] as String?,
       processId: json['processId'] as int?,
       hierarchyPath: json['hierarchyPath'] as String?,
+      windowTitle: json['windowTitle'] as String?,
+      windowClassName: json['windowClassName'] as String?,
+      windowHandle: json['windowHandle'] as int?,
+      isSystemSurface: json['isSystemSurface'] as bool? ?? false,
       boundingBox: json['boundingBox'] as Map<String, dynamic>? ?? {},
       isClickable: json['isClickable'] as bool? ?? false,
       isKeyboardFocusable: json['isKeyboardFocusable'] as bool? ?? false,
@@ -71,6 +83,10 @@ class UIElement {
     'frameworkId': frameworkId,
     'processId': processId,
     'hierarchyPath': hierarchyPath,
+    'windowTitle': windowTitle,
+    'windowClassName': windowClassName,
+    'windowHandle': windowHandle,
+    'isSystemSurface': isSystemSurface,
     'boundingBox': boundingBox,
     'isClickable': isClickable,
     'isKeyboardFocusable': isKeyboardFocusable,
@@ -88,9 +104,14 @@ class UIElement {
       'role': role,
       'name': name,
       'type': type,
-      if (automationId != null && automationId!.isNotEmpty) 'automationId': automationId,
+      if (automationId != null && automationId!.isNotEmpty)
+        'automationId': automationId,
       if (className != null && className!.isNotEmpty) 'className': className,
       if (hierarchyPath != null) 'path': hierarchyPath,
+      if (windowTitle != null && windowTitle!.isNotEmpty)
+        'windowTitle': windowTitle,
+      if (windowClassName != null && windowClassName!.isNotEmpty)
+        'windowClassName': windowClassName,
       'bounds': boundingBox,
       'clickable': isClickable,
       'focusable': isKeyboardFocusable,

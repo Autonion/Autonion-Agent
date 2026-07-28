@@ -403,6 +403,19 @@ class FlowBuilderProvider extends ChangeNotifier {
     return result;
   }
 
+  /// Opens a fullscreen marker overlay where the user clicks to place a
+  /// single draggable point.  Returns {x, y, screenshotBase64, ...} in
+  /// screen coords, or `null` if cancelled.
+  Future<Map<String, dynamic>?> selectClickPoint() async {
+    final response = await _bridge.sendCommand('select_click_point');
+    if (response is! Map) return null;
+    final result = response.map(
+      (key, value) => MapEntry(key.toString(), value),
+    );
+    if (result['cancelled'] == true) return null;
+    return result;
+  }
+
   Future<String> saveVisualTemplate(String nodeId, Uint8List pngBytes) async {
     final flow = _currentFlow;
     if (flow == null) {

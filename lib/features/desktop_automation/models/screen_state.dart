@@ -13,6 +13,9 @@ class ScreenState {
   final String? activeWindowTitle;
   final String? activeWindowClassName;
   final int? activeWindowProcessId;
+  final int? activeWindowHandle;
+  final String? activeWindowSource;
+  final bool activeWindowIsSystemSurface;
   final int? mouseX;
   final int? mouseY;
   final int screenLeft;
@@ -32,6 +35,9 @@ class ScreenState {
     this.activeWindowTitle,
     this.activeWindowClassName,
     this.activeWindowProcessId,
+    this.activeWindowHandle,
+    this.activeWindowSource,
+    this.activeWindowIsSystemSurface = false,
     this.mouseX,
     this.mouseY,
     this.screenLeft = 0,
@@ -56,6 +62,10 @@ class ScreenState {
       activeWindowTitle: json['activeWindowTitle'] as String?,
       activeWindowClassName: json['activeWindowClassName'] as String?,
       activeWindowProcessId: json['activeWindowProcessId'] as int?,
+      activeWindowHandle: json['activeWindowHandle'] as int?,
+      activeWindowSource: json['activeWindowSource'] as String?,
+      activeWindowIsSystemSurface:
+          json['activeWindowIsSystemSurface'] as bool? ?? false,
       mouseX: json['mouseX'] as int?,
       mouseY: json['mouseY'] as int?,
       screenLeft: json['screenLeft'] as int? ?? 0,
@@ -80,6 +90,9 @@ class ScreenState {
     'activeWindowTitle': activeWindowTitle,
     'activeWindowClassName': activeWindowClassName,
     'activeWindowProcessId': activeWindowProcessId,
+    'activeWindowHandle': activeWindowHandle,
+    'activeWindowSource': activeWindowSource,
+    'activeWindowIsSystemSurface': activeWindowIsSystemSurface,
     'mouse': {'x': mouseX, 'y': mouseY},
     'elementCount': elements.length,
     'elementTreeHash': elementTreeHash,

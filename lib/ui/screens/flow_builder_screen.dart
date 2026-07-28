@@ -94,6 +94,15 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
             if (event is KeyDownEvent &&
                 (event.logicalKey == LogicalKeyboardKey.delete ||
                     event.logicalKey == LogicalKeyboardKey.backspace)) {
+              // Don't delete nodes when a text field has focus —
+              // let the key event propagate to the text input instead.
+              final primaryFocus = FocusManager.instance.primaryFocus;
+              if (primaryFocus?.context != null &&
+                  primaryFocus!.context!
+                          .findAncestorWidgetOfExactType<EditableText>() !=
+                      null) {
+                return KeyEventResult.ignored;
+              }
               final selectedId = provider.selectedNodeId;
               if (selectedId != null) {
                 final selectedNode = provider.selectedNode;
@@ -887,6 +896,21 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
           node.text = val;
           provider.updateNode(node);
         }, maxLines: 3),
+        const SizedBox(height: 4),
+        _buildDropdown<String>(
+          label: 'Post action',
+          value: node.postAction ?? 'none',
+          items: const [
+            DropdownMenuItem(value: 'none', child: Text('None')),
+            DropdownMenuItem(value: 'enter', child: Text('Press Enter')),
+            DropdownMenuItem(value: 'tab', child: Text('Press Tab')),
+            DropdownMenuItem(value: 'escape', child: Text('Press Escape')),
+          ],
+          onChanged: (val) {
+            node.postAction = val;
+            provider.updateNode(node);
+          },
+        ),
       ],
     );
   }
@@ -3150,26 +3174,29 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
     DesktopFlowNode node,
   ) async {
     try {
-      final selection = await _selectScreenRegionOverlay(
-        provider,
-        requireArea: false,
-      );
-      if (selection == null || !mounted) return;
-      final target = selection.target;
-      node.target = target.hasArea
-          ? UITargetSelector.region(
-              target.x,
-              target.y,
-              target.width,
-              target.height,
-            )
-          : UITargetSelector.coordinate(target.x, target.y);
+      await windowManager.hide();
+    } catch (_) {}
+
+    try {
+      final result = await provider.selectClickPoint();
+      if (result == null || !mounted) return;
+
+      final x = _asDouble(result['x']);
+      final y = _asDouble(result['y']);
+      if (x == null || y == null) return;
+
+      node.target = UITargetSelector.coordinate(x, y);
       provider.updateNode(node);
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text('Target capture failed: $e')));
+    } finally {
+      try {
+        await windowManager.show();
+        await windowManager.focus();
+      } catch (_) {}
     }
   }
 

@@ -14,12 +14,24 @@ class AccessibilityTreeService {
        _bridge = bridge;
 
   /// Retrieves the current screen state (tree + optional screenshot)
-  Future<ScreenState> getScreenState(AutomationTier tier) async {
+  Future<ScreenState> getScreenState(
+    AutomationTier tier, {
+    bool preferLastLaunchedApp = false,
+    String? preferredAppName,
+    String? preferredAppPath,
+  }) async {
     _log.debug('A11yService', 'Requesting screen state (tier: ${tier.name})');
 
-    final response = await _bridge.sendCommand('get_screen_state', {
+    final payload = <String, dynamic>{
       'tier': tier.name,
-    });
+      if (preferLastLaunchedApp) 'preferLastLaunchedApp': true,
+      if (preferredAppName != null && preferredAppName.isNotEmpty)
+        'preferredAppName': preferredAppName,
+      if (preferredAppPath != null && preferredAppPath.isNotEmpty)
+        'preferredAppPath': preferredAppPath,
+    };
+
+    final response = await _bridge.sendCommand('get_screen_state', payload);
 
     return ScreenState.fromJson(response);
   }

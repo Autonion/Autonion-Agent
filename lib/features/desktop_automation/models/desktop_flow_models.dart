@@ -759,6 +759,10 @@ class DesktopFlowNode {
   /// For typeText: first try to focus an editable UIA field automatically.
   bool autoDetectInput;
 
+  /// For typeText: action to perform after text entry (e.g. 'enter', 'tab').
+  /// Null or 'none' means no action.
+  String? postAction;
+
   /// For keyboard / hotkey nodes.
   KeyboardNodeConfig? keyboardConfig;
 
@@ -840,6 +844,7 @@ class DesktopFlowNode {
     this.target,
     this.text,
     this.autoDetectInput = true,
+    this.postAction,
     this.keyboardConfig,
     this.appName,
     this.appPath,
@@ -889,6 +894,7 @@ class DesktopFlowNode {
           : null,
       text: json['text'] as String?,
       autoDetectInput: json['autoDetectInput'] as bool? ?? true,
+      postAction: json['postAction'] as String?,
       keyboardConfig: json['keyboardConfig'] != null
           ? KeyboardNodeConfig.fromJson(
               json['keyboardConfig'] as Map<String, dynamic>,
@@ -943,6 +949,7 @@ class DesktopFlowNode {
     if (target != null) 'target': target!.toJson(),
     if (text != null) 'text': text,
     if (!autoDetectInput) 'autoDetectInput': autoDetectInput,
+    if (postAction != null && postAction != 'none') 'postAction': postAction,
     if (keyboardConfig != null) 'keyboardConfig': keyboardConfig!.toJson(),
     if (appName != null) 'appName': appName,
     if (appPath != null) 'appPath': appPath,
@@ -992,7 +999,10 @@ class DesktopFlowNode {
         final value = text!.length > 24
             ? '${text!.substring(0, 24)}...'
             : text!;
-        return '$prefix$value';
+        final suffix = (postAction != null && postAction != 'none')
+            ? ' ⏎${postAction!.substring(0, 1).toUpperCase()}${postAction!.substring(1)}'
+            : '';
+        return '$prefix$value$suffix';
       case DesktopFlowNodeType.keyboard:
       case DesktopFlowNodeType.hotkey:
         return keyboardConfig?.summary ?? 'No keys set';
@@ -1045,6 +1055,7 @@ class DesktopFlowNode {
     UITargetSelector? target,
     String? text,
     bool? autoDetectInput,
+    String? postAction,
     KeyboardNodeConfig? keyboardConfig,
     String? appName,
     String? appPath,
@@ -1087,6 +1098,7 @@ class DesktopFlowNode {
       target: target ?? this.target,
       text: text ?? this.text,
       autoDetectInput: autoDetectInput ?? this.autoDetectInput,
+      postAction: postAction ?? this.postAction,
       keyboardConfig: keyboardConfig ?? this.keyboardConfig,
       appName: appName ?? this.appName,
       appPath: appPath ?? this.appPath,

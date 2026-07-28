@@ -6,6 +6,7 @@ import 'package:window_manager/window_manager.dart';
 import '../../core/di/service_locator.dart';
 import '../../features/desktop_automation/services/flow_execution_service.dart';
 import '../../features/desktop_automation/services/python_bridge_service.dart';
+import '../../features/system/services/window_manager_service.dart';
 import '../theme/app_colors.dart';
 
 /// Switches the Autonion window between its normal full-size app shell and
@@ -44,6 +45,8 @@ class _FlowRunOverlayState extends State<FlowRunOverlay> {
   late final PythonBridgeService _bridge;
   Rect? _savedBounds;
   bool _savedMaximized = false;
+  bool _savedMinimized = false;
+  bool _savedHidden = false;
   bool _overlayMode = false;
   int? _savedForegroundHwnd;
 
@@ -104,7 +107,24 @@ class _FlowRunOverlayState extends State<FlowRunOverlay> {
       await _captureForegroundHwnd();
 
       _savedMaximized = await windowManager.isMaximized();
+      _savedMinimized = await windowManager.isMinimized();
+      // Check if the window was hidden to system tray (not visible at all)
+      _savedHidden = !getIt<WindowManagerService>().isVisible;
+
+      // If the window is minimized, restore it first so we can capture
+      // valid bounds. Minimized windows on Windows report offscreen
+      // coordinates (~-32000) which would ghost the window on restore.
+      if (_savedMinimized) {
+        await windowManager.restore();
+        await Future<void>.delayed(const Duration(milliseconds: 150));
+      }
+
       _savedBounds = await windowManager.getBounds();
+
+      // Hide the window FIRST to avoid flashing the full-size window
+      // while we resize and reconfigure it.
+      await windowManager.hide();
+      await Future<void>.delayed(const Duration(milliseconds: 50));
 
       if (_savedMaximized) {
         await windowManager.unmaximize();
@@ -138,7 +158,7 @@ class _FlowRunOverlayState extends State<FlowRunOverlay> {
       final pos = await windowManager.getPosition();
       await windowManager.setPosition(Offset(pos.dx - 16, pos.dy + 16));
 
-      // 6. Show without taking focus
+      // 6. Show the compact overlay without taking focus
       await windowManager.show(inactive: true);
       _overlayMode = true;
       _overlayEnteredAt = DateTime.now();
@@ -202,6 +222,14 @@ class _FlowRunOverlayState extends State<FlowRunOverlay> {
     _transitionLock = lock;
 
     try {
+      // Capture whatever window the user is working in right now
+      // so we can return focus to it after restoring.
+      await _captureForegroundHwnd();
+
+      // Hide during transition to avoid flashing the overlay
+      // at the wrong size while we reconfigure.
+      await windowManager.hide();
+
       // CRITICAL: Reset alwaysOnTop FIRST so the overlay stops blocking.
       await windowManager.setAlwaysOnTop(false);
       await windowManager.setResizable(true);
@@ -212,7 +240,9 @@ class _FlowRunOverlayState extends State<FlowRunOverlay> {
       await windowManager.setMinimumSize(_normalMinSize);
 
       final bounds = _savedBounds;
-      if (bounds != null) {
+      // Validate saved bounds — reject offscreen positions that
+      // can occur if the window was minimized when we captured them.
+      if (bounds != null && bounds.left > -10000 && bounds.top > -10000) {
         await windowManager.setBounds(bounds);
       } else {
         await windowManager.setSize(const Size(1100, 750));
@@ -222,9 +252,24 @@ class _FlowRunOverlayState extends State<FlowRunOverlay> {
         await windowManager.maximize();
       }
 
-      // Always show + keep in taskbar so the user can access the app
+      // Restore the window to its pre-flow visibility state:
+      // - Hidden to tray → stay hidden (user accesses via tray icon)
+      // - Minimized → show then re-minimize (stays in taskbar)
+      // - Visible → show normally, return focus to user's app
       await windowManager.setSkipTaskbar(false);
-      await windowManager.show();
+      if (_savedHidden) {
+        // Was hidden to tray — keep it hidden, just restore config
+        await windowManager.setSkipTaskbar(true);
+        // Window is already hidden from the hide() call above
+      } else if (_savedMinimized) {
+        // Was minimized — show briefly then minimize
+        await windowManager.show();
+        await windowManager.minimize();
+      } else {
+        // Was visible — show and return focus to user's app
+        await windowManager.show();
+        await _restoreForegroundWindow();
+      }
 
       _overlayMode = false;
       _savedBounds = null;

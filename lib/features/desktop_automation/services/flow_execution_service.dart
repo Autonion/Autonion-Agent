@@ -11,6 +11,7 @@ import 'python_bridge_service.dart';
 import 'secure_credential_service.dart';
 import '../models/automation_tier.dart';
 import '../models/desktop_action.dart';
+import '../models/screen_state.dart';
 import '../models/ui_element.dart';
 
 // ═══════════════════════════════════════════════════════════════════
@@ -96,6 +97,10 @@ class FlowExecutionService extends ChangeNotifier {
   /// the `{{variable_name}}` syntax.
   final Map<String, String> _executionContext = {};
 
+  bool _preferLastLaunchedApp = false;
+  String? _activeLaunchedAppName;
+  String? _activeLaunchedAppPath;
+
   bool get isRunning => _isRunning;
   bool get stopRequested => _stopRequested;
   String? get currentFlowId => _currentFlowId;
@@ -132,6 +137,9 @@ class FlowExecutionService extends ChangeNotifier {
     _currentFlowId = flow.id;
     _currentProgress = null;
     _executionContext.clear();
+    _preferLastLaunchedApp = false;
+    _activeLaunchedAppName = null;
+    _activeLaunchedAppPath = null;
 
     final stopwatch = Stopwatch()..start();
     int stepsExecuted = 0;
@@ -388,6 +396,9 @@ class FlowExecutionService extends ChangeNotifier {
       _isRunning = false;
       _stopRequested = false;
       _currentFlowId = null;
+      _preferLastLaunchedApp = false;
+      _activeLaunchedAppName = null;
+      _activeLaunchedAppPath = null;
       notifyListeners();
     }
   }
@@ -536,6 +547,15 @@ class FlowExecutionService extends ChangeNotifier {
     return null;
   }
 
+  Future<ScreenState> _getFlowScreenState(AutomationTier tier) {
+    return _a11y.getScreenState(
+      tier,
+      preferLastLaunchedApp: _preferLastLaunchedApp,
+      preferredAppName: _activeLaunchedAppName,
+      preferredAppPath: _activeLaunchedAppPath,
+    );
+  }
+
   /// Resolve a target from the current screen state.
   ///
   /// Saved flows can run faster than target apps become interactive. For
@@ -572,7 +592,7 @@ class FlowExecutionService extends ChangeNotifier {
     var loggedWaiting = false;
 
     while (!_stopRequested) {
-      final screenState = await _a11y.getScreenState(
+      final screenState = await _getFlowScreenState(
         AutomationTier.accessibilityOnly,
       );
       final element = _findElementInList(
@@ -607,7 +627,7 @@ class FlowExecutionService extends ChangeNotifier {
     UITargetSelector? target, {
     bool requireEditable = false,
   }) async {
-    final screenState = await _a11y.getScreenState(
+    final screenState = await _getFlowScreenState(
       AutomationTier.accessibilityOnly,
     );
     if (target == null) {
@@ -630,6 +650,7 @@ class FlowExecutionService extends ChangeNotifier {
   }) {
     final candidates = elements.where((element) {
       if (element.isOffscreen || !element.isEnabled) return false;
+      if (_isSystemSurfaceElement(element)) return false;
       if (requireEditable && !_isEditableElement(element)) return false;
 
       switch (target.mode) {
@@ -655,6 +676,7 @@ class FlowExecutionService extends ChangeNotifier {
   }) {
     final candidates = elements.where((element) {
       if (element.isOffscreen || !element.isEnabled) return false;
+      if (_isSystemSurfaceElement(element)) return false;
       if (requireEditable && !_isEditableElement(element)) return false;
       return !requireEditable ||
           element.isKeyboardFocusable ||
@@ -670,6 +692,38 @@ class FlowExecutionService extends ChangeNotifier {
       return _elementArea(a).compareTo(_elementArea(b));
     });
     return candidates.first;
+  }
+
+  bool _isSystemSurfaceElement(UIElement element) {
+    if (element.isSystemSurface) return true;
+
+    final classes = <String>{
+      (element.windowClassName ?? '').toLowerCase(),
+      (element.className ?? '').toLowerCase(),
+    };
+    const blockedClasses = <String>{
+      'shell_traywnd',
+      'shell_secondarytraywnd',
+      'notifyiconoverflowwindow',
+      'tasklistthumbnailwnd',
+      'taskswitcherwnd',
+      'multitaskingviewframe',
+      'foregroundstaging',
+      'progman',
+      'workerw',
+    };
+    if (classes.any(blockedClasses.contains)) return true;
+
+    final title = (element.windowTitle ?? '').trim().toLowerCase();
+    const blockedTitles = <String>{
+      'start',
+      'search',
+      'task view',
+      'notification center',
+      'quick settings',
+      'program manager',
+    };
+    return blockedTitles.contains(title);
   }
 
   bool _matchesAttributes(UIElement element, UITargetSelector target) {
@@ -840,6 +894,14 @@ class FlowExecutionService extends ChangeNotifier {
     final resolvedText = _substituteContextVariables(rawText);
 
     await _input.execute(DesktopAction(type: 'type', text: resolvedText));
+
+    // Post-action: send a key press after typing (e.g. Enter to submit)
+    final postAction = node.postAction;
+    if (postAction != null && postAction != 'none' && postAction.isNotEmpty) {
+      await _delayInterruptibly(const Duration(milliseconds: 100));
+      _log.info('FlowExec', 'TypeText: post-action "$postAction"');
+      await _input.execute(DesktopAction(type: 'hotkey', keys: [postAction]));
+    }
   }
 
   /// Replace `{{key}}` placeholders in [text] with values from
@@ -937,6 +999,14 @@ class FlowExecutionService extends ChangeNotifier {
       );
       await _input.execute(DesktopAction(type: 'launch_app', appName: app));
     }
+
+    _preferLastLaunchedApp = true;
+    _activeLaunchedAppName = app.isNotEmpty ? app : null;
+    _activeLaunchedAppPath = appPath;
+    _log.info(
+      'FlowExec',
+      'Launch App: UIA scan scope set to ${app.isNotEmpty ? app : appPath}',
+    );
 
     await _delayInterruptibly(const Duration(milliseconds: 500));
   }
@@ -1239,20 +1309,44 @@ class FlowExecutionService extends ChangeNotifier {
       );
     }
 
-    final screenState = await _a11y.getScreenState(
-      AutomationTier.accessibilityOnly,
+    // For actions that need a match (click_first, extract_text), poll
+    // until the element appears — just like _waitForTargetElement does
+    // for regular click nodes. This handles timing issues where the
+    // previous node's action hasn't settled in the accessibility tree yet.
+    final needsMatch = action == 'click_first' || action == 'extract_text';
+    final deadline = DateTime.now().add(
+      needsMatch ? _targetResolveTimeout : Duration.zero,
     );
+    var loggedWaiting = false;
+    List<UIElement> matches = [];
 
-    // Find matching elements
-    final matches = <UIElement>[];
-    if (node.target != null) {
-      for (final element in screenState.elements) {
-        if (element.isOffscreen || !element.isEnabled) continue;
-        if (_elementMatchesTarget(element, node.target!)) {
-          matches.add(element);
+    do {
+      final screenState = await _getFlowScreenState(
+        AutomationTier.accessibilityOnly,
+      );
+
+      // Find matching elements
+      matches = <UIElement>[];
+      if (node.target != null) {
+        for (final element in screenState.elements) {
+          if (element.isOffscreen || !element.isEnabled) continue;
+          if (_isSystemSurfaceElement(element)) continue;
+          if (_elementMatchesTarget(element, node.target!)) {
+            matches.add(element);
+          }
         }
       }
-    }
+
+      if (matches.isNotEmpty || !needsMatch) break;
+
+      // Still no match — log once and retry
+      if (!loggedWaiting) {
+        _log.info('FlowExec', 'UI Detect: Waiting for ${node.target?.summary}');
+        loggedWaiting = true;
+      }
+      if (DateTime.now().isAfter(deadline) || _stopRequested) break;
+      await _delayInterruptibly(_targetResolvePollInterval);
+    } while (true);
 
     _log.info(
       'FlowExec',
@@ -1307,7 +1401,7 @@ class FlowExecutionService extends ChangeNotifier {
         const maxWait = Duration(seconds: 10);
         final start = DateTime.now();
         while (DateTime.now().difference(start) < maxWait && !_stopRequested) {
-          final state = await _a11y.getScreenState(
+          final state = await _getFlowScreenState(
             AutomationTier.accessibilityOnly,
           );
           final found = state.elements.any(

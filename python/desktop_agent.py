@@ -8,6 +8,7 @@ import hashlib
 import ctypes
 import subprocess
 import uuid
+import re
 from pathlib import Path
 from ctypes import wintypes
 
@@ -26,9 +27,39 @@ def eprint(*args, **kwargs):
     print(*args, file=sys.stderr, **kwargs)
 
 
+WINDOW_SCAN_SKIP_CLASSES = {
+    "Shell_TrayWnd",
+    "Shell_SecondaryTrayWnd",
+    "NotifyIconOverflowWindow",
+    "TaskListThumbnailWnd",
+    "TaskSwitcherWnd",
+    "MultitaskingViewFrame",
+    "ForegroundStaging",
+    "Progman",
+    "WorkerW",
+}
+
+WINDOW_SCAN_SKIP_TITLES = {
+    "start",
+    "search",
+    "task view",
+    "notification center",
+    "quick settings",
+    "program manager",
+}
+
+WINDOW_SCAN_SKIP_PROCESS_NAMES = {
+    "startmenuexperiencehost.exe",
+    "searchhost.exe",
+    "shellexperiencehost.exe",
+    "textinputhost.exe",
+}
+
+
 class DesktopAgent:
     def __init__(self):
         self._enable_dpi_awareness()
+        self._configure_win32_api()
         auto.SetGlobalSearchTimeout(1.0)
         pyautogui.FAILSAFE = False
         pyautogui.PAUSE = 0.05
@@ -37,6 +68,9 @@ class DesktopAgent:
         self.last_screenshot_info = {}
         self.last_virtual_bounds = self._virtual_desktop_bounds()
         self.pending_capture_bounds = None
+        self.last_target_window_handle = 0
+        self.last_target_window_info = {}
+        self.last_launch_request = {}
 
     def run(self):
         eprint("Python bridge starting up. Waiting for JSON commands on stdin...")
@@ -67,6 +101,8 @@ class DesktopAgent:
                     self.handle_select_ui_element(command)
                 elif action == "select_swipe_points":
                     self.handle_select_swipe_points(command)
+                elif action == "select_click_point":
+                    self.handle_select_click_point(command)
                 elif action == "unlock_desktop":
                     self.handle_unlock_desktop(command)
                 elif action == "enumerate_children":
@@ -94,10 +130,11 @@ class DesktopAgent:
         sys.stdout.flush()
 
     def handle_get_screen_state(self, command):
-        tier = command.get("payload", {}).get("tier", "accessibilityOnly")
+        payload = command.get("payload", {})
+        tier = payload.get("tier", "accessibilityOnly")
         eprint(f"Getting screen state with tier: {tier}")
 
-        elements = self._get_accessibility_tree()
+        elements = self._get_accessibility_tree(payload)
         left, top, right, bottom = self._virtual_desktop_bounds()
         self.last_virtual_bounds = (left, top, right, bottom)
         screen_width = right - left + 1
@@ -117,6 +154,9 @@ class DesktopAgent:
             "activeWindowTitle": self.active_window_info.get("title"),
             "activeWindowClassName": self.active_window_info.get("className"),
             "activeWindowProcessId": self.active_window_info.get("processId"),
+            "activeWindowHandle": self.active_window_info.get("handle"),
+            "activeWindowSource": self.active_window_info.get("source"),
+            "activeWindowIsSystemSurface": self.active_window_info.get("isSystemSurface"),
             "screenshotBase64": screenshot.get("base64"),
             "screenshotHash": screenshot.get("hash"),
             "screenshotWidth": screenshot.get("width"),
@@ -291,14 +331,43 @@ class DesktopAgent:
     def _launch_app(self, payload):
         app_path = str(payload.get("appPath") or payload.get("path") or "").strip()
         app_name = str(payload.get("appName") or payload.get("text") or "").strip()
+        before_windows = self._snapshot_top_level_windows(include_minimized=True)
+        launched_path = app_path
 
         if app_path:
             self._launch_path(app_path)
-            return
-        if app_name:
-            self._launch_by_search(app_name)
-            return
-        raise ValueError("launch_app requires appPath or appName")
+        elif app_name:
+            shortcut = self._find_windows_app_shortcut(app_name) if sys.platform == "win32" else None
+            if shortcut:
+                launched_path = shortcut
+                eprint(f"launch_app: using shortcut for '{app_name}': {shortcut}")
+                self._launch_path(shortcut)
+            else:
+                eprint(f"launch_app: no shortcut found for '{app_name}', using OS search")
+                self._launch_by_search(app_name)
+        else:
+            raise ValueError("launch_app requires appPath or appName")
+
+        self.last_launch_request = {
+            "appName": app_name,
+            "appPath": launched_path,
+            "startedAt": time.time(),
+        }
+
+        if sys.platform == "win32":
+            activated = self._wait_and_activate_launched_window(
+                app_name=app_name,
+                app_path=launched_path,
+                before_windows=before_windows,
+            )
+            if activated:
+                eprint(
+                    "launch_app: activated "
+                    f"hwnd={activated.get('hwnd')} title='{activated.get('title')}' "
+                    f"class='{activated.get('className')}'"
+                )
+            else:
+                eprint(f"launch_app: no target app window found for '{app_name or app_path}'")
 
     def _launch_path(self, app_path):
         if sys.platform == "win32":
@@ -330,36 +399,552 @@ class DesktopAgent:
             command = command.replace(token, "")
         return command.strip()
 
-    def _get_accessibility_tree(self):
-        """Walk the UIA tree and return actionable elements safely."""
+    def _find_windows_app_shortcut(self, app_name):
+        if sys.platform != "win32" or not app_name:
+            return None
+
+        target = self._normalize_window_text(app_name)
+        scored = []
+        for app in self._list_windows_apps():
+            name = str(app.get("name") or "")
+            path = str(app.get("path") or "")
+            if not path:
+                continue
+
+            candidates = {name, Path(path).stem}
+            score = 0
+            for candidate in candidates:
+                normalized = self._normalize_window_text(candidate)
+                if not normalized:
+                    continue
+                if normalized == target:
+                    score = max(score, 100)
+                elif normalized.startswith(target) or target.startswith(normalized):
+                    score = max(score, 80)
+                elif len(target) >= 4 and target in normalized:
+                    score = max(score, 65)
+
+            if score > 0:
+                scored.append((score, len(path), path))
+
+        if not scored:
+            return None
+        scored.sort(key=lambda item: (-item[0], item[1], item[2].lower()))
+        return scored[0][2]
+
+    def _wait_and_activate_launched_window(self, app_name="", app_path="", before_windows=None, timeout=12.0):
+        """Activate only the window that plausibly belongs to this launch."""
+        if sys.platform != "win32":
+            return None
+
+        before_handles = {
+            int(item.get("hwnd") or 0)
+            for item in (before_windows or [])
+            if item.get("hwnd")
+        }
+        deadline = time.time() + timeout
+        best_seen = None
+
+        while time.time() < deadline:
+            candidates = self._rank_launch_windows(app_name, app_path, before_handles)
+            if candidates:
+                best_seen = candidates[0]
+                if best_seen["score"] >= 55:
+                    self._activate_window(best_seen["hwnd"], restore_if_minimized=True)
+                    self.last_target_window_handle = int(best_seen["hwnd"])
+                    self.last_target_window_info = best_seen
+                    return best_seen
+            time.sleep(0.25)
+
+        if best_seen and best_seen["score"] >= 35:
+            self._activate_window(best_seen["hwnd"], restore_if_minimized=True)
+            self.last_target_window_handle = int(best_seen["hwnd"])
+            self.last_target_window_info = best_seen
+            return best_seen
+
+        return None
+
+    def _rank_launch_windows(self, app_name, app_path, before_handles):
+        foreground = self._get_foreground_top_level_hwnd()
+        candidates = []
+        for info in self._snapshot_top_level_windows(include_minimized=True):
+            hwnd = int(info.get("hwnd") or 0)
+            if not hwnd:
+                continue
+            if not self._is_automation_target_window(hwnd, allow_minimized=True):
+                continue
+
+            hint_score = self._app_hint_score(info, app_name, app_path)
+            is_new = hwnd not in before_handles
+            score = hint_score
+            if is_new:
+                score += 60
+            if foreground and hwnd == foreground:
+                score += 20
+            if info.get("title"):
+                score += 5
+            if not info.get("isMinimized"):
+                score += 5
+
+            if score >= 35 or (is_new and hint_score >= 0):
+                item = dict(info)
+                item["score"] = score
+                item["hintScore"] = hint_score
+                item["isNew"] = is_new
+                candidates.append(item)
+
+        candidates.sort(key=lambda item: item["score"], reverse=True)
+        return candidates
+
+    def _find_window_by_title(self, search_text):
+        """Find a real app window whose title matches search_text."""
+        if sys.platform != "win32":
+            return None
+
+        scored = []
+        for info in self._snapshot_top_level_windows(include_minimized=True):
+            hwnd = int(info.get("hwnd") or 0)
+            if not self._is_automation_target_window(hwnd, allow_minimized=True):
+                continue
+            score = self._app_hint_score(info, search_text, "")
+            if score > 0:
+                scored.append((score, hwnd))
+        if not scored:
+            return None
+        scored.sort(reverse=True)
+        return scored[0][1]
+
+    def _snapshot_top_level_windows(self, include_minimized=False):
+        if sys.platform != "win32":
+            return []
+
+        user32 = ctypes.windll.user32
+        hwnds = []
+
+        def _enum_cb(hwnd, _):
+            hwnd_int = self._hwnd_to_int(hwnd)
+            if hwnd_int:
+                hwnds.append(hwnd_int)
+            return True
+
+        WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
+        user32.EnumWindows(WNDENUMPROC(_enum_cb), 0)
+
+        windows = []
+        for hwnd in hwnds:
+            info = self._describe_window(hwnd)
+            if not info:
+                continue
+            if info.get("isMinimized") and not include_minimized:
+                continue
+            windows.append(info)
+        return windows
+
+    def _select_accessibility_scan_root(self, desktop_root, payload):
+        if sys.platform != "win32":
+            control = auto.GetForegroundControl() or desktop_root
+            try:
+                top = control.GetTopLevelControl()
+                if top:
+                    control = top
+            except Exception:
+                pass
+            return control, self._control_window_info(control, source="foreground")
+
+        preferred_hwnd = self._coerce_hwnd(
+            payload.get("windowHandle") or payload.get("hwnd")
+        )
+        preferred_app = str(
+            payload.get("preferredAppName")
+            or self.last_launch_request.get("appName")
+            or ""
+        ).strip()
+        preferred_path = str(
+            payload.get("preferredAppPath")
+            or self.last_launch_request.get("appPath")
+            or ""
+        ).strip()
+        prefer_last = bool(
+            payload.get("preferLastLaunchedApp")
+            or payload.get("preferLastTarget")
+        )
+
+        candidates = []
+        if preferred_hwnd:
+            candidates.append((preferred_hwnd, "preferred"))
+        if prefer_last and self.last_target_window_handle:
+            candidates.append((self.last_target_window_handle, "lastLaunchedApp"))
+
+        if preferred_app:
+            for ranked in self._rank_launch_windows(preferred_app, preferred_path, set()):
+                if ranked.get("hintScore", 0) > 0:
+                    candidates.append((ranked["hwnd"], "matchingApp"))
+                    break
+
+        foreground = self._get_foreground_top_level_hwnd()
+        if foreground:
+            candidates.append((foreground, "foreground"))
+        if self.last_target_window_handle:
+            candidates.append((self.last_target_window_handle, "lastTargetFallback"))
+
+        seen = set()
+        for hwnd, source in candidates:
+            hwnd = self._root_hwnd(hwnd)
+            if not hwnd or hwnd in seen:
+                continue
+            seen.add(hwnd)
+            if not self._is_automation_target_window(hwnd):
+                continue
+            control = self._control_from_hwnd(hwnd)
+            if control:
+                info = self._describe_window(hwnd) or {}
+                info["source"] = source
+                info["isSystemSurface"] = False
+                if source in ("foreground", "matchingApp", "lastLaunchedApp"):
+                    self.last_target_window_handle = hwnd
+                    self.last_target_window_info = info
+                return control, info
+
+        fallback = self._best_visible_app_window(preferred_app, preferred_path)
+        if fallback:
+            control = self._control_from_hwnd(fallback["hwnd"])
+            if control:
+                fallback["source"] = "visibleAppFallback"
+                fallback["isSystemSurface"] = False
+                self.last_target_window_handle = int(fallback["hwnd"])
+                self.last_target_window_info = fallback
+                return control, fallback
+
+        return desktop_root, self._control_window_info(desktop_root, source="desktopFallback")
+
+    def _best_visible_app_window(self, app_name="", app_path=""):
+        best = None
+        best_score = -1
+        foreground = self._get_foreground_top_level_hwnd()
+        for info in self._snapshot_top_level_windows(include_minimized=False):
+            hwnd = int(info.get("hwnd") or 0)
+            if not self._is_automation_target_window(hwnd):
+                continue
+            score = self._app_hint_score(info, app_name, app_path)
+            if foreground and hwnd == foreground:
+                score += 20
+            if info.get("title"):
+                score += 5
+            area = int(info.get("width") or 0) * int(info.get("height") or 0)
+            score += min(area / 1000000.0, 5)
+            if score > best_score:
+                best = dict(info)
+                best["score"] = score
+                best_score = score
+        return best
+
+    def _control_from_hwnd(self, hwnd):
+        try:
+            return auto.ControlFromHandle(int(hwnd))
+        except Exception:
+            return None
+
+    def _control_window_info(self, control, source="foreground"):
+        hwnd = self._coerce_hwnd(self._safe_attr(control, "NativeWindowHandle", 0))
+        info = self._describe_window(hwnd) if hwnd else None
+        if info:
+            info["source"] = source
+            info["isSystemSurface"] = self._is_system_surface_window(hwnd)
+            return info
+        return {
+            "title": self._safe_attr(control, "Name", ""),
+            "className": self._safe_attr(control, "ClassName", ""),
+            "processId": self._safe_attr(control, "ProcessId", 0),
+            "handle": hwnd,
+            "hwnd": hwnd,
+            "source": source,
+            "isSystemSurface": False,
+        }
+
+    def _describe_window(self, hwnd):
+        hwnd = self._root_hwnd(hwnd)
+        if not hwnd:
+            return None
+        title = self._get_window_text(hwnd)
+        class_name = self._get_window_class_name(hwnd)
+        pid = self._get_window_process_id(hwnd)
+        process_path = self._get_process_path(pid) if pid else ""
+        rect = self._get_window_rect(hwnd)
+        return {
+            "hwnd": int(hwnd),
+            "handle": int(hwnd),
+            "title": title,
+            "className": class_name,
+            "processId": pid,
+            "processPath": process_path,
+            "processName": Path(process_path).name if process_path else "",
+            "isMinimized": bool(ctypes.windll.user32.IsIconic(int(hwnd))),
+            "isVisible": bool(ctypes.windll.user32.IsWindowVisible(int(hwnd))),
+            "isCloaked": self._is_cloaked_window(hwnd),
+            "left": rect[0],
+            "top": rect[1],
+            "right": rect[2],
+            "bottom": rect[3],
+            "width": max(0, rect[2] - rect[0]),
+            "height": max(0, rect[3] - rect[1]),
+            "isSystemSurface": self._is_system_surface_info(title, class_name, process_path),
+        }
+
+    def _is_automation_target_window(self, hwnd, allow_minimized=False):
+        hwnd = self._root_hwnd(hwnd)
+        if not hwnd:
+            return False
+        user32 = ctypes.windll.user32
+        try:
+            if not user32.IsWindow(int(hwnd)):
+                return False
+            if not user32.IsWindowVisible(int(hwnd)):
+                return False
+            if self._is_cloaked_window(hwnd):
+                return False
+            info = self._describe_window(hwnd)
+            if not info or info.get("isSystemSurface"):
+                return False
+            if user32.IsIconic(int(hwnd)):
+                return bool(allow_minimized)
+            left, top, right, bottom = self._get_window_rect(hwnd)
+            width = right - left
+            height = bottom - top
+            if width < 80 or height < 80:
+                return False
+            v_left, v_top, v_right, v_bottom = self._virtual_desktop_bounds()
+            return right > v_left and left < v_right and bottom > v_top and top < v_bottom
+        except Exception:
+            return False
+
+    def _is_system_surface_window(self, hwnd):
+        hwnd = self._root_hwnd(hwnd)
+        if not hwnd:
+            return True
+        title = self._get_window_text(hwnd)
+        class_name = self._get_window_class_name(hwnd)
+        pid = self._get_window_process_id(hwnd)
+        process_path = self._get_process_path(pid) if pid else ""
+        return self._is_system_surface_info(title, class_name, process_path)
+
+    def _is_system_surface_info(self, title, class_name, process_path):
+        class_name = str(class_name or "")
+        title_lower = str(title or "").strip().lower()
+        process_name = Path(str(process_path or "")).name.lower()
+
+        if class_name in WINDOW_SCAN_SKIP_CLASSES:
+            return True
+        if title_lower in WINDOW_SCAN_SKIP_TITLES:
+            return True
+        if process_name in WINDOW_SCAN_SKIP_PROCESS_NAMES:
+            return True
+        if "autonion agent" in title_lower:
+            return True
+        return False
+
+    def _activate_window(self, hwnd, restore_if_minimized=False):
+        hwnd = self._root_hwnd(hwnd)
+        if not hwnd or not self._is_automation_target_window(hwnd, allow_minimized=restore_if_minimized):
+            return False
+        user32 = ctypes.windll.user32
+        if user32.IsIconic(int(hwnd)):
+            if not restore_if_minimized:
+                return False
+            user32.ShowWindow(int(hwnd), 9)  # SW_RESTORE
+            time.sleep(0.1)
+        else:
+            user32.ShowWindow(int(hwnd), 5)  # SW_SHOW
+        user32.AllowSetForegroundWindow(-1)  # ASFW_ANY
+        return bool(user32.SetForegroundWindow(int(hwnd)))
+
+    def _app_hint_score(self, info, app_name="", app_path=""):
+        score = 0
+        title = str(info.get("title") or "")
+        process_name = str(info.get("processName") or "")
+        process_path = str(info.get("processPath") or "")
+        path_stem = Path(str(app_path or "")).stem
+
+        if app_name:
+            score = max(score, self._text_hint_score(title, app_name))
+            score = max(score, self._text_hint_score(process_name, app_name))
+        if path_stem:
+            score = max(score, self._text_hint_score(title, path_stem))
+            score = max(score, self._text_hint_score(process_name, path_stem))
+        if app_path and process_path and Path(app_path).suffix.lower() == ".exe":
+            try:
+                if Path(app_path).resolve().as_posix().lower() == Path(process_path).resolve().as_posix().lower():
+                    score = max(score, 90)
+            except Exception:
+                if str(app_path).lower() == process_path.lower():
+                    score = max(score, 90)
+        return score
+
+    def _text_hint_score(self, text, hint):
+        text = str(text or "")
+        hint = str(hint or "")
+        if not text or not hint:
+            return 0
+
+        text_tokens = re.findall(r"[a-z0-9]+", text.lower())
+        hint_tokens = re.findall(r"[a-z0-9]+", hint.lower())
+        if not hint_tokens:
+            return 0
+
+        normalized_text = self._normalize_window_text(text)
+        normalized_hint = self._normalize_window_text(hint)
+        if normalized_text == normalized_hint:
+            return 70
+
+        if len(normalized_hint) <= 3:
+            return 45 if normalized_hint in text_tokens else 0
+
+        if all(token in text_tokens for token in hint_tokens):
+            return 60
+        if normalized_hint in normalized_text:
+            return 45
+        if normalized_text in normalized_hint:
+            return 35
+        return 0
+
+    def _normalize_window_text(self, value):
+        return "".join(ch for ch in str(value or "").lower() if ch.isalnum())
+
+    def _get_foreground_top_level_hwnd(self):
+        if sys.platform != "win32":
+            return 0
+        try:
+            hwnd = ctypes.windll.user32.GetForegroundWindow()
+            return self._root_hwnd(hwnd)
+        except Exception:
+            return 0
+
+    def _root_hwnd(self, hwnd):
+        hwnd = self._coerce_hwnd(hwnd)
+        if not hwnd or sys.platform != "win32":
+            return hwnd
+        try:
+            root = ctypes.windll.user32.GetAncestor(int(hwnd), 2)  # GA_ROOT
+            return self._hwnd_to_int(root) or hwnd
+        except Exception:
+            return hwnd
+
+    def _coerce_hwnd(self, value):
+        if value is None:
+            return 0
+        try:
+            return self._hwnd_to_int(value)
+        except Exception:
+            try:
+                return int(str(value), 0)
+            except Exception:
+                return 0
+
+    def _hwnd_to_int(self, value):
+        raw = getattr(value, "value", value)
+        return int(raw or 0)
+
+    def _get_window_text(self, hwnd):
+        try:
+            user32 = ctypes.windll.user32
+            length = user32.GetWindowTextLengthW(int(hwnd))
+            if length <= 0:
+                return ""
+            buf = ctypes.create_unicode_buffer(length + 1)
+            user32.GetWindowTextW(int(hwnd), buf, length + 1)
+            return buf.value
+        except Exception:
+            return ""
+
+    def _get_window_class_name(self, hwnd):
+        try:
+            buf = ctypes.create_unicode_buffer(256)
+            ctypes.windll.user32.GetClassNameW(int(hwnd), buf, 256)
+            return buf.value
+        except Exception:
+            return ""
+
+    def _get_window_process_id(self, hwnd):
+        try:
+            pid = wintypes.DWORD(0)
+            ctypes.windll.user32.GetWindowThreadProcessId(int(hwnd), ctypes.byref(pid))
+            return int(pid.value)
+        except Exception:
+            return 0
+
+    def _get_process_path(self, pid):
+        if not pid or sys.platform != "win32":
+            return ""
+        try:
+            kernel32 = ctypes.windll.kernel32
+            kernel32.OpenProcess.restype = wintypes.HANDLE
+            handle = kernel32.OpenProcess(0x1000, False, int(pid))  # PROCESS_QUERY_LIMITED_INFORMATION
+            if not handle:
+                return ""
+            try:
+                size = wintypes.DWORD(32768)
+                buf = ctypes.create_unicode_buffer(size.value)
+                if kernel32.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(size)):
+                    return buf.value
+            finally:
+                kernel32.CloseHandle(handle)
+        except Exception:
+            pass
+        return ""
+
+    def _get_window_rect(self, hwnd):
+        class RECT(ctypes.Structure):
+            _fields_ = [
+                ("left", wintypes.LONG),
+                ("top", wintypes.LONG),
+                ("right", wintypes.LONG),
+                ("bottom", wintypes.LONG),
+            ]
+
+        rect = RECT()
+        try:
+            if ctypes.windll.user32.GetWindowRect(int(hwnd), ctypes.byref(rect)):
+                return int(rect.left), int(rect.top), int(rect.right), int(rect.bottom)
+        except Exception:
+            pass
+        return 0, 0, 0, 0
+
+    def _is_cloaked_window(self, hwnd):
+        try:
+            value = ctypes.c_int(0)
+            result = ctypes.windll.dwmapi.DwmGetWindowAttribute(
+                int(hwnd),
+                14,  # DWMWA_CLOAKED
+                ctypes.byref(value),
+                ctypes.sizeof(value),
+            )
+            return result == 0 and value.value != 0
+        except Exception:
+            return False
+
+    def _get_accessibility_tree(self, payload=None):
+        """Walk the UIA tree and return actionable elements safely.
+
+        Runtime flows can request the last launched app as the scan root.
+        Shell surfaces such as the taskbar, Start, and Search are never used
+        as scan roots because their UIA children can collide with app UI.
+        """
+        payload = payload or {}
         self.node_cache.clear()
         self.active_window_info = {}
         elements = []
         node_id_counter = 0
 
         root = auto.GetRootControl()
-        fg_win = auto.GetForegroundControl()
+        scan_root, scan_info = self._select_accessibility_scan_root(root, payload)
+        if not scan_root:
+            scan_root = root
+            scan_info = self._control_window_info(root, source="desktopFallback")
 
-        if fg_win:
-            try:
-                if fg_win.ControlType == auto.ControlType.ToolTipControl:
-                    parent = fg_win.GetParentControl()
-                    if parent:
-                        fg_win = parent.GetTopLevelControl() or parent
-                    else:
-                        fg_win = root
-            except Exception:
-                pass
-
-        if not fg_win:
-            fg_win = root
-
-        self.active_window_info = {
-            "title": self._safe_attr(fg_win, "Name", ""),
-            "className": self._safe_attr(fg_win, "ClassName", ""),
-            "processId": self._safe_attr(fg_win, "ProcessId", 0),
-            "handle": self._safe_attr(fg_win, "NativeWindowHandle", 0),
-        }
+        self.active_window_info = scan_info
+        window_title = self.active_window_info.get("title", "")
+        window_class_name = self.active_window_info.get("className", "")
+        window_handle = self.active_window_info.get("handle") or self.active_window_info.get("hwnd")
+        window_is_system_surface = bool(self.active_window_info.get("isSystemSurface", False))
 
         clickable_types = self._control_type_set([
             "ButtonControl",
@@ -442,6 +1027,10 @@ class DesktopAgent:
                             "frameworkId": framework_id,
                             "processId": process_id,
                             "hierarchyPath": path,
+                            "windowTitle": window_title,
+                            "windowClassName": window_class_name,
+                            "windowHandle": window_handle,
+                            "isSystemSurface": window_is_system_surface,
                             "boundingBox": {
                                 "x": rect.left,
                                 "y": rect.top,
@@ -466,13 +1055,33 @@ class DesktopAgent:
             for index, child in enumerate(children):
                 walk(child, depth + 1, f"{path}/{index}")
 
-        walk(fg_win, 0)
+        walk(scan_root, 0)
         return elements
 
     def _click(self, payload, clicks=1, button="left"):
         x, y = self._resolve_point(payload)
         pyautogui.moveTo(x, y, duration=0.12)
         pyautogui.click(x=x, y=y, clicks=clicks, interval=0.05, button=button)
+
+    def _configure_win32_api(self):
+        if sys.platform != "win32":
+            return
+        try:
+            user32 = ctypes.windll.user32
+            user32.GetForegroundWindow.restype = wintypes.HWND
+            user32.GetAncestor.restype = wintypes.HWND
+            user32.GetWindowTextLengthW.argtypes = [wintypes.HWND]
+            user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+            user32.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+            user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+            user32.IsWindow.argtypes = [wintypes.HWND]
+            user32.IsWindowVisible.argtypes = [wintypes.HWND]
+            user32.IsIconic.argtypes = [wintypes.HWND]
+            user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+            user32.SetForegroundWindow.argtypes = [wintypes.HWND]
+            user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.c_void_p]
+        except Exception:
+            pass
 
     def _enable_dpi_awareness(self):
         if sys.platform != "win32":
@@ -1291,6 +1900,335 @@ class DesktopAgent:
                     "startY": screen_top + start_pt["y"],
                     "endX": screen_left + end_pt["x"],
                     "endY": screen_top + end_pt["y"],
+                }
+                root.quit()
+
+            def cancel(event=None):
+                root.quit()
+
+            canvas.bind("<ButtonPress-1>", on_click)
+            canvas.bind("<B1-Motion>", on_drag)
+            canvas.bind("<ButtonRelease-1>", on_release)
+            canvas.bind("<ButtonPress-3>", cancel)
+            root.bind("<Escape>", cancel)
+            root.bind("<Return>", confirm)
+            root.bind("<space>", confirm)
+
+            root.deiconify()
+            root.focus_force()
+            root.mainloop()
+            try:
+                root.destroy()
+            except Exception:
+                pass
+
+            self.send_response(cmd_id, success=True, data=result)
+        except Exception as exc:
+            self.send_response(cmd_id, success=False, error=str(exc))
+
+    def handle_select_click_point(self, command):
+        """Full-screen overlay with a single draggable marker for click-point selection.
+
+        Phase 1 -- Toolbar: the user arranges their desktop, then captures.
+        Phase 2 -- Screenshot overlay: click to place a draggable marker point.
+        Confirm with Enter/Space or the Confirm button.  Esc/right-click cancels.
+        """
+        cmd_id = command.get("id")
+
+        try:
+            from PIL import Image, ImageTk
+            import tkinter as tk
+
+            # -- helpers ------------------------------------------------
+            def clamp(value, lower, upper):
+                return max(lower, min(upper, int(round(value))))
+
+            # -- discover virtual-desktop geometry ----------------------
+            with mss() as sct:
+                monitor = sct.monitors[0] if sct.monitors else {
+                    "left": 0, "top": 0, "width": 0, "height": 0,
+                }
+                screen_left = int(monitor.get("left", 0))
+                screen_top = int(monitor.get("top", 0))
+                screen_width = int(monitor.get("width", 0))
+                screen_height = int(monitor.get("height", 0))
+
+            # ===========================================================
+            #  PHASE 1 -- floating toolbar (user arranges desktop)
+            # ===========================================================
+            phase1_cancelled = False
+            phase1_done = False
+
+            p1_root = tk.Tk()
+            p1_root.withdraw()
+            p1_root.overrideredirect(True)
+            p1_root.attributes("-topmost", True)
+            try:
+                p1_root.attributes("-alpha", 0.94)
+            except Exception:
+                pass
+            toolbar_w, toolbar_h = 420, 52
+            toolbar_x = screen_left + (screen_width - toolbar_w) // 2
+            toolbar_y = screen_top + 28
+            p1_root.geometry(f"{toolbar_w}x{toolbar_h}{toolbar_x:+d}{toolbar_y:+d}")
+            p1_root.configure(background="#111827")
+
+            outer = tk.Frame(
+                p1_root, bg="#111827",
+                highlightbackground="#38bdf8", highlightthickness=1,
+            )
+            outer.pack(fill="both", expand=True)
+
+            inner = tk.Frame(outer, bg="#111827")
+            inner.pack(fill="both", expand=True, padx=8, pady=6)
+
+            tk.Label(
+                inner,
+                text="\U0001f4f7  Arrange your screen, then:",
+                fg="#94a3b8", bg="#111827",
+                font=("Segoe UI", 10), anchor="w",
+            ).pack(side="left", padx=(4, 8))
+
+            def p1_trigger(event=None):
+                nonlocal phase1_done
+                if phase1_done:
+                    return
+                phase1_done = True
+                p1_root.quit()
+
+            def p1_cancel(event=None):
+                nonlocal phase1_cancelled, phase1_done
+                if phase1_done:
+                    return
+                phase1_cancelled = True
+                phase1_done = True
+                p1_root.quit()
+
+            capture_btn = tk.Button(
+                inner, text="\u2318 Capture", fg="white", bg="#0ea5e9",
+                activeforeground="white", activebackground="#0284c7",
+                font=("Segoe UI", 10, "bold"), bd=0,
+                padx=14, pady=2, cursor="hand2",
+                command=p1_trigger,
+            )
+            capture_btn.pack(side="left", padx=(0, 6))
+
+            cancel_btn = tk.Button(
+                inner, text="Cancel", fg="#94a3b8", bg="#1e293b",
+                activeforeground="white", activebackground="#334155",
+                font=("Segoe UI", 10), bd=0,
+                padx=10, pady=2, cursor="hand2",
+                command=p1_cancel,
+            )
+            cancel_btn.pack(side="left")
+
+            p1_root.bind("<space>", p1_trigger)
+            p1_root.bind("<Return>", p1_trigger)
+            p1_root.bind("<Escape>", p1_cancel)
+
+            p1_root.deiconify()
+            p1_root.focus_force()
+            p1_root.mainloop()
+            try:
+                p1_root.destroy()
+            except Exception:
+                pass
+
+            if phase1_cancelled:
+                self.send_response(cmd_id, success=True, data={"cancelled": True})
+                return
+
+            # Brief pause so the toolbar disappears before capture
+            time.sleep(0.15)
+
+            # ===========================================================
+            #  PHASE 2 -- screenshot overlay with single marker
+            # ===========================================================
+            with mss() as sct:
+                monitor = sct.monitors[0] if sct.monitors else {
+                    "left": 0, "top": 0, "width": 0, "height": 0,
+                }
+                shot = sct.grab(monitor)
+                image = Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
+
+            with io.BytesIO() as buf:
+                image.save(buf, format="PNG", optimize=True)
+                screenshot_base64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+
+            # -- state --------------------------------------------------
+            result = {"cancelled": True}
+            phase = {"value": "place"}  # "place" -> "adjust"
+            click_pt = {"x": 0, "y": 0}
+            marker_radius = 18
+            dragging = {"active": False}
+
+            root = tk.Tk()
+            root.withdraw()
+            root.overrideredirect(True)
+            root.attributes("-topmost", True)
+            try:
+                root.attributes("-alpha", 0.98)
+            except Exception:
+                pass
+            root.geometry(
+                f"{screen_width}x{screen_height}{screen_left:+d}{screen_top:+d}"
+            )
+
+            canvas = tk.Canvas(
+                root, width=screen_width, height=screen_height,
+                highlightthickness=0, cursor="crosshair",
+            )
+            canvas.pack(fill="both", expand=True)
+
+            # background screenshot with dim overlay
+            photo = ImageTk.PhotoImage(image)
+            canvas.create_image(0, 0, image=photo, anchor="nw")
+            canvas.create_rectangle(
+                0, 0, screen_width, screen_height,
+                fill="black", stipple="gray25", outline="",
+            )
+
+            # -- hint banner --------------------------------------------
+            canvas.create_rectangle(18, 18, 530, 58, fill="#111827", outline="#38bdf8", width=1)
+            hint_text_id = canvas.create_text(
+                32, 38, text="Click to place target point. Esc cancels.",
+                fill="white", anchor="w", font=("Segoe UI", 12, "bold"),
+            )
+
+            # -- drawing helpers ----------------------------------------
+            marker_ids = []
+            confirm_btn_ids = []
+
+            def draw_marker(cx, cy):
+                """Draw a circular marker with crosshair and label."""
+                ids = []
+                # outer ring
+                ids.append(canvas.create_oval(
+                    cx - marker_radius, cy - marker_radius,
+                    cx + marker_radius, cy + marker_radius,
+                    outline="#22c55e", width=3, fill="", tags=("marker",),
+                ))
+                # inner dot
+                ids.append(canvas.create_oval(
+                    cx - 5, cy - 5, cx + 5, cy + 5,
+                    outline="#22c55e", fill="#22c55e", tags=("marker",),
+                ))
+                # crosshair lines
+                ch = marker_radius + 8
+                ids.append(canvas.create_line(
+                    cx - ch, cy, cx - marker_radius - 2, cy,
+                    fill="#22c55e", width=2, tags=("marker",),
+                ))
+                ids.append(canvas.create_line(
+                    cx + marker_radius + 2, cy, cx + ch, cy,
+                    fill="#22c55e", width=2, tags=("marker",),
+                ))
+                ids.append(canvas.create_line(
+                    cx, cy - ch, cx, cy - marker_radius - 2,
+                    fill="#22c55e", width=2, tags=("marker",),
+                ))
+                ids.append(canvas.create_line(
+                    cx, cy + marker_radius + 2, cx, cy + ch,
+                    fill="#22c55e", width=2, tags=("marker",),
+                ))
+                # label
+                ids.append(canvas.create_text(
+                    cx, cy - marker_radius - 14, text="CLICK",
+                    fill="#22c55e", font=("Segoe UI", 10, "bold"), tags=("marker",),
+                ))
+                return ids
+
+            def update_marker():
+                """Redraw marker at current position."""
+                for mid in marker_ids:
+                    canvas.delete(mid)
+                marker_ids.clear()
+                marker_ids.extend(draw_marker(click_pt["x"], click_pt["y"]))
+
+            def show_confirm_ui():
+                """Show confirm/cancel buttons after marker is placed."""
+                for cid in confirm_btn_ids:
+                    canvas.delete(cid)
+                confirm_btn_ids.clear()
+
+                canvas.itemconfig(hint_text_id,
+                    text="Drag marker to adjust. Enter/Space to confirm. Esc cancels.")
+
+                # confirm button
+                bx, by = screen_width - 240, 28
+                confirm_btn_ids.append(canvas.create_rectangle(
+                    bx, by, bx + 100, by + 34,
+                    fill="#0ea5e9", outline="#0ea5e9", tags=("confirm_btn",),
+                ))
+                confirm_btn_ids.append(canvas.create_text(
+                    bx + 50, by + 17, text="Confirm",
+                    fill="white", font=("Segoe UI", 11, "bold"), tags=("confirm_btn",),
+                ))
+
+                # cancel button
+                cx = bx + 115
+                confirm_btn_ids.append(canvas.create_rectangle(
+                    cx, by, cx + 80, by + 34,
+                    fill="#1e293b", outline="#475569", tags=("cancel_btn",),
+                ))
+                confirm_btn_ids.append(canvas.create_text(
+                    cx + 40, by + 17, text="Cancel",
+                    fill="#94a3b8", font=("Segoe UI", 11), tags=("cancel_btn",),
+                ))
+
+            # -- event handlers -----------------------------------------
+            def on_click(event):
+                x, y = event.x, event.y
+
+                # check for button clicks
+                items = canvas.find_overlapping(x - 2, y - 2, x + 2, y + 2)
+                tags_at = set()
+                for item in items:
+                    tags_at.update(canvas.gettags(item))
+
+                if "confirm_btn" in tags_at:
+                    confirm()
+                    return
+                if "cancel_btn" in tags_at:
+                    cancel()
+                    return
+
+                # check for marker drag start
+                if phase["value"] == "adjust" and "marker" in tags_at:
+                    dragging["active"] = True
+                    return
+
+                # placement / re-placement
+                click_pt["x"] = clamp(x, 0, screen_width)
+                click_pt["y"] = clamp(y, 0, screen_height)
+                phase["value"] = "adjust"
+                update_marker()
+                show_confirm_ui()
+
+            def on_drag(event):
+                if dragging["active"]:
+                    click_pt["x"] = max(0, min(event.x, screen_width))
+                    click_pt["y"] = max(0, min(event.y, screen_height))
+                    update_marker()
+
+            def on_release(event):
+                dragging["active"] = False
+
+            def confirm(event=None):
+                nonlocal result
+                if phase["value"] != "adjust":
+                    return
+                result = {
+                    "cancelled": False,
+                    "x": screen_left + click_pt["x"],
+                    "y": screen_top + click_pt["y"],
+                    "screenLeft": screen_left,
+                    "screenTop": screen_top,
+                    "screenWidth": screen_width,
+                    "screenHeight": screen_height,
+                    "imageWidthFull": image.width,
+                    "imageHeightFull": image.height,
+                    "screenshotBase64": screenshot_base64,
                 }
                 root.quit()
 
@@ -2742,31 +3680,57 @@ class DesktopAgent:
         return (ordered[mid - 1] + ordered[mid]) / 2
 
     def handle_get_foreground_hwnd(self, command):
-        """Return the HWND of the current foreground window."""
+        """Return the foreground HWND only when it is a real app window."""
         cmd_id = command.get("id")
         try:
-            user32 = ctypes.windll.user32
-            hwnd = user32.GetForegroundWindow()
-            self.send_response(cmd_id, success=True, data={"hwnd": int(hwnd)})
+            raw_hwnd = ctypes.windll.user32.GetForegroundWindow()
+            hwnd = self._root_hwnd(raw_hwnd)
+            if not self._is_automation_target_window(hwnd):
+                info = self._describe_window(hwnd) if hwnd else None
+                self.send_response(cmd_id, success=True, data={
+                    "hwnd": 0,
+                    "ignoredHwnd": int(hwnd or 0),
+                    "ignoredClassName": (info or {}).get("className"),
+                    "ignoredTitle": (info or {}).get("title"),
+                    "ignoredReason": "system_or_non_app_window",
+                })
+                return
+            info = self._describe_window(hwnd) or {}
+            self.send_response(cmd_id, success=True, data={
+                "hwnd": int(hwnd),
+                "title": info.get("title"),
+                "className": info.get("className"),
+                "processId": info.get("processId"),
+            })
         except Exception as exc:
             self.send_response(cmd_id, success=False, error=str(exc))
 
     def handle_focus_window(self, command):
-        """Set the foreground window to the given HWND."""
+        """Set the foreground window without restoring shell/taskbar windows."""
         cmd_id = command.get("id")
         payload = command.get("payload", {})
-        hwnd = payload.get("hwnd", 0)
+        hwnd = self._coerce_hwnd(payload.get("hwnd", 0))
+        restore_if_minimized = bool(payload.get("restoreIfMinimized", False))
         try:
             if not hwnd:
                 self.send_response(cmd_id, success=False, error="No HWND provided")
                 return
-            user32 = ctypes.windll.user32
-            # ShowWindow SW_RESTORE (9) to unminimize if needed
-            if user32.IsIconic(int(hwnd)):
-                user32.ShowWindow(int(hwnd), 9)
-            # AllowSetForegroundWindow for our process
-            user32.AllowSetForegroundWindow(-1)  # ASFW_ANY
-            result = user32.SetForegroundWindow(int(hwnd))
+            hwnd = self._root_hwnd(hwnd)
+            if self._is_system_surface_window(hwnd):
+                self.send_response(cmd_id, success=True, data={
+                    "hwnd": int(hwnd),
+                    "skipped": True,
+                    "reason": "system_surface",
+                })
+                return
+            if ctypes.windll.user32.IsIconic(int(hwnd)) and not restore_if_minimized:
+                self.send_response(cmd_id, success=True, data={
+                    "hwnd": int(hwnd),
+                    "skipped": True,
+                    "reason": "minimized",
+                })
+                return
+            result = self._activate_window(hwnd, restore_if_minimized=restore_if_minimized)
             self.send_response(cmd_id, success=bool(result), data={"hwnd": int(hwnd)})
         except Exception as exc:
             self.send_response(cmd_id, success=False, error=str(exc))
@@ -3447,17 +4411,17 @@ class DesktopAgent:
 
     def _stable_id(self, control, rect, path, name, automation_id, class_name):
         control_type = self._safe_attr(control, "ControlType")
-        process_id = self._safe_attr(control, "ProcessId", "")
         framework_id = self._safe_attr(control, "FrameworkId", "")
-        bucketed_bounds = f"{rect.left // 8},{rect.top // 8},{rect.width() // 8},{rect.height() // 8}"
+        # NOTE: process_id and bucketed_bounds are intentionally excluded.
+        # process_id changes on every app restart; bucketed_bounds shift when
+        # the window is moved or resized.  Excluding them makes the stable ID
+        # truly persistent across sessions so saved flows remain valid.
         raw = "|".join([
-            str(process_id),
             str(framework_id),
             str(automation_id),
             str(class_name),
             str(control_type),
             str(name or ""),
-            bucketed_bounds,
             path,
         ])
         return "uia_" + hashlib.sha1(raw.encode("utf-8", errors="ignore")).hexdigest()[:16]
