@@ -13,7 +13,7 @@ class AppConfig {
 
   // ── App Info ─────────────────────────────────────────────
   static const String appName = 'Autonion Agent';
-  static const String appVersion = '2.0.4';
+  static const String appVersion = '2.0.5';
 
   // ── System Tray ──────────────────────────────────────────
   static const String trayIconPath = 'assets/icons/tray_icon.ico';
