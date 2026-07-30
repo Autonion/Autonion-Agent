@@ -51,6 +51,8 @@ class ConnectionProvider extends ChangeNotifier {
   // ── Companion version compatibility ──
   String? _companionVersion;
   String? _companionWarning;
+  Timer? _versionCheckTimer;
+  bool _receivedClientInfo = false;
 
   bool get isRunning => _isRunning;
   int? get port => _port;
@@ -116,8 +118,8 @@ class ConnectionProvider extends ChangeNotifier {
       // 5. Broadcast clipboard sync state to Android whenever it changes locally
       _clipboard.addListener(_broadcastClipboardSyncState);
 
-      // 6. Push current clipboard state when a new client connects
-      _ws.addListener(_broadcastClipboardSyncState);
+      // 6. Push current clipboard state + start version timeout when a new client connects
+      _ws.addListener(_onWsStateChanged);
 
       // 7. Start trigger rule listening
       _triggers.startListening();
@@ -165,10 +167,44 @@ class ConnectionProvider extends ChangeNotifier {
 
     _isRunning = false;
     _port = null;
+    _versionCheckTimer?.cancel();
+    _receivedClientInfo = false;
     _companionVersion = null;
     _companionWarning = null;
+    _ws.removeListener(_onWsStateChanged);
     notifyListeners();
     _log.info('APP', 'Services stopped');
+  }
+
+  /// Called whenever WebSocketService notifies (new client connect/disconnect).
+  void _onWsStateChanged() {
+    _broadcastClipboardSyncState();
+
+    // When a new client connects, start a timer to detect old companions
+    // that don't send client_info.
+    if (_ws.connectedClients > 0 && !_receivedClientInfo) {
+      _versionCheckTimer?.cancel();
+      _versionCheckTimer = Timer(const Duration(seconds: 5), () {
+        // Timer fired → no client_info received → old companion
+        if (!_receivedClientInfo && _isRunning) {
+          _companionWarning =
+              'Connected Android app appears to be outdated. '
+              'Update to v${AppConfig.minRequiredCompanionVersion}+ for full compatibility '
+              '(Flows, clipboard sync control).';
+          _log.warn('APP', _companionWarning!);
+          notifyListeners();
+        }
+      });
+    }
+
+    // All clients disconnected → reset version state
+    if (_ws.connectedClients == 0) {
+      _versionCheckTimer?.cancel();
+      _receivedClientInfo = false;
+      _companionVersion = null;
+      _companionWarning = null;
+      notifyListeners();
+    }
   }
 
   /// One-shot broadcast of current clipboard sync state to all connected clients.
@@ -186,6 +222,10 @@ class ConnectionProvider extends ChangeNotifier {
   void _handleClientInfo(Map<String, dynamic> command) {
     final version = command['version'] as String?;
     if (version == null) return;
+
+    // Cancel the "old companion" timer — we got a response
+    _versionCheckTimer?.cancel();
+    _receivedClientInfo = true;
 
     _companionVersion = version;
     _log.info('APP', 'Companion connected: v$version');
