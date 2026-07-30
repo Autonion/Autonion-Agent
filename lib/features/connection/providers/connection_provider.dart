@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:url_launcher/url_launcher.dart';
+import '../../../core/config/app_config.dart';
 import '../../../core/config/platform_config.dart';
 import '../../../core/services/logging_service.dart';
 import '../../browser_automation/services/browser_launcher_service.dart';
@@ -47,11 +48,19 @@ class ConnectionProvider extends ChangeNotifier {
   StreamSubscription? _commandSub;
   StreamSubscription<String>? _clipboardSub;
 
+  // ── Companion version compatibility ──
+  String? _companionVersion;
+  String? _companionWarning;
+
   bool get isRunning => _isRunning;
   int? get port => _port;
   DeviceInfoService get deviceInfo => _deviceInfo;
   WebSocketService get ws => _ws;
   BrowserLauncherService get browser => _browser;
+
+  /// Non-null when the connected Android companion is outdated.
+  String? get companionWarning => _companionWarning;
+  String? get companionVersion => _companionVersion;
 
   ConnectionProvider({
     required LoggingService loggingService,
@@ -156,6 +165,8 @@ class ConnectionProvider extends ChangeNotifier {
 
     _isRunning = false;
     _port = null;
+    _companionVersion = null;
+    _companionWarning = null;
     notifyListeners();
     _log.info('APP', 'Services stopped');
   }
@@ -169,6 +180,26 @@ class ConnectionProvider extends ChangeNotifier {
       'payload': {'enabled': _clipboard.enabled},
       'timestamp': DateTime.now().toIso8601String(),
     });
+  }
+
+  /// Process version info sent by the Android companion on connect.
+  void _handleClientInfo(Map<String, dynamic> command) {
+    final version = command['version'] as String?;
+    if (version == null) return;
+
+    _companionVersion = version;
+    _log.info('APP', 'Companion connected: v$version');
+
+    if (AppConfig.compareVersions(version, AppConfig.minRequiredCompanionVersion) < 0) {
+      _companionWarning =
+          'Connected Android app v$version is outdated. '
+          'Update to v${AppConfig.minRequiredCompanionVersion}+ for full compatibility '
+          '(Flows, clipboard sync control).';
+      _log.warn('APP', _companionWarning!);
+    } else {
+      _companionWarning = null;
+    }
+    notifyListeners();
   }
 
   /// Route incoming WebSocket commands.
@@ -188,6 +219,12 @@ class ConnectionProvider extends ChangeNotifier {
 
     if (command['type'] == 'kill_switch') {
       _handleKillSwitch(command);
+      return;
+    }
+
+    // ── Version handshake from Android ──────────────────────
+    if (command['type'] == 'client_info') {
+      _handleClientInfo(command);
       return;
     }
 

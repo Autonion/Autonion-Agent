@@ -79,6 +79,8 @@ class WebSocketService extends ChangeNotifier {
           'type': 'connection_ack',
           'status': 'connected',
           'agent': 'autonion',
+          'version': AppConfig.appVersion,
+          'min_companion_version': AppConfig.minRequiredCompanionVersion,
           'timestamp': DateTime.now().toIso8601String(),
           'server_info': {'port': _server?.port, 'clients': _clients.length},
         });

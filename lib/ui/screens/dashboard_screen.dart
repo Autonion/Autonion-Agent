@@ -66,6 +66,32 @@ class DashboardScreen extends StatelessWidget {
               ).animate().fadeIn(duration: 500.ms, delay: 200.ms),
               const SizedBox(height: 20),
 
+              // ── Compatibility Warning ─────────────────
+              if (conn.companionWarning != null)
+                Container(
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    color: AppColors.warning.withAlpha(20),
+                    border: Border.all(color: AppColors.warning.withAlpha(80)),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.warning_amber_rounded,
+                          color: AppColors.warning, size: 22),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Text(
+                          conn.companionWarning!,
+                          style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                color: AppColors.warning),
+                        ),
+                      ),
+                    ],
+                  ),
+                ).animate().fadeIn(duration: 400.ms).slideY(begin: -0.1),
+              if (conn.companionWarning != null) const SizedBox(height: 20),
+
               // ── Quick Actions ───────────────────────
               Text(
                 'Quick Actions',
