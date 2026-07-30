@@ -20,6 +20,7 @@ class DesktopAction {
   final int? durationMs; // Duration for drag/move-like actions
   final String? button; // left/right/middle
   final String? coordinateSpace; // screen or screenshot
+  final bool replace; // If true, select-all before typing to replace existing text
 
   const DesktopAction({
     required this.type,
@@ -41,6 +42,7 @@ class DesktopAction {
     this.durationMs,
     this.button,
     this.coordinateSpace,
+    this.replace = false,
   });
 
   factory DesktopAction.fromJson(Map<String, dynamic> json) {
@@ -65,6 +67,7 @@ class DesktopAction {
       durationMs: json['durationMs'] as int?,
       button: json['button'] as String?,
       coordinateSpace: json['coordinateSpace'] as String?,
+      replace: json['replace'] as bool? ?? false,
     );
   }
 
@@ -88,6 +91,7 @@ class DesktopAction {
     'durationMs': durationMs,
     'button': button,
     'coordinateSpace': coordinateSpace,
+    'replace': replace,
   };
 
   static double? _asDouble(dynamic value) {

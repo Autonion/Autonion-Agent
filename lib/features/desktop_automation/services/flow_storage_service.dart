@@ -235,10 +235,16 @@ class FlowStorageService {
       );
       nodes.add(startNode);
 
+      // ── Pre-process: merge common AI action patterns ──
+      // The AI uses hotkey+type+hotkey sequences to launch apps and
+      // type+hotkey sequences to enter commands. These are fragile as
+      // individual flow nodes — merge them into purpose-built node types.
+      final mergedActions = _preprocessActionHistory(actionHistory);
+
       String previousNodeId = startNode.id;
       int actionIndex = 0;
 
-      for (final entry in actionHistory) {
+      for (final entry in mergedActions) {
         final actionMap = entry['action'] as Map<String, dynamic>?;
         if (actionMap == null) continue;
 
@@ -297,7 +303,8 @@ class FlowStorageService {
       await saveFlow(flow);
       _log.info(
         'FlowStorage',
-        'Created flow "$flowName" from $actionIndex AI actions',
+        'Created flow "$flowName" from ${actionHistory.length} AI actions '
+        '(${mergedActions.length} after merge → $actionIndex flow nodes)',
       );
       return flow;
     } catch (e) {
@@ -349,13 +356,20 @@ class FlowStorageService {
           settleDelayMs: settleDelayMs,
         );
       case 'type':
+        final typeTarget = _targetFromAction(actionMap);
         return DesktopFlowNode(
           nodeType: DesktopFlowNodeType.typeText,
           label: thought ?? 'Type Text',
           x: x,
           y: y,
           text: actionMap['text']?.toString(),
-          target: _targetFromAction(actionMap),
+          target: typeTarget,
+          // When the AI typed without a target, it typed into whatever was
+          // focused (e.g. a terminal/CMD window). Disable auto-detect to
+          // preserve that behaviour — UIA auto-detection would scan for
+          // standard edit controls and potentially click an unrelated field.
+          autoDetectInput: typeTarget != null,
+          postAction: _nonEmpty(actionMap['_postAction']),
           settleDelayMs: settleDelayMs,
         );
       case 'drag':
@@ -527,5 +541,149 @@ class FlowStorageService {
     final text = value?.toString().trim();
     if (text == null || text.isEmpty || text == 'null') return null;
     return text;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  AI ACTION HISTORY PRE-PROCESSING
+  // ═══════════════════════════════════════════════════════════════════
+
+  /// Pre-process the raw AI action history to detect and merge common
+  /// multi-step patterns into single, more robust flow nodes.
+  ///
+  /// Patterns detected:
+  /// 1. **App Launch**: hotkey(['win']) → type(name) → hotkey(['enter'])
+  ///    Merged into a single `launch_app` action.
+  /// 2. **Type-then-Enter/Tab**: type(text) → hotkey(['enter'/'tab'])
+  ///    Merged into a single `type` action with `_postAction` metadata.
+  List<Map<String, dynamic>> _preprocessActionHistory(
+    List<Map<String, dynamic>> raw,
+  ) {
+    // First, extract only actionable entries (with an action map and valid type).
+    final actionable = <Map<String, dynamic>>[];
+    for (final entry in raw) {
+      final actionMap = entry['action'] as Map<String, dynamic>?;
+      if (actionMap == null) continue;
+      final type =
+          (actionMap['type'] ?? actionMap['action'])?.toString() ?? '';
+      if (type.isEmpty) continue;
+      // Skip rejected actions — they never actually executed.
+      final result = entry['result'];
+      if (result is Map && result['status'] == 'rejected') continue;
+      actionable.add(entry);
+    }
+
+    final merged = <Map<String, dynamic>>[];
+    int i = 0;
+
+    while (i < actionable.length) {
+      final entry = actionable[i];
+      final actionMap = entry['action'] as Map<String, dynamic>;
+      final type =
+          (actionMap['type'] ?? actionMap['action'])?.toString() ?? '';
+
+      // ── Pattern 1: App Launch ──
+      // hotkey(['win']) → type(appName) → hotkey(['enter'])
+      if (type == 'hotkey' &&
+          _isWinKeyOnly(actionMap) &&
+          i + 2 < actionable.length) {
+        final next = actionable[i + 1];
+        final nextAction = next['action'] as Map<String, dynamic>;
+        final nextType =
+            (nextAction['type'] ?? nextAction['action'])?.toString() ?? '';
+
+        if (nextType == 'type') {
+          final afterNext = actionable[i + 2];
+          final afterAction = afterNext['action'] as Map<String, dynamic>;
+          final afterType =
+              (afterAction['type'] ?? afterAction['action'])?.toString() ?? '';
+
+          if (afterType == 'hotkey' && _isEnterOnly(afterAction)) {
+            // Merge all three into a launch_app action.
+            final appName = nextAction['text']?.toString() ?? '';
+            _log.info(
+              'FlowStorage',
+              'Merging Win→Type→Enter into launch_app: "$appName"',
+            );
+            merged.add({
+              'thought': 'Launch $appName',
+              'action': <String, dynamic>{
+                'type': 'launch_app',
+                'appName': appName,
+              },
+            });
+            i += 3; // Skip all three entries
+            continue;
+          }
+        }
+      }
+
+      // ── Pattern 2: Type-then-Enter/Tab ──
+      // type(text) → hotkey(['enter']) or hotkey(['tab'])
+      if (type == 'type' && i + 1 < actionable.length) {
+        final next = actionable[i + 1];
+        final nextAction = next['action'] as Map<String, dynamic>;
+        final nextType =
+            (nextAction['type'] ?? nextAction['action'])?.toString() ?? '';
+
+        if (nextType == 'hotkey') {
+          final postKey = _singlePostActionKey(nextAction);
+          if (postKey != null) {
+            // Merge type + hotkey into a single type with _postAction.
+            final mergedAction = Map<String, dynamic>.from(actionMap);
+            mergedAction['_postAction'] = postKey;
+            _log.info(
+              'FlowStorage',
+              'Merging Type+Hotkey($postKey) into typeText with postAction',
+            );
+            merged.add({
+              'thought': entry['thought'],
+              'action': mergedAction,
+            });
+            i += 2; // Skip both entries
+            continue;
+          }
+        }
+      }
+
+      // No pattern matched — keep the entry as-is.
+      merged.add(entry);
+      i++;
+    }
+
+    return merged;
+  }
+
+  /// True if the hotkey action is Win key only (opening Start menu).
+  bool _isWinKeyOnly(Map<String, dynamic> actionMap) {
+    final keys = (actionMap['keys'] as List<dynamic>?)
+        ?.map((k) => k.toString().toLowerCase())
+        .where((k) => k.isNotEmpty)
+        .toList();
+    if (keys == null || keys.length != 1) return false;
+    return keys.first == 'win' || keys.first == 'super';
+  }
+
+  /// True if the hotkey action is Enter only.
+  bool _isEnterOnly(Map<String, dynamic> actionMap) {
+    final keys = (actionMap['keys'] as List<dynamic>?)
+        ?.map((k) => k.toString().toLowerCase())
+        .where((k) => k.isNotEmpty)
+        .toList();
+    if (keys == null || keys.length != 1) return false;
+    return keys.first == 'enter' || keys.first == 'return';
+  }
+
+  /// If the hotkey is a single post-action key (enter or tab), return it.
+  /// Returns null for multi-key combos or non-post-action keys.
+  String? _singlePostActionKey(Map<String, dynamic> actionMap) {
+    final keys = (actionMap['keys'] as List<dynamic>?)
+        ?.map((k) => k.toString().toLowerCase())
+        .where((k) => k.isNotEmpty)
+        .toList();
+    if (keys == null || keys.length != 1) return null;
+    final key = keys.first;
+    if (key == 'enter' || key == 'return') return 'enter';
+    if (key == 'tab') return 'tab';
+    return null;
   }
 }

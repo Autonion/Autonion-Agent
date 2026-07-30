@@ -30,7 +30,7 @@ AVAILABLE ACTIONS:
 - 'click': Clicks an element or coordinate. Use targetStableId/targetIndex, or x/y.
 - 'double_click': Double-clicks an element or coordinate.
 - 'right_click': Right-clicks an element or coordinate.
-- 'type': Types text (and optionally clicks if targetStableId, targetIndex, or x/y is provided). Requires 'text'.
+- 'type': Types text (and optionally clicks if targetStableId, targetIndex, or x/y is provided). Requires 'text'. Set 'replace': true to select-all existing text first so the new text replaces it instead of appending.
 - 'scroll': Scrolls the view. Requires 'direction' ("up", "down", "left", or "right"). Optional 'amount' controls intensity.
 - 'drag': Drags from a start point to an end point. Start can be targetStableId/targetIndex or x/y. End can be endTargetStableId/endTargetIndex or endX/endY. For drawing in Paint/canvas, prefer 'path': [{"x":100,"y":100},{"x":150,"y":130},{"x":180,"y":100}] with 2+ points so the runtime makes one continuous stroke.
 - 'hotkey': Presses a combination of keys or a single key. Requires 'keys' array e.g. ["win"] or ["ctrl", "c"] or ["enter"].
@@ -62,7 +62,8 @@ JSON RESPONSE FORMAT (you MUST respond with ONLY this exact JSON):
     "amount": 500,
     "keys": ["win"],
     "durationMs": 300,
-    "button": "left"
+    "button": "left",
+    "replace": false
   }
 }
 ''';

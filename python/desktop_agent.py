@@ -71,6 +71,7 @@ class DesktopAgent:
         self.last_target_window_handle = 0
         self.last_target_window_info = {}
         self.last_launch_request = {}
+        self.automation_topmost_window_handle = 0
 
     def run(self):
         eprint("Python bridge starting up. Waiting for JSON commands on stdin...")
@@ -189,6 +190,9 @@ class DesktopAgent:
                 if self._has_start_target(payload):
                     self._click(payload, clicks=1, button="left")
                     time.sleep(0.1)
+                if payload.get("replace"):
+                    pyautogui.hotkey("ctrl", "a")
+                    time.sleep(0.05)
                 self._type_text(str(payload.get("text") or ""))
             elif action_type == "scroll":
                 self._scroll(payload)
@@ -450,17 +454,17 @@ class DesktopAgent:
             if candidates:
                 best_seen = candidates[0]
                 if best_seen["score"] >= 55:
-                    self._activate_window(best_seen["hwnd"], restore_if_minimized=True)
-                    self.last_target_window_handle = int(best_seen["hwnd"])
-                    self.last_target_window_info = best_seen
-                    return best_seen
+                    if self._activate_window(best_seen["hwnd"], restore_if_minimized=True):
+                        self.last_target_window_handle = int(best_seen["hwnd"])
+                        self.last_target_window_info = best_seen
+                        return best_seen
             time.sleep(0.25)
 
         if best_seen and best_seen["score"] >= 35:
-            self._activate_window(best_seen["hwnd"], restore_if_minimized=True)
-            self.last_target_window_handle = int(best_seen["hwnd"])
-            self.last_target_window_info = best_seen
-            return best_seen
+            if self._activate_window(best_seen["hwnd"], restore_if_minimized=True):
+                self.last_target_window_handle = int(best_seen["hwnd"])
+                self.last_target_window_info = best_seen
+                return best_seen
 
         return None
 
@@ -747,15 +751,168 @@ class DesktopAgent:
         if not hwnd or not self._is_automation_target_window(hwnd, allow_minimized=restore_if_minimized):
             return False
         user32 = ctypes.windll.user32
-        if user32.IsIconic(int(hwnd)):
+        hwnd = int(hwnd)
+        if user32.IsIconic(hwnd):
             if not restore_if_minimized:
                 return False
-            user32.ShowWindow(int(hwnd), 9)  # SW_RESTORE
+            user32.ShowWindow(hwnd, 9)  # SW_RESTORE
             time.sleep(0.1)
         else:
-            user32.ShowWindow(int(hwnd), 5)  # SW_SHOW
-        user32.AllowSetForegroundWindow(-1)  # ASFW_ANY
-        return bool(user32.SetForegroundWindow(int(hwnd)))
+            user32.ShowWindow(hwnd, 5)  # SW_SHOW
+
+        self._allow_foreground_activation()
+        user32.BringWindowToTop(hwnd)
+        self._pulse_alt_key()
+        user32.SetForegroundWindow(hwnd)
+        activated = self._is_foreground_window(hwnd)
+
+        if not activated:
+            current_thread = self._get_current_thread_id()
+            target_thread = self._get_window_thread_id(hwnd)
+            foreground = self._get_foreground_top_level_hwnd()
+            foreground_thread = self._get_window_thread_id(foreground)
+            attached_threads = []
+
+            try:
+                for thread_id in (foreground_thread, target_thread):
+                    if (
+                        thread_id
+                        and current_thread
+                        and thread_id != current_thread
+                        and thread_id not in attached_threads
+                    ):
+                        if user32.AttachThreadInput(current_thread, thread_id, True):
+                            attached_threads.append(thread_id)
+
+                self._allow_foreground_activation()
+                user32.BringWindowToTop(hwnd)
+                user32.SetActiveWindow(hwnd)
+                user32.SetFocus(hwnd)
+                self._pulse_alt_key()
+                user32.SetForegroundWindow(hwnd)
+                activated = self._is_foreground_window(hwnd)
+            finally:
+                for thread_id in reversed(attached_threads):
+                    try:
+                        user32.AttachThreadInput(current_thread, thread_id, False)
+                    except Exception:
+                        pass
+
+        frontmost = self._raise_window_to_front(hwnd, allow_persist_topmost=True)
+        foreground = self._is_foreground_window(hwnd)
+        kept_topmost = self.automation_topmost_window_handle == hwnd
+        eprint(
+            "activate_window: "
+            f"hwnd={hwnd} foreground={foreground} frontmost={frontmost} "
+            f"keptTopmost={kept_topmost}"
+        )
+        return foreground or frontmost
+
+    def _allow_foreground_activation(self):
+        try:
+            ctypes.windll.user32.AllowSetForegroundWindow(0xFFFFFFFF)  # ASFW_ANY
+        except Exception:
+            pass
+
+    def _pulse_alt_key(self):
+        if sys.platform != "win32":
+            return
+        try:
+            user32 = ctypes.windll.user32
+            user32.keybd_event(0x12, 0, 0, 0)  # VK_MENU / Alt down
+            time.sleep(0.01)
+            user32.keybd_event(0x12, 0, 0x0002, 0)  # KEYEVENTF_KEYUP
+        except Exception:
+            pass
+
+    def _get_current_thread_id(self):
+        if sys.platform != "win32":
+            return 0
+        try:
+            return int(ctypes.windll.kernel32.GetCurrentThreadId())
+        except Exception:
+            return 0
+
+    def _get_window_thread_id(self, hwnd):
+        hwnd = self._coerce_hwnd(hwnd)
+        if not hwnd or sys.platform != "win32":
+            return 0
+        try:
+            return int(ctypes.windll.user32.GetWindowThreadProcessId(int(hwnd), None))
+        except Exception:
+            return 0
+
+    def _is_foreground_window(self, hwnd):
+        hwnd = self._root_hwnd(hwnd)
+        if not hwnd or sys.platform != "win32":
+            return False
+        return self._get_foreground_top_level_hwnd() == int(hwnd)
+
+    def _raise_window_to_front(self, hwnd, allow_persist_topmost=True):
+        if sys.platform != "win32":
+            return False
+        try:
+            user32 = ctypes.windll.user32
+            hwnd = int(hwnd)
+            flags = 0x0001 | 0x0002 | 0x0040  # NOSIZE | NOMOVE | SHOWWINDOW
+            self._release_automation_topmost(except_hwnd=hwnd)
+            user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, flags)  # HWND_TOP
+            user32.SetWindowPos(hwnd, -1, 0, 0, 0, 0, flags)  # HWND_TOPMOST
+            user32.SetWindowPos(hwnd, -2, 0, 0, 0, 0, flags)  # HWND_NOTOPMOST
+            user32.BringWindowToTop(hwnd)
+            if self._is_window_frontmost(hwnd):
+                if self.automation_topmost_window_handle == hwnd:
+                    self.automation_topmost_window_handle = 0
+                return True
+
+            if allow_persist_topmost:
+                user32.SetWindowPos(hwnd, -1, 0, 0, 0, 0, flags)  # HWND_TOPMOST
+                user32.BringWindowToTop(hwnd)
+                self.automation_topmost_window_handle = hwnd
+                return self._is_window_frontmost(hwnd)
+        except Exception as exc:
+            eprint(f"raise_window_to_front failed for hwnd={hwnd}: {exc}")
+        return False
+
+    def _release_automation_topmost(self, except_hwnd=0):
+        previous = self._coerce_hwnd(self.automation_topmost_window_handle)
+        except_hwnd = self._coerce_hwnd(except_hwnd)
+        if not previous or previous == except_hwnd or sys.platform != "win32":
+            return
+        try:
+            user32 = ctypes.windll.user32
+            if user32.IsWindow(int(previous)):
+                flags = 0x0001 | 0x0002  # NOSIZE | NOMOVE
+                user32.SetWindowPos(int(previous), -2, 0, 0, 0, 0, flags)  # HWND_NOTOPMOST
+        except Exception:
+            pass
+        self.automation_topmost_window_handle = 0
+
+    def _is_window_frontmost(self, hwnd):
+        hwnd = self._root_hwnd(hwnd)
+        if not hwnd or sys.platform != "win32":
+            return False
+        try:
+            user32 = ctypes.windll.user32
+            current = user32.GetTopWindow(0)
+            seen = set()
+            seen_roots = set()
+            while current:
+                current_int = self._hwnd_to_int(current)
+                if not current_int or current_int in seen:
+                    break
+                seen.add(current_int)
+                root = self._root_hwnd(current_int)
+                if root and root not in seen_roots:
+                    seen_roots.add(root)
+                    if root == int(hwnd):
+                        return True
+                    if self._is_automation_target_window(root):
+                        return False
+                current = user32.GetWindow(current_int, 2)  # GW_HWNDNEXT
+        except Exception:
+            pass
+        return False
 
     def _app_hint_score(self, info, app_name="", app_path=""):
         score = 0
@@ -1059,6 +1216,7 @@ class DesktopAgent:
         return elements
 
     def _click(self, payload, clicks=1, button="left"):
+        self._prepare_mouse_action_window(payload)
         x, y = self._resolve_point(payload)
         pyautogui.moveTo(x, y, duration=0.12)
         pyautogui.click(x=x, y=y, clicks=clicks, interval=0.05, button=button)
@@ -1069,17 +1227,45 @@ class DesktopAgent:
         try:
             user32 = ctypes.windll.user32
             user32.GetForegroundWindow.restype = wintypes.HWND
+            user32.GetAncestor.argtypes = [wintypes.HWND, ctypes.c_uint]
             user32.GetAncestor.restype = wintypes.HWND
+            user32.GetTopWindow.argtypes = [wintypes.HWND]
+            user32.GetTopWindow.restype = wintypes.HWND
+            user32.GetWindow.argtypes = [wintypes.HWND, ctypes.c_uint]
+            user32.GetWindow.restype = wintypes.HWND
             user32.GetWindowTextLengthW.argtypes = [wintypes.HWND]
             user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
             user32.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
             user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+            user32.GetWindowThreadProcessId.restype = wintypes.DWORD
             user32.IsWindow.argtypes = [wintypes.HWND]
             user32.IsWindowVisible.argtypes = [wintypes.HWND]
             user32.IsIconic.argtypes = [wintypes.HWND]
             user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+            user32.BringWindowToTop.argtypes = [wintypes.HWND]
+            user32.BringWindowToTop.restype = wintypes.BOOL
             user32.SetForegroundWindow.argtypes = [wintypes.HWND]
+            user32.SetForegroundWindow.restype = wintypes.BOOL
+            user32.SetActiveWindow.argtypes = [wintypes.HWND]
+            user32.SetActiveWindow.restype = wintypes.HWND
+            user32.SetFocus.argtypes = [wintypes.HWND]
+            user32.SetFocus.restype = wintypes.HWND
+            user32.AttachThreadInput.argtypes = [wintypes.DWORD, wintypes.DWORD, wintypes.BOOL]
+            user32.AttachThreadInput.restype = wintypes.BOOL
+            user32.AllowSetForegroundWindow.argtypes = [wintypes.DWORD]
+            user32.AllowSetForegroundWindow.restype = wintypes.BOOL
+            user32.SetWindowPos.argtypes = [
+                wintypes.HWND,
+                wintypes.HWND,
+                ctypes.c_int,
+                ctypes.c_int,
+                ctypes.c_int,
+                ctypes.c_int,
+                ctypes.c_uint,
+            ]
+            user32.SetWindowPos.restype = wintypes.BOOL
             user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.c_void_p]
+            ctypes.windll.kernel32.GetCurrentThreadId.restype = wintypes.DWORD
         except Exception:
             pass
 
@@ -1095,6 +1281,7 @@ class DesktopAgent:
                 pass
 
     def _drag(self, payload):
+        self._prepare_mouse_action_window(payload)
         points = self._resolve_drag_path(payload)
         duration = int(payload.get("durationMs") or 350) / 1000.0
         duration = max(0.1, min(duration, 5.0))
@@ -1118,6 +1305,7 @@ class DesktopAgent:
                 pyautogui.mouseUp(button=button)
 
     def _scroll(self, payload):
+        self._prepare_mouse_action_window(payload)
         if self._has_start_target(payload):
             x, y = self._resolve_point(payload)
             pyautogui.moveTo(x, y, duration=0.08)
@@ -1161,12 +1349,10 @@ class DesktopAgent:
         if not text:
             return
 
-        should_paste = (
-            pyperclip is not None
-            and (len(text) > 40 or "\n" in text or any(ord(ch) > 126 for ch in text))
-        )
-
-        if should_paste:
+        # Always prefer clipboard paste — pyautogui.write() sends individual
+        # key events which deselect highlighted text instead of replacing it.
+        # Clipboard paste (Ctrl+V) properly replaces any selected text.
+        if pyperclip is not None:
             previous = None
             try:
                 previous = pyperclip.paste()
@@ -1181,7 +1367,65 @@ class DesktopAgent:
                         pass
             return
 
+        # Fallback when pyperclip is unavailable — note: this does NOT
+        # respect text selection (selected text will be deselected, not replaced).
         pyautogui.write(text, interval=0.01)
+
+    def _prepare_mouse_action_window(self, payload, end=False):
+        if sys.platform != "win32":
+            return
+        hwnd = self._action_window_handle(payload, end=end)
+        if not hwnd:
+            return
+        activated = self._activate_window(hwnd, restore_if_minimized=True)
+        if activated:
+            time.sleep(0.08)
+        else:
+            eprint(f"mouse_action: could not raise target hwnd={hwnd}")
+
+    def _action_window_handle(self, payload, end=False):
+        stable_key = "endTargetStableId" if end else "targetStableId"
+        index_key = "endTargetIndex" if end else "targetIndex"
+
+        stable_id = payload.get(stable_key)
+        if stable_id:
+            control = self.node_cache.get(stable_id)
+            hwnd = self._control_top_level_hwnd(control) if control else 0
+            if hwnd:
+                return hwnd
+
+        target_index = payload.get(index_key)
+        if target_index is not None:
+            control = self.node_cache.get(f"node_{int(target_index)}")
+            hwnd = self._control_top_level_hwnd(control) if control else 0
+            if hwnd:
+                return hwnd
+
+        hwnd = self._coerce_hwnd(payload.get("windowHandle") or payload.get("hwnd"))
+        if hwnd:
+            return self._root_hwnd(hwnd)
+
+        if self.last_target_window_handle:
+            return self._root_hwnd(self.last_target_window_handle)
+        return 0
+
+    def _control_top_level_hwnd(self, control):
+        if not control or sys.platform != "win32":
+            return 0
+        candidates = []
+        try:
+            top = control.GetTopLevelControl()
+            if top:
+                candidates.append(top)
+        except Exception:
+            pass
+        candidates.append(control)
+
+        for candidate in candidates:
+            hwnd = self._coerce_hwnd(self._safe_attr(candidate, "NativeWindowHandle", 0))
+            if hwnd:
+                return self._root_hwnd(hwnd)
+        return 0
 
     def _resolve_point(self, payload, end=False):
         stable_key = "endTargetStableId" if end else "targetStableId"

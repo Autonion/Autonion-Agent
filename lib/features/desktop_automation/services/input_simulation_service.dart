@@ -35,6 +35,7 @@ class InputSimulationService {
       'durationMs': action.durationMs,
       'button': action.button,
       'coordinateSpace': action.coordinateSpace,
+      'replace': action.replace,
     });
 
     if (result is Map<String, dynamic>) {

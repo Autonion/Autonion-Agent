@@ -389,6 +389,9 @@ class DesktopAgentService {
                 "button": {
                   "type": ["string", "null"],
                 },
+                "replace": {
+                  "type": ["boolean", "null"],
+                },
               },
               "required": [
                 "type",
@@ -407,6 +410,7 @@ class DesktopAgentService {
                 "keys",
                 "durationMs",
                 "button",
+                "replace",
               ],
             },
           },

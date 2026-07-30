@@ -893,7 +893,7 @@ class FlowExecutionService extends ChangeNotifier {
     final rawText = node.text ?? '';
     final resolvedText = _substituteContextVariables(rawText);
 
-    await _input.execute(DesktopAction(type: 'type', text: resolvedText));
+    await _input.execute(DesktopAction(type: 'type', text: resolvedText, replace: true));
 
     // Post-action: send a key press after typing (e.g. Enter to submit)
     final postAction = node.postAction;

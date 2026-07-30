@@ -62,6 +62,7 @@ class TaskDecomposerService {
   static const _nonBoundaryPredecessors = {
     'to', 'and', 'or', 'the', 'a', 'an', 'then',
     'it', 'this', 'that', 'my', 'your', 'its',
+    'via', 'using', 'with', 'from', 'into', 'in',
   };
 
   /// Words that indicate the following clause is a relative/subordinate clause
