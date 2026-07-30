@@ -104,7 +104,13 @@ class ConnectionProvider extends ChangeNotifier {
       // 4. Start clipboard polling
       _clipboard.startPolling();
 
-      // 5. Start trigger rule listening
+      // 5. Broadcast clipboard sync state to Android whenever it changes locally
+      _clipboard.addListener(_broadcastClipboardSyncState);
+
+      // 6. Push current clipboard state when a new client connects
+      _ws.addListener(_broadcastClipboardSyncState);
+
+      // 7. Start trigger rule listening
       _triggers.startListening();
 
       _isRunning = true;
@@ -117,6 +123,10 @@ class ConnectionProvider extends ChangeNotifier {
   Future<void> stopServices() async {
     if (!_isRunning) return;
     _log.info('APP', 'Stopping services...');
+
+    // Remove listeners before tearing down
+    _clipboard.removeListener(_broadcastClipboardSyncState);
+    _ws.removeListener(_broadcastClipboardSyncState);
 
     try {
       _clipboard.stopPolling();
@@ -148,6 +158,17 @@ class ConnectionProvider extends ChangeNotifier {
     _port = null;
     notifyListeners();
     _log.info('APP', 'Services stopped');
+  }
+
+  /// One-shot broadcast of current clipboard sync state to all connected clients.
+  /// Called when the local toggle changes or when a new client connects.
+  void _broadcastClipboardSyncState() {
+    if (!_isRunning || _ws.connectedClients == 0) return;
+    _ws.broadcastEvent({
+      'type': 'clipboard.sync_state_changed',
+      'payload': {'enabled': _clipboard.enabled},
+      'timestamp': DateTime.now().toIso8601String(),
+    });
   }
 
   /// Route incoming WebSocket commands.
@@ -212,6 +233,11 @@ class ConnectionProvider extends ChangeNotifier {
 
       if (type == 'open_url') {
         action = 'open_url';
+      } else if (type == 'clipboard.set_sync_enabled') {
+        final enabled = payload?['enabled'] as bool? ?? true;
+        _clipboard.setEnabled(enabled);
+        _log.info('CMD', 'Clipboard sync ${enabled ? "enabled" : "disabled"} by Android');
+        return;
       } else if (type == 'clipboard.text_copied') {
         await _handleClipboardSync(payload);
         return;
@@ -996,6 +1022,11 @@ RULES:
 
   /// Handle image clipboard sync from Android → Desktop.
   Future<void> _handleImageClipboardSync(Map<String, dynamic>? payload) async {
+    // Respect the user's clipboard sync toggle
+    if (!_clipboard.enabled) {
+      _log.debug('Clipboard', 'Ignored incoming image (sync disabled)');
+      return;
+    }
     final base64Data = payload?['image_base64'] as String?;
     final mimeType = payload?['mime_type'] as String? ?? 'image/png';
     if (base64Data == null || base64Data.isEmpty) return;

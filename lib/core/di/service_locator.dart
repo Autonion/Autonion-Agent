@@ -43,9 +43,9 @@ Future<void> setupServiceLocator() async {
   getIt.registerLazySingleton<DiscoveryService>(
     () => DiscoveryService(getIt<DeviceInfoService>()),
   );
-  getIt.registerLazySingleton<ClipboardSyncService>(
-    () => ClipboardSyncService(),
-  );
+  final clipboardSync = ClipboardSyncService();
+  await clipboardSync.init();
+  getIt.registerSingleton<ClipboardSyncService>(clipboardSync);
   getIt.registerLazySingleton<TriggerRuleService>(() => TriggerRuleService());
 
   // ── Browser Automation (desktop-only instances, but registered always for DI) ─
