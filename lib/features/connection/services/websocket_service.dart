@@ -188,20 +188,26 @@ class WebSocketService extends ChangeNotifier {
   }
 
   Future<void> stopServer() async {
-    for (final client in _clients) {
-      try {
-        client.sink.close();
-      } catch (_) {}
-    }
-    _clients.clear();
-    _extensionConnected = false;
-    _extensionClient = null;
+    // 1. Stop accepting new connections FIRST
     try {
       await _server?.close(force: true);
     } catch (e) {
       _log('Error closing server: $e');
     }
     _server = null;
+
+    // 2. Close existing clients (copy list to avoid concurrent modification
+    //    since sink.close() triggers onDone which removes from _clients)
+    final snapshot = List.of(_clients);
+    _clients.clear();
+    for (final client in snapshot) {
+      try {
+        client.sink.close();
+      } catch (_) {}
+    }
+
+    _extensionConnected = false;
+    _extensionClient = null;
     _log('Server stopped');
     notifyListeners();
   }
