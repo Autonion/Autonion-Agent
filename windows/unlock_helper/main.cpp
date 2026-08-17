@@ -2231,6 +2231,13 @@ bool RunNetsh(const std::wstring& args) {
   return exit_code == 0;
 }
 
+void RemoveFirewallRules() {
+  RunNetsh(L"delete rule name=\"Autonion Unlock Helper (WebSocket)\"");
+  RunNetsh(L"delete rule name=\"Autonion Unlock Helper (mDNS In)\"");
+  RunNetsh(L"delete rule name=\"Autonion Unlock Helper (mDNS Out)\"");
+  RunNetsh(L"delete rule name=\"Autonion Unlock Helper (Service)\"");
+}
+
 // Creates Windows Firewall rules so the pre-login service can accept inbound
 // mDNS queries (UDP 5353) and WebSocket connections (TCP 4545).
 // Uses profile=any so rules apply regardless of NLA network classification,
@@ -2240,10 +2247,7 @@ void ConfigureFirewallRules() {
   std::wstring exe_path = GetModulePath();
 
   // Delete any existing rules first (idempotent reinstall)
-  RunNetsh(L"delete rule name=\"Autonion Unlock Helper (WebSocket)\"");
-  RunNetsh(L"delete rule name=\"Autonion Unlock Helper (mDNS In)\"");
-  RunNetsh(L"delete rule name=\"Autonion Unlock Helper (mDNS Out)\"");
-  RunNetsh(L"delete rule name=\"Autonion Unlock Helper (Service)\"");
+  RemoveFirewallRules();
 
   // Port-based inbound TCP 4545 (WebSocket) - profile=any
   RunNetsh(L"add rule name=\"Autonion Unlock Helper (WebSocket)\" "
@@ -2337,6 +2341,9 @@ int InstallService() {
 }
 
 int UninstallService() {
+  // Remove firewall rules cleanly on service uninstallation
+  RemoveFirewallRules();
+
   SC_HANDLE manager = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT);
   if (!manager) {
     std::fwprintf(stderr, L"OpenSCManager failed: %lu\n", GetLastError());

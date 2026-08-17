@@ -48,3 +48,35 @@ Filename: "netsh"; Parameters: "advfirewall firewall delete rule name=""Autonion
 Filename: "netsh"; Parameters: "advfirewall firewall delete rule name=""Autonion Unlock Helper (mDNS Out)"""; Flags: runhidden waituntilterminated
 Filename: "netsh"; Parameters: "advfirewall firewall delete rule name=""Autonion Unlock Helper (Service)"""; Flags: runhidden waituntilterminated
 
+[Code]
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  ProgramDataDir: String;
+  LocalDataDir: String;
+  RoamingDataDir: String;
+begin
+  if CurUninstallStep = usPostUninstall then
+  begin
+    ProgramDataDir := ExpandConstant('{commonappdata}\Autonion Agent');
+    LocalDataDir := ExpandConstant('{localappdata}\Autonion Agent');
+    RoamingDataDir := ExpandConstant('{userappdata}\Autonion Agent');
+
+    if DirExists(ProgramDataDir) or DirExists(LocalDataDir) or DirExists(RoamingDataDir) then
+    begin
+      if MsgBox('Do you want to keep your saved flows, unlock credentials, and application configuration for future reinstallations?' + #13#10#13#10 +
+                '• Click "Yes" to KEEP your settings and credentials.' + #13#10 +
+                '• Click "No" to REMOVE all configuration and saved data completely.',
+                mbConfirmation, MB_YESNO or MB_DEFBUTTON1) = IDNO then
+      begin
+        if DirExists(ProgramDataDir) then
+          DelTree(ProgramDataDir, True, True, True);
+        if DirExists(LocalDataDir) then
+          DelTree(LocalDataDir, True, True, True);
+        if DirExists(RoamingDataDir) then
+          DelTree(RoamingDataDir, True, True, True);
+      end;
+    end;
+  end;
+end;
+
+
