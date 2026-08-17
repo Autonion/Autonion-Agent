@@ -9,6 +9,7 @@ import 'features/desktop_automation/services/flow_execution_service.dart';
 import 'features/desktop_automation/services/flow_storage_service.dart';
 import 'features/desktop_automation/services/python_bridge_service.dart';
 import 'features/desktop_automation/services/secure_credential_service.dart';
+import 'features/desktop_automation/services/unlock_service_pipe.dart';
 import 'ui/theme/app_theme.dart';
 import 'ui/app_shell.dart';
 import 'ui/widgets/flow_run_overlay.dart';
@@ -29,6 +30,7 @@ class AutonionApp extends StatelessWidget {
           bridge: getIt<PythonBridgeService>(),
           log: getIt<LoggingService>(),
           credentials: getIt<SecureCredentialService>(),
+          pipe: getIt<UnlockServicePipe>(),
         ),
         child: MaterialApp(
           title: 'Autonion Agent',

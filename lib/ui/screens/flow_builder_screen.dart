@@ -1747,9 +1747,7 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
         // Password input
         _UnlockPasswordField(
           hasPassword: node.hasUnlockPassword,
-          onSave: (password) async {
-            await provider.saveUnlockPassword(node.id, password);
-          },
+          onSave: (password) => provider.saveUnlockPassword(node.id, password),
           onClear: () async {
             await provider.deleteUnlockPassword(node.id);
           },
@@ -4496,7 +4494,7 @@ class _EdgeCutButtonState extends State<_EdgeCutButton> {
 /// The password is never displayed after saving — only the indicator changes.
 class _UnlockPasswordField extends StatefulWidget {
   final bool hasPassword;
-  final Future<void> Function(String password) onSave;
+  final Future<bool> Function(String password) onSave;
   final Future<void> Function() onClear;
 
   const _UnlockPasswordField({
@@ -4586,12 +4584,16 @@ class _UnlockPasswordFieldState extends State<_UnlockPasswordField> {
                     : () async {
                         setState(() => _saving = true);
                         try {
-                          await widget.onSave(_controller.text);
+                          final ok = await widget.onSave(_controller.text);
                           _controller.clear();
                           if (mounted) {
                             ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(
-                                content: Text('Password saved securely'),
+                              SnackBar(
+                                content: Text(ok
+                                    ? 'Password saved securely and provisioned for pre-login unlock'
+                                    : 'Password saved locally, but pre-login unlock sync failed. Ensure the Autonion Unlock service is running.'),
+                                backgroundColor:
+                                    ok ? null : AppColors.warning,
                               ),
                             );
                           }

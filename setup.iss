@@ -26,8 +26,25 @@ Name: "{autodesktop}\Autonion Agent"; Filename: "{app}\autonion_cross_device.exe
 Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription: "Additional icons:"
 
 [Run]
-Filename: "{cmd}"; Parameters: "/C schtasks /Create /TN ""Autonion Unlock Helper"" /SC ONDEMAND /RU SYSTEM /RL HIGHEST /TR """"{app}\autonion_unlock_helper.exe"" --request ""{commonappdata}\Autonion Agent\Unlock\request.json"" --status ""{commonappdata}\Autonion Agent\Unlock\status.json"""" /F"; Flags: runhidden
+Filename: "{cmd}"; Parameters: "/C schtasks /Delete /TN ""Autonion Unlock Helper"" /F"; Flags: runhidden waituntilterminated; StatusMsg: "Removing legacy unlock scheduled task..."
+Filename: "{app}\autonion_unlock_helper.exe"; Parameters: "--install-service"; Flags: runhidden waituntilterminated; StatusMsg: "Installing unlock helper service..."
+; Firewall rules for the native pre-login service (profile=any is critical for pre-login network state)
+Filename: "netsh"; Parameters: "advfirewall firewall delete rule name=""Autonion Unlock Helper (WebSocket)"""; Flags: runhidden waituntilterminated; StatusMsg: "Configuring firewall..."
+Filename: "netsh"; Parameters: "advfirewall firewall delete rule name=""Autonion Unlock Helper (mDNS In)"""; Flags: runhidden waituntilterminated; StatusMsg: "Configuring firewall..."
+Filename: "netsh"; Parameters: "advfirewall firewall delete rule name=""Autonion Unlock Helper (mDNS Out)"""; Flags: runhidden waituntilterminated; StatusMsg: "Configuring firewall..."
+Filename: "netsh"; Parameters: "advfirewall firewall delete rule name=""Autonion Unlock Helper (Service)"""; Flags: runhidden waituntilterminated; StatusMsg: "Configuring firewall..."
+Filename: "netsh"; Parameters: "advfirewall firewall add rule name=""Autonion Unlock Helper (WebSocket)"" dir=in action=allow protocol=TCP localport=4545 profile=any description=""Allows Android companion to connect to Autonion pre-login WebSocket"""; Flags: runhidden waituntilterminated; StatusMsg: "Configuring firewall..."
+Filename: "netsh"; Parameters: "advfirewall firewall add rule name=""Autonion Unlock Helper (mDNS In)"" dir=in action=allow protocol=UDP localport=5353 profile=any description=""Allows mDNS queries to reach Autonion pre-login service"""; Flags: runhidden waituntilterminated; StatusMsg: "Configuring firewall..."
+Filename: "netsh"; Parameters: "advfirewall firewall add rule name=""Autonion Unlock Helper (mDNS Out)"" dir=out action=allow protocol=UDP remoteport=5353 profile=any description=""Allows Autonion pre-login service to send mDNS announcements"""; Flags: runhidden waituntilterminated; StatusMsg: "Configuring firewall..."
+Filename: "netsh"; Parameters: "advfirewall firewall add rule name=""Autonion Unlock Helper (Service)"" dir=in action=allow profile=any program=""{app}\autonion_unlock_helper.exe"" description=""Allows all inbound connections to Autonion unlock helper service"""; Flags: runhidden waituntilterminated; StatusMsg: "Configuring firewall..."
 Filename: "{app}\autonion_cross_device.exe"; Description: "Launch Autonion Agent"; Flags: nowait postinstall skipifsilent
 
 [UninstallRun]
-Filename: "{cmd}"; Parameters: "/C schtasks /Delete /TN ""Autonion Unlock Helper"" /F"; Flags: runhidden
+Filename: "{app}\autonion_unlock_helper.exe"; Parameters: "--uninstall-service"; Flags: runhidden waituntilterminated
+Filename: "{cmd}"; Parameters: "/C schtasks /Delete /TN ""Autonion Unlock Helper"" /F"; Flags: runhidden waituntilterminated
+; Clean up firewall rules on uninstall
+Filename: "netsh"; Parameters: "advfirewall firewall delete rule name=""Autonion Unlock Helper (WebSocket)"""; Flags: runhidden waituntilterminated
+Filename: "netsh"; Parameters: "advfirewall firewall delete rule name=""Autonion Unlock Helper (mDNS In)"""; Flags: runhidden waituntilterminated
+Filename: "netsh"; Parameters: "advfirewall firewall delete rule name=""Autonion Unlock Helper (mDNS Out)"""; Flags: runhidden waituntilterminated
+Filename: "netsh"; Parameters: "advfirewall firewall delete rule name=""Autonion Unlock Helper (Service)"""; Flags: runhidden waituntilterminated
+

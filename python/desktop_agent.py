@@ -106,6 +106,12 @@ class DesktopAgent:
                     self.handle_select_click_point(command)
                 elif action == "unlock_desktop":
                     self.handle_unlock_desktop(command)
+                elif action == "provision_prelogin_identity":
+                    self.handle_provision_prelogin_identity(command)
+                elif action == "provision_prelogin_unlock":
+                    self.handle_provision_prelogin_unlock(command)
+                elif action == "delete_prelogin_unlock":
+                    self.handle_delete_prelogin_unlock(command)
                 elif action == "enumerate_children":
                     self.handle_enumerate_children(command)
                 elif action == "preview_children":
@@ -3135,8 +3141,348 @@ class DesktopAgent:
             eprint(f"select_ui_element error: {exc}")
             self.send_response(cmd_id, success=False, error=str(exc))
 
+    def _find_unlock_helper_exe(self):
+        """Locate autonion_unlock_helper.exe relative to this script.
+
+        Layout when installed:  {app}/python/desktop_agent.py
+                                {app}/autonion_unlock_helper.exe
+        Layout in dev build:    python/desktop_agent.py
+                                build/windows/x64/runner/Release/autonion_unlock_helper.exe
+        """
+        script_dir = Path(__file__).resolve().parent  # …/python/
+        app_dir = script_dir.parent                   # …/{app} or project root
+
+        # Installed layout: helper is in the parent of the python/ folder
+        candidate = app_dir / "autonion_unlock_helper.exe"
+        if candidate.is_file():
+            return candidate
+
+        # Dev layout: helper is in build/windows/x64/runner/Release/
+        candidate = app_dir / "build" / "windows" / "x64" / "runner" / "Release" / "autonion_unlock_helper.exe"
+        if candidate.is_file():
+            return candidate
+
+        return None
+
+    def _ensure_unlock_task_registered(self):
+        """Register the 'Autonion Unlock Helper' scheduled task if missing.
+
+        Returns True if the task is now registered, False otherwise.
+        Requires admin privileges to create the task.
+        """
+        if os.name != "nt":
+            return False
+
+        # Check if already registered
+        check = subprocess.run(
+            ["schtasks", "/Query", "/TN", "Autonion Unlock Helper"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if check.returncode == 0:
+            return True  # Already exists
+
+        helper_exe = self._find_unlock_helper_exe()
+        if helper_exe is None:
+            eprint("  [unlock-setup] autonion_unlock_helper.exe not found")
+            return False
+
+        program_data = os.environ.get("ProgramData", r"C:\ProgramData")
+        request_path = Path(program_data) / "Autonion Agent" / "Unlock" / "request.json"
+        status_path = Path(program_data) / "Autonion Agent" / "Unlock" / "status.json"
+
+        # Ensure the Unlock directory exists with proper permissions
+        unlock_dir = request_path.parent
+        try:
+            unlock_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as exc:
+            eprint(f"  [unlock-setup] Could not create unlock dir: {exc}")
+
+        # Use XML task import to avoid cmd.exe / schtasks quoting
+        # nightmares with paths that contain spaces (e.g. "Program Files").
+        import tempfile
+        task_xml = (
+            '<?xml version="1.0" encoding="UTF-16"?>\n'
+            '<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">\n'
+            '  <RegistrationInfo>\n'
+            '    <Description>Autonion Unlock Helper</Description>\n'
+            '  </RegistrationInfo>\n'
+            '  <Principals>\n'
+            '    <Principal id="Author">\n'
+            '      <UserId>S-1-5-18</UserId>\n'
+            '      <RunLevel>HighestAvailable</RunLevel>\n'
+            '    </Principal>\n'
+            '  </Principals>\n'
+            '  <Settings>\n'
+            '    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>\n'
+            '    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>\n'
+            '    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>\n'
+            '    <AllowHardTerminate>true</AllowHardTerminate>\n'
+            '    <AllowStartOnDemand>true</AllowStartOnDemand>\n'
+            '    <Enabled>true</Enabled>\n'
+            '  </Settings>\n'
+            '  <Actions Context="Author">\n'
+            '    <Exec>\n'
+            f'      <Command>{helper_exe}</Command>\n'
+            f'      <Arguments>--request "{request_path}" --status "{status_path}"</Arguments>\n'
+            '    </Exec>\n'
+            '  </Actions>\n'
+            '</Task>\n'
+        )
+
+        xml_fd, xml_path = tempfile.mkstemp(suffix=".xml", prefix="autonion_task_")
+        try:
+            with os.fdopen(xml_fd, "w", encoding="utf-16") as f:
+                f.write(task_xml)
+            eprint(f"  [unlock-setup] Importing task XML from {xml_path}")
+            create_result = subprocess.run(
+                [
+                    "schtasks", "/Create",
+                    "/TN", "Autonion Unlock Helper",
+                    "/XML", xml_path,
+                    "/F",
+                ],
+                capture_output=True, text=True, timeout=10,
+            )
+        finally:
+            try:
+                os.unlink(xml_path)
+            except Exception:
+                pass
+
+        if create_result.returncode == 0:
+            eprint("  [unlock-setup] Scheduled task registered successfully")
+            return True
+
+        eprint(
+            f"  [unlock-setup] Failed to register task: "
+            f"{(create_result.stderr or create_result.stdout or '').strip()}"
+        )
+        return False
+
+    def _ensure_unlock_service_installed(self):
+        """Ensure the LocalSystem unlock service is installed.
+
+        Non-admin runs can only detect an existing service. Elevated runs can
+        install it by asking the helper executable to register itself with the
+        Windows Service Control Manager.
+        """
+        if os.name != "nt":
+            return False
+
+        service_name = "AutonionUnlockHelper"
+        query = subprocess.run(
+            ["sc.exe", "query", service_name],
+            capture_output=True, text=True, timeout=10,
+        )
+        if query.returncode == 0:
+            output = f"{query.stdout}\n{query.stderr}"
+            if "RUNNING" not in output.upper():
+                start = subprocess.run(
+                    ["sc.exe", "start", service_name],
+                    capture_output=True, text=True, timeout=10,
+                )
+                start_output = (start.stderr or start.stdout or "").strip()
+                if start.returncode != 0 and "already" not in start_output.lower():
+                    eprint(f"  [unlock-service] Service exists but could not be started: {start_output}")
+                    return False
+            return True
+
+        if not ctypes.windll.shell32.IsUserAnAdmin():
+            return False
+
+        helper_exe = self._find_unlock_helper_exe()
+        if helper_exe is None:
+            eprint("  [unlock-service] autonion_unlock_helper.exe not found")
+            return False
+
+        result = subprocess.run(
+            [str(helper_exe), "--install-service"],
+            capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode == 0:
+            eprint("  [unlock-service] Service installed and started")
+            return True
+
+        output = (result.stderr or result.stdout or "").strip()
+        eprint(f"  [unlock-service] Failed to install service: {output}")
+        return False
+
+    def _send_unlock_service_request(self, payload):
+        """Send a JSON unlock request to the LocalSystem helper service."""
+        pipe_name = r"\\.\pipe\AutonionUnlockHelper"
+        kernel32 = ctypes.windll.kernel32
+        kernel32.WaitNamedPipeW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD]
+        kernel32.WaitNamedPipeW.restype = wintypes.BOOL
+
+        if not kernel32.WaitNamedPipeW(pipe_name, 5000):
+            return None
+
+        request_bytes = json.dumps(payload).encode("utf-8")
+        try:
+            with open(pipe_name, "r+b", buffering=0) as pipe:
+                pipe.write(request_bytes)
+                pipe.flush()
+                chunks = []
+                while True:
+                    chunk = pipe.read(65536)
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    if len(chunk) < 65536:
+                        break
+        except FileNotFoundError:
+            return None
+        except OSError as exc:
+            if getattr(exc, "winerror", None) in (2, 3, 231):
+                return None
+            raise RuntimeError(f"Unlock service pipe failed: {exc}")
+
+        if not chunks:
+            raise RuntimeError("Unlock service returned no response")
+
+        try:
+            return json.loads(b"".join(chunks).decode("utf-8"))
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"Unlock service returned invalid JSON: {exc}")
+
+    def _try_unlock_via_service(self, password):
+        """Use the installed LocalSystem Windows service helper when available."""
+        if os.name != "nt":
+            return None
+
+        if not self._ensure_unlock_service_installed():
+            return None
+
+        request_id = uuid.uuid4().hex
+        payload = {
+            "requestId": request_id,
+            "passwordB64": base64.b64encode(
+                password.encode("utf-8")
+            ).decode("ascii"),
+            "createdAt": time.time(),
+        }
+
+        response = self._send_unlock_service_request(payload)
+        if response is None:
+            return None
+
+        data = response.get("data") if isinstance(response, dict) else None
+        if response.get("success") is True:
+            if isinstance(data, dict):
+                log = data.get("log") or ""
+                for line in log.splitlines():
+                    if line:
+                        eprint(f"  [unlock-service] {line}")
+                return data
+            return {
+                "status": "unlock_input_sent",
+                "via": "windows_service_helper",
+            }
+
+        error = response.get("error") or "Unlock service failed"
+        if isinstance(data, dict):
+            log = data.get("log") or ""
+            detail = "; ".join([line for line in log.splitlines() if line][-8:])
+            if detail:
+                error = f"{error}. Helper log: {detail}"
+        raise RuntimeError(error)
+
+    def _send_unlock_service_control(self, payload):
+        if os.name != "nt":
+            raise RuntimeError("Pre-login unlock service is only available on Windows")
+        if not self._ensure_unlock_service_installed():
+            raise RuntimeError("Autonion Unlock Helper service is not installed or running")
+
+        response = self._send_unlock_service_request(payload)
+        if response is None:
+            raise RuntimeError("Autonion Unlock Helper service pipe is not available")
+        if response.get("success") is True:
+            return response.get("data") or {}
+        raise RuntimeError(response.get("error") or "Unlock service request failed")
+
+    def handle_provision_prelogin_identity(self, command):
+        cmd_id = command.get("id")
+        payload = command.get("payload", {})
+        device_id = (payload.get("deviceId") or "").strip()
+        device_name = (payload.get("deviceName") or "").strip()
+        if not device_id or not device_name:
+            self.send_response(
+                cmd_id,
+                success=False,
+                error="Pre-login identity provisioning requires deviceId and deviceName",
+            )
+            return
+
+        try:
+            result = self._send_unlock_service_control({
+                "action": "storePreloginIdentity",
+                "requestId": uuid.uuid4().hex,
+                "deviceId": device_id,
+                "deviceName": device_name,
+                "createdAt": time.time(),
+            })
+            self.send_response(cmd_id, success=True, data=result)
+        except Exception as exc:
+            self.send_response(cmd_id, success=False, error=str(exc))
+
+    def handle_provision_prelogin_unlock(self, command):
+        cmd_id = command.get("id")
+        payload = command.get("payload", {})
+        flow_id = (payload.get("flowId") or "").strip()
+        node_id = (payload.get("nodeId") or "").strip()
+        flow_name = (payload.get("flowName") or "").strip()
+        password = payload.get("password") or ""
+        if not flow_id or not node_id or not password:
+            self.send_response(
+                cmd_id,
+                success=False,
+                error="Pre-login unlock provisioning requires flowId, nodeId, and password",
+            )
+            return
+
+        try:
+            result = self._send_unlock_service_control({
+                "action": "storePreloginCredential",
+                "requestId": uuid.uuid4().hex,
+                "flowId": flow_id,
+                "nodeId": node_id,
+                "flowName": flow_name,
+                "passwordB64": base64.b64encode(
+                    password.encode("utf-8")
+                ).decode("ascii"),
+                "createdAt": time.time(),
+            })
+            self.send_response(cmd_id, success=True, data=result)
+        except Exception as exc:
+            self.send_response(cmd_id, success=False, error=str(exc))
+        finally:
+            password = None  # noqa: F841
+
+    def handle_delete_prelogin_unlock(self, command):
+        cmd_id = command.get("id")
+        payload = command.get("payload", {})
+        flow_id = (payload.get("flowId") or "").strip()
+        if not flow_id:
+            self.send_response(
+                cmd_id,
+                success=False,
+                error="Pre-login unlock delete requires flowId",
+            )
+            return
+
+        try:
+            result = self._send_unlock_service_control({
+                "action": "deletePreloginCredential",
+                "requestId": uuid.uuid4().hex,
+                "flowId": flow_id,
+                "createdAt": time.time(),
+            })
+            self.send_response(cmd_id, success=True, data=result)
+        except Exception as exc:
+            self.send_response(cmd_id, success=False, error=str(exc))
+
     def _try_unlock_via_installed_helper(self, password):
-        """Use the installed SYSTEM scheduled task helper when available."""
+        """Use the legacy SYSTEM scheduled task helper when available."""
         if os.name != "nt":
             return None
 
@@ -3147,6 +3493,7 @@ class DesktopAgent:
 
         if not unlock_dir.exists():
             return None
+
 
         request_id = uuid.uuid4().hex
         payload = {
@@ -3175,13 +3522,22 @@ class DesktopAgent:
             timeout=10,
         )
         if result.returncode != 0:
+            output = (result.stderr or result.stdout or "").strip()
+            task_missing = (
+                "cannot find" in output.lower()
+                or "does not exist" in output.lower()
+            )
+            if task_missing:
+                try:
+                    request_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
+                return None
+
             try:
                 request_path.unlink(missing_ok=True)
             except Exception:
                 pass
-            output = (result.stderr or result.stdout or "").strip()
-            if "cannot find" in output.lower() or "does not exist" in output.lower():
-                return None
             raise RuntimeError(output or "Failed to start unlock helper task")
 
         deadline = time.time() + 25
@@ -3232,21 +3588,35 @@ class DesktopAgent:
             self.send_response(cmd_id, success=False, error="No password provided")
             return
 
-        helper_error = None
+        helper_errors = []
+        try:
+            helper_result = self._try_unlock_via_service(password)
+            if helper_result is not None:
+                self.send_response(cmd_id, success=True, data=helper_result)
+                return
+        except Exception as exc:
+            helper_errors.append(f"service: {exc}")
+            eprint(f"Unlock service helper failed: {exc}")
+
         try:
             helper_result = self._try_unlock_via_installed_helper(password)
             if helper_result is not None:
                 self.send_response(cmd_id, success=True, data=helper_result)
                 return
         except Exception as exc:
-            helper_error = str(exc)
-            eprint(f"Installed unlock helper failed: {helper_error}")
+            helper_errors.append(f"legacy task: {exc}")
+            eprint(f"Legacy unlock helper failed: {exc}")
+
+        helper_error = "; ".join(helper_errors)
 
         if os.name == "nt" and not ctypes.windll.shell32.IsUserAnAdmin():
             message = "Unlock support is not installed or failed to start."
             if helper_error:
                 message += f" Helper error: {helper_error}"
-            message += " Reinstall Autonion Agent as administrator to enable Unlock support without UAC at startup."
+            message += (
+                " Install or repair Autonion Agent as administrator so the"
+                " Autonion Unlock Helper Windows service can be installed."
+            )
             self.send_response(cmd_id, success=False, error=message)
             return
 
@@ -3760,6 +4130,13 @@ class DesktopAgent:
                 if detail:
                     raise RuntimeError(f"{helper_error}. Helper log: {detail}")
                 raise RuntimeError(helper_error)
+
+            # While elevated, install the LocalSystem unlock service so
+            # future non-admin runs can call the helper without UAC.
+            try:
+                self._ensure_unlock_service_installed()
+            except Exception as reg_exc:
+                eprint(f"  [unlock-service] Post-unlock service setup failed: {reg_exc}")
 
             self.send_response(cmd_id, success=True, data={
                 "status": "unlock_input_sent",

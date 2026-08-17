@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
@@ -14,6 +15,7 @@ import '../services/flow_execution_service.dart';
 import '../services/flow_storage_service.dart';
 import '../services/python_bridge_service.dart';
 import '../services/secure_credential_service.dart';
+import '../services/unlock_service_pipe.dart';
 
 /// State management for the flow builder canvas and flow list.
 ///
@@ -26,6 +28,7 @@ class FlowBuilderProvider extends ChangeNotifier {
   final PythonBridgeService _bridge;
   final LoggingService _log;
   final SecureCredentialService _credentials;
+  final UnlockServicePipe _pipe;
 
   FlowBuilderProvider({
     required FlowStorageService storage,
@@ -34,12 +37,14 @@ class FlowBuilderProvider extends ChangeNotifier {
     required PythonBridgeService bridge,
     required LoggingService log,
     required SecureCredentialService credentials,
+    required UnlockServicePipe pipe,
   }) : _storage = storage,
        _execution = execution,
        _a11y = a11y,
        _bridge = bridge,
        _log = log,
-       _credentials = credentials;
+       _credentials = credentials,
+       _pipe = pipe;
 
   // ── State ──────────────────────────────────────────────
 
@@ -125,9 +130,7 @@ class FlowBuilderProvider extends ChangeNotifier {
       if (node.nodeType != DesktopFlowNodeType.dataIterator) continue;
 
       final outgoing = flow.outgoingEdges(node.id).toList();
-      final hasBody = outgoing.any(
-        (e) => e.label?.toLowerCase() == 'body',
-      );
+      final hasBody = outgoing.any((e) => e.label?.toLowerCase() == 'body');
       if (hasBody) continue; // already migrated
 
       for (final edge in outgoing) {
@@ -215,10 +218,12 @@ class FlowBuilderProvider extends ChangeNotifier {
   void removeNode(String nodeId) {
     if (_currentFlow == null) return;
 
-    // Clean up secure credentials for unlock nodes
+    // Clean up secure credentials for unlock nodes.
     final node = _currentFlow!.findNode(nodeId);
     if (node != null && node.nodeType == DesktopFlowNodeType.unlock) {
-      _credentials.deleteUnlockPassword(nodeId);
+      final flowId = _currentFlow!.id;
+      unawaited(_credentials.deleteUnlockPassword(nodeId));
+      unawaited(_deletePreloginUnlockForFlow(flowId));
     }
 
     _currentFlow!.nodes.removeWhere((n) => n.id == nodeId);
@@ -513,6 +518,17 @@ class FlowBuilderProvider extends ChangeNotifier {
   Future<void> saveFlow() async {
     if (_currentFlow == null) return;
     await _storage.saveFlow(_currentFlow!);
+
+    // Sync any unlock nodes in this flow to the prelogin helper service
+    for (final node in _currentFlow!.nodes) {
+      if (node.nodeType == DesktopFlowNodeType.unlock) {
+        final password = await _credentials.getUnlockPassword(node.id);
+        if (password != null && password.isNotEmpty) {
+          await _provisionPreloginUnlock(node.id, password);
+        }
+      }
+    }
+
     _isDirty = false;
     await loadFlows(); // Refresh the list
     notifyListeners();
@@ -521,6 +537,7 @@ class FlowBuilderProvider extends ChangeNotifier {
 
   /// Delete a flow by ID.
   Future<void> deleteFlow(String id) async {
+    await _deletePreloginUnlockForFlow(id);
     await _storage.deleteFlow(id);
     if (_currentFlow?.id == id) {
       _currentFlow = null;
@@ -646,22 +663,74 @@ class FlowBuilderProvider extends ChangeNotifier {
 
   // ── Unlock credential delegates ──────────────────────────
 
-  /// Save an unlock password for a node to secure storage.
-  Future<void> saveUnlockPassword(String nodeId, String password) async {
-    await _credentials.saveUnlockPassword(nodeId, password);
+  Future<bool> _provisionPreloginUnlock(String nodeId, String password) async {
+    final flow = _currentFlow;
+    if (!Platform.isWindows || flow == null) return true;
 
-    // Update the node's flag so the UI shows the 🔒 indicator
+    try {
+      final ok = await _pipe.provisionUnlockCredential(
+        flowId: flow.id,
+        flowName: flow.name,
+        nodeId: nodeId,
+        password: password,
+      );
+      if (ok) {
+        _log.info(
+          'FlowBuilder',
+          'Provisioned pre-login unlock for "${flow.name}"',
+        );
+      } else {
+        _log.warn(
+          'FlowBuilder',
+          'Pre-login unlock provisioning returned false for "${flow.name}"',
+        );
+      }
+      return ok;
+    } catch (e) {
+      _log.warn('FlowBuilder', 'Pre-login unlock provisioning failed: $e');
+      return false;
+    }
+  }
+
+  Future<bool> _deletePreloginUnlockForFlow(String flowId) async {
+    if (!Platform.isWindows) return true;
+
+    try {
+      final ok = await _pipe.deleteUnlockCredential(flowId: flowId);
+      _log.info(
+        'FlowBuilder',
+        'Deleted pre-login unlock credential for flow $flowId',
+      );
+      return ok;
+    } catch (e) {
+      _log.warn('FlowBuilder', 'Pre-login unlock credential delete failed: $e');
+      return false;
+    }
+  }
+
+  /// Save an unlock password for a node to secure storage and pre-login helper.
+  /// Returns true if saved and provisioned successfully.
+  Future<bool> saveUnlockPassword(String nodeId, String password) async {
+    await _credentials.saveUnlockPassword(nodeId, password);
+    final provisioned = await _provisionPreloginUnlock(nodeId, password);
+
+    // Update the node's flag so the UI shows the saved-password indicator.
     final node = _currentFlow?.findNode(nodeId);
     if (node != null) {
       node.hasUnlockPassword = true;
       _isDirty = true;
       notifyListeners();
     }
+    return provisioned;
   }
 
   /// Delete the unlock password for a node.
   Future<void> deleteUnlockPassword(String nodeId) async {
     await _credentials.deleteUnlockPassword(nodeId);
+    final flowId = _currentFlow?.id;
+    if (flowId != null) {
+      await _deletePreloginUnlockForFlow(flowId);
+    }
 
     final node = _currentFlow?.findNode(nodeId);
     if (node != null) {
