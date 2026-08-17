@@ -6,6 +6,7 @@ import '../../core/config/platform_config.dart';
 import '../../core/di/service_locator.dart';
 import '../../features/system/services/startup_service.dart';
 import '../../features/system/services/update_service.dart';
+import '../../features/system/services/window_manager_service.dart';
 import '../theme/app_colors.dart';
 import '../widgets/glassmorphic_card.dart';
 
@@ -18,14 +19,19 @@ class SettingsScreen extends StatefulWidget {
 }
 
 class _SettingsScreenState extends State<SettingsScreen> {
-  bool _launchAtStartup = false;
+  bool _launchAtStartup = true;
   bool _minimizeToTray = true;
 
   @override
   void initState() {
     super.initState();
-    if (PlatformConfig.isDesktop && getIt.isRegistered<StartupService>()) {
-      _launchAtStartup = getIt<StartupService>().isEnabled;
+    if (PlatformConfig.isDesktop) {
+      if (getIt.isRegistered<StartupService>()) {
+        _launchAtStartup = getIt<StartupService>().isEnabled;
+      }
+      if (getIt.isRegistered<WindowManagerService>()) {
+        _minimizeToTray = getIt<WindowManagerService>().minimizeToTray;
+      }
     }
   }
 
@@ -83,7 +89,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         subtitle: 'Keep running in system tray when closed',
                         trailing: Switch(
                           value: _minimizeToTray,
-                          onChanged: (v) => setState(() => _minimizeToTray = v),
+                          onChanged: (v) async {
+                            setState(() => _minimizeToTray = v);
+                            if (getIt.isRegistered<WindowManagerService>()) {
+                              await getIt<WindowManagerService>().setMinimizeToTray(v);
+                            }
+                          },
                         ),
                       ),
                     ],

@@ -7,7 +7,7 @@ import '../../../core/services/logging_service.dart';
 class StartupService {
   static const String _prefKey = 'launch_at_startup_enabled';
   LoggingService? _loggingService;
-  bool _enabled = false;
+  bool _enabled = true;
 
   bool get isEnabled => _enabled;
 
@@ -23,7 +23,7 @@ class StartupService {
     );
 
     final prefs = await SharedPreferences.getInstance();
-    _enabled = prefs.getBool(_prefKey) ?? false;
+    _enabled = prefs.getBool(_prefKey) ?? true;
 
     // Sync with OS registration
     final isRegistered = await launchAtStartup.isEnabled();
