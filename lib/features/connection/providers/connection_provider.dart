@@ -44,6 +44,8 @@ class ConnectionProvider extends ChangeNotifier {
   final TriggerRuleService _triggers;
 
   bool _isRunning = false;
+  bool _killSwitchActive = false;
+  String? _activeTransactionId;
   int? _port;
   StreamSubscription? _commandSub;
   StreamSubscription<String>? _clipboardSub;
@@ -379,6 +381,10 @@ class ConnectionProvider extends ChangeNotifier {
 
     _log.info('CMD', 'Received prompt: "$prompt" (txn=$transactionId)');
 
+    // Reset kill switch state for this new prompt
+    _killSwitchActive = false;
+    _activeTransactionId = transactionId;
+
     // Send immediate acknowledgment back to Android
     _sendPromptResponse(transactionId, 'started', 'Processing command...');
 
@@ -590,12 +596,15 @@ class ConnectionProvider extends ChangeNotifier {
         await desktopProvider.runGoal(
           prompt,
           onProgress: (msg) {
+            if (_killSwitchActive) return;
             _sendPromptResponse(transactionId, 'in_progress', msg);
           },
           conversationContext: conversationContext,
         );
-        // Check if the agent actually succeeded
-        if (desktopProvider.hasError) {
+        // Check if the kill switch was activated during execution
+        if (_killSwitchActive) {
+          _log.info('CMD', 'Desktop Agent finished aborting (kill switch was active).');
+        } else if (desktopProvider.hasError) {
           _sendPromptResponse(
             transactionId,
             'failed',
@@ -741,6 +750,18 @@ class ConnectionProvider extends ChangeNotifier {
       if (stepData == null) throw Exception('Failed to parse initial AI step');
 
       for (int i = 0; i < maxSteps; i++) {
+        // Check for kill switch at the start of each step
+        if (_killSwitchActive) {
+          _log.info('CMD', 'Agentic loop: kill_switch detected, stopping.');
+          _sendPromptResponse(
+            transactionId,
+            'cancelled',
+            'Browser automation stopped by user.',
+          );
+          _completedTransactions.add(transactionId);
+          return;
+        }
+
         // Check if LLM says we're done
         if (stepData!['done'] == true) {
           _log.info(
@@ -1339,6 +1360,8 @@ RULES:
 
   void _handleKillSwitch(Map<String, dynamic> command) {
     _log.info('CMD', 'Received global kill_switch');
+    _killSwitchActive = true;
+
     // Stop local desktop agent
     try {
       final desktopProvider = getIt<DesktopAutomationProvider>();
@@ -1353,12 +1376,27 @@ RULES:
       flowExec.stopFlow();
     } catch (_) {}
 
+    // Complete any pending browser step futures so the agentic loop
+    // breaks out immediately instead of waiting for a 45s timeout.
+    for (final entry in _pendingStepResults.entries.toList()) {
+      if (!entry.value.isCompleted) {
+        entry.value.complete({
+          'status': 'cancelled',
+          'message': 'Kill switch activated',
+        });
+      }
+    }
+    _pendingStepResults.clear();
+
     // Forward to extension
     _ws.sendToExtension({'type': 'kill_switch'});
 
-    // Optional: send response back to Android
-    final transactionId = command['transactionId']?.toString();
-    if (transactionId != null && transactionId.isNotEmpty) {
+    // Send response back to Android using the transactionId from the
+    // kill_switch command, or fall back to the active transaction.
+    final transactionId = command['transactionId']?.toString()
+        ?? _activeTransactionId
+        ?? '';
+    if (transactionId.isNotEmpty) {
       _sendPromptResponse(
         transactionId,
         'cancelled',

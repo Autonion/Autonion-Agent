@@ -247,6 +247,11 @@ class DesktopAgentService {
 
         // 1. Observe Screen
         final screenState = await _a11y.getScreenState(observationTier);
+        if (_stopRequested) {
+          _log.warn('DesktopAgent', 'Task aborted by user after screen observation.');
+          _status = AgentStatus.idle;
+          return;
+        }
         if (screenState.elements.isEmpty) {
           _log.warn(
             'DesktopAgent',
@@ -424,6 +429,11 @@ class DesktopAgentService {
 
         for (int retry = 0; retry <= maxAiRetries; retry++) {
           response = await aiService.chat(messages, jsonSchema: schema);
+          if (_stopRequested) {
+            _log.warn('DesktopAgent', 'Task aborted by user during AI chat.');
+            _status = AgentStatus.idle;
+            return;
+          }
 
           if (response.success &&
               response.content != null &&
@@ -455,6 +465,11 @@ class DesktopAgentService {
               '— retrying in ${waitSec}s...',
             );
             await Future.delayed(Duration(seconds: waitSec));
+            if (_stopRequested) {
+              _log.warn('DesktopAgent', 'Task aborted by user during retry delay.');
+              _status = AgentStatus.idle;
+              return;
+            }
           } else if (retry >= maxAiRetries) {
             final userMsg = isRateLimit
                 ? '❌ API rate limited after $maxAiRetries retries. Try again later or switch model.'
@@ -535,6 +550,13 @@ class DesktopAgentService {
           'action': _actionForHistory(action, screenState),
         });
 
+        // If stop was requested while parsing/retrying, abort before executing action
+        if (_stopRequested) {
+          _log.warn('DesktopAgent', 'Task aborted by user before executing action.');
+          _status = AgentStatus.idle;
+          return;
+        }
+
         // 5. Execute Action
         if (action.type == 'done') {
           _log.info('DesktopAgent', 'Task completed successfully by Agent.');
@@ -571,8 +593,18 @@ class DesktopAgentService {
         }
 
         try {
+          if (_stopRequested) {
+            _log.warn('DesktopAgent', 'Task aborted by user before action dispatch.');
+            _status = AgentStatus.idle;
+            return;
+          }
           final result = await _input.execute(action);
           _history.last['result'] = {'status': 'executed', ...result};
+          if (_stopRequested) {
+            _log.warn('DesktopAgent', 'Task aborted by user after action execution.');
+            _status = AgentStatus.idle;
+            return;
+          }
         } catch (e) {
           _log.error('DesktopAgent', 'Action execution failed: $e');
           _history.last['result'] = {
@@ -615,6 +647,11 @@ class DesktopAgentService {
 
         // Wait a bit for UI to settle
         await Future.delayed(const Duration(milliseconds: 500));
+        if (_stopRequested) {
+          _log.warn('DesktopAgent', 'Task aborted by user during settle delay.');
+          _status = AgentStatus.idle;
+          return;
+        }
       }
 
       if (_stopRequested) {

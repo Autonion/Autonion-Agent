@@ -1229,7 +1229,7 @@ bool TriggerPreloginUnlockFlow(SOCKET client, const std::string& transaction_id,
   const std::string response = HandleServiceUnlockRequest(request.str());
   if (ExtractJsonBool(response, "success")) {
     SendFlowWebSocketResponse(client, transaction_id, flow_id, "completed",
-                              "Pre-login unlock input sent", 1, 1, true);
+                              "Desktop unlocked successfully", 1, 1, true);
     return true;
   }
 
@@ -1240,8 +1240,7 @@ bool TriggerPreloginUnlockFlow(SOCKET client, const std::string& transaction_id,
   return false;
 }
 
-void HandlePreloginWebSocketMessage(SOCKET client, const std::string& message,
-                                    bool* should_stop_after_success) {
+void HandlePreloginWebSocketMessage(SOCKET client, const std::string& message) {
   const std::string type = ExtractJsonString(message, "type");
   const std::string transaction_id = ExtractJsonString(message, "transactionId");
   if (type == "ping") {
@@ -1265,10 +1264,7 @@ void HandlePreloginWebSocketMessage(SOCKET client, const std::string& message,
                                 "No flowId provided", 0, 1, true);
       return;
     }
-    if (TriggerPreloginUnlockFlow(client, transaction_id, flow_id) &&
-        should_stop_after_success) {
-      *should_stop_after_success = true;
-    }
+    TriggerPreloginUnlockFlow(client, transaction_id, flow_id);
     return;
   }
 }
@@ -1316,9 +1312,7 @@ void HandlePreloginClient(SOCKET client, HANDLE stop_event) {
       << "\"server_info\":{\"port\":" << kPreloginWebSocketPort << ",\"clients\":1}}";
   SendWebSocketText(client, ack.str());
 
-  bool should_stop_after_success = false;
-  while (!should_stop_after_success &&
-         WaitForSingleObject(stop_event, 0) == WAIT_TIMEOUT &&
+  while (WaitForSingleObject(stop_event, 0) == WAIT_TIMEOUT &&
          WaitForSingleObject(g_service_stop_event, 0) == WAIT_TIMEOUT &&
          !IsConsoleSessionUnlocked()) {
     std::string message;
@@ -1327,11 +1321,7 @@ void HandlePreloginClient(SOCKET client, HANDLE stop_event) {
       if (error == WSAETIMEDOUT || error == WSAEWOULDBLOCK) continue;
       break;
     }
-    HandlePreloginWebSocketMessage(client, message, &should_stop_after_success);
-  }
-
-  if (should_stop_after_success && g_prelogin_stop_event) {
-    SetEvent(g_prelogin_stop_event);
+    HandlePreloginWebSocketMessage(client, message);
   }
 }
 
@@ -1978,17 +1968,9 @@ void StopPreloginWebSocketServer() {
     closesocket(g_prelogin_mdns_socket);
     g_prelogin_mdns_socket = INVALID_SOCKET;
   }
-
-  // Close all client sockets to unblock recv() immediately
-  for (SOCKET s : client_sockets) {
-    if (s != INVALID_SOCKET) {
-      shutdown(s, SD_BOTH);
-      closesocket(s);
-    }
-  }
   ReleaseSRWLockExclusive(&g_prelogin_lock);
 
-  // Wait for listener and mdns threads to exit (clean join)
+  // Wait for worker threads to finish sending their responses gracefully
   std::vector<HANDLE> wait_handles;
   if (listener_thread) wait_handles.push_back(listener_thread);
   if (mdns_thread) wait_handles.push_back(mdns_thread);
@@ -1998,8 +1980,16 @@ void StopPreloginWebSocketServer() {
 
   if (!wait_handles.empty()) {
     WaitForMultipleObjects(static_cast<DWORD>(wait_handles.size()),
-                           wait_handles.data(), TRUE, 3000);
+                           wait_handles.data(), TRUE, 1500);
     for (HANDLE h : wait_handles) CloseHandle(h);
+  }
+
+  // Gracefully close any remaining client sockets
+  for (SOCKET s : client_sockets) {
+    if (s != INVALID_SOCKET) {
+      shutdown(s, SD_SEND);
+      closesocket(s);
+    }
   }
 
   if (stop_event) CloseHandle(stop_event);

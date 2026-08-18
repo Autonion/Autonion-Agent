@@ -58,7 +58,15 @@ class DeviceInfoService {
       'device_id': deviceId,
       'device_name': deviceName,
       'platform': platform,
-      'capabilities': ['open_url', 'clipboard'],
+      'agent': 'autonion',
+      'prelogin': 'false',
+      'capabilities': [
+        'open_url',
+        'clipboard',
+        'desktop_automation',
+        'flows',
+        'ai_prompt',
+      ],
     };
   }
 }
