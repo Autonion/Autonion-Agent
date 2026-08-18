@@ -7,6 +7,7 @@ import '../../features/clipboard/services/clipboard_sync_service.dart';
 import '../../features/connection/providers/connection_provider.dart';
 import '../../features/connection/services/device_info_service.dart';
 import '../../features/connection/services/discovery_service.dart';
+import '../../features/connection/services/paired_device_service.dart';
 import '../../features/connection/services/websocket_service.dart';
 import '../../features/desktop_automation/providers/desktop_automation_provider.dart';
 import '../../features/desktop_automation/services/accessibility_tree_service.dart';
@@ -40,6 +41,9 @@ Future<void> setupServiceLocator() async {
   await deviceInfo.init();
   getIt.registerSingleton<DeviceInfoService>(deviceInfo);
 
+  getIt.registerLazySingleton<PairedDeviceService>(
+    () => PairedDeviceService(log: log),
+  );
   getIt.registerLazySingleton<WebSocketService>(() => WebSocketService());
   getIt.registerLazySingleton<DiscoveryService>(
     () => DiscoveryService(getIt<DeviceInfoService>()),
@@ -123,6 +127,7 @@ Future<void> setupServiceLocator() async {
       browserLauncherService: getIt<BrowserLauncherService>(),
       clipboardSyncService: getIt<ClipboardSyncService>(),
       triggerRuleService: getIt<TriggerRuleService>(),
+      pairedDeviceService: getIt<PairedDeviceService>(),
     ),
   );
 }

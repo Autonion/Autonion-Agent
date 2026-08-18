@@ -1,17 +1,21 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:web_socket_channel/web_socket_channel.dart';
 import '../../../core/config/app_config.dart';
 import '../../../core/config/platform_config.dart';
 import '../../../core/services/logging_service.dart';
 import '../../browser_automation/services/browser_launcher_service.dart';
 import '../../clipboard/services/clipboard_sync_service.dart';
 import '../../triggers/services/trigger_rule_service.dart';
+import '../models/paired_device.dart';
 import '../services/device_info_service.dart';
 import '../services/discovery_service.dart';
+import '../services/paired_device_service.dart';
 import '../services/websocket_service.dart';
 import '../../../core/di/service_locator.dart';
 import '../../desktop_automation/providers/desktop_automation_provider.dart';
@@ -21,6 +25,29 @@ import '../../ai/providers/ai_provider_notifier.dart';
 import '../../ai/models/ai_provider_type.dart';
 import '../../desktop_automation/services/flow_storage_service.dart';
 import '../../desktop_automation/services/flow_execution_service.dart';
+
+/// Tracks an active one-time PIN pairing session with an unknown device.
+class PendingPairing {
+  final WebSocketChannel socket;
+  final String deviceId;
+  final String deviceName;
+  final String deviceSecret;
+  final String pin;
+  final String remoteIp;
+  final DateTime createdAt;
+  final Timer expiryTimer;
+
+  PendingPairing({
+    required this.socket,
+    required this.deviceId,
+    required this.deviceName,
+    required this.deviceSecret,
+    required this.pin,
+    required this.remoteIp,
+    required this.createdAt,
+    required this.expiryTimer,
+  });
+}
 
 /// Orchestrates all connection-related services and exposes reactive state.
 ///
@@ -42,6 +69,7 @@ class ConnectionProvider extends ChangeNotifier {
   final BrowserLauncherService _browser;
   final ClipboardSyncService _clipboard;
   final TriggerRuleService _triggers;
+  final PairedDeviceService _pairedDevices;
 
   bool _isRunning = false;
   bool _killSwitchActive = false;
@@ -50,17 +78,21 @@ class ConnectionProvider extends ChangeNotifier {
   StreamSubscription? _commandSub;
   StreamSubscription<String>? _clipboardSub;
 
-  // ── Companion version compatibility ──
+  // ── Companion version & pairing ──
   String? _companionVersion;
   String? _companionWarning;
   Timer? _versionCheckTimer;
   bool _receivedClientInfo = false;
+  PendingPairing? _activePairing;
 
   bool get isRunning => _isRunning;
   int? get port => _port;
   DeviceInfoService get deviceInfo => _deviceInfo;
   WebSocketService get ws => _ws;
   BrowserLauncherService get browser => _browser;
+  PairedDeviceService get pairedDevices => _pairedDevices;
+  PendingPairing? get activePairing => _activePairing;
+  bool get hasPendingPairing => _activePairing != null;
 
   /// Non-null when the connected Android companion is outdated.
   String? get companionWarning => _companionWarning;
@@ -74,13 +106,15 @@ class ConnectionProvider extends ChangeNotifier {
     required BrowserLauncherService browserLauncherService,
     required ClipboardSyncService clipboardSyncService,
     required TriggerRuleService triggerRuleService,
+    required PairedDeviceService pairedDeviceService,
   }) : _log = loggingService,
        _ws = webSocketService,
        _discovery = discoveryService,
        _deviceInfo = deviceInfoService,
        _browser = browserLauncherService,
        _clipboard = clipboardSyncService,
-       _triggers = triggerRuleService;
+       _triggers = triggerRuleService,
+       _pairedDevices = pairedDeviceService;
 
   /// Wire all inter-service dependencies and start everything.
   Future<void> startServices() async {
@@ -97,6 +131,10 @@ class ConnectionProvider extends ChangeNotifier {
       _clipboard.setDeviceInfoService(_deviceInfo);
       _triggers.setLoggingService(_log);
       _triggers.setWebSocketService(_ws);
+
+      // Initialize paired devices database
+      await _pairedDevices.init();
+      _pairedDevices.addListener(notifyListeners);
 
       // Detect browsers (desktop only)
       if (PlatformConfig.isDesktop) {
@@ -140,6 +178,9 @@ class ConnectionProvider extends ChangeNotifier {
     // Remove listeners before tearing down
     _clipboard.removeListener(_broadcastClipboardSyncState);
     _ws.removeListener(_broadcastClipboardSyncState);
+    _pairedDevices.removeListener(notifyListeners);
+
+    cancelActivePairing();
 
     try {
       _clipboard.stopPolling();
@@ -182,6 +223,16 @@ class ConnectionProvider extends ChangeNotifier {
   void _onWsStateChanged() {
     _broadcastClipboardSyncState();
 
+    // If the device engaged in pairing disconnected before entering PIN,
+    // clear active pairing immediately rather than locking for 120s.
+    if (_activePairing != null &&
+        _ws.getClientSession(_activePairing!.socket) == null) {
+      _activePairing?.expiryTimer.cancel();
+      _activePairing = null;
+      _log.info('Auth', 'Pending pairing client disconnected; dismissed pairing modal.');
+      notifyListeners();
+    }
+
     // When a new client connects, start a timer to detect old companions
     // that don't send client_info.
     if (_ws.connectedClients > 0 && !_receivedClientInfo) {
@@ -220,32 +271,262 @@ class ConnectionProvider extends ChangeNotifier {
     });
   }
 
-  /// Process version info sent by the Android companion on connect.
-  void _handleClientInfo(Map<String, dynamic> command) {
-    final version = command['version'] as String?;
-    if (version == null) return;
-
-    // Cancel the "old companion" timer — we got a response
-    _versionCheckTimer?.cancel();
-    _receivedClientInfo = true;
-
-    _companionVersion = version;
-    _log.info('APP', 'Companion connected: v$version');
-
-    if (AppConfig.compareVersions(version, AppConfig.minRequiredCompanionVersion) < 0) {
-      _companionWarning =
-          'Connected Android app v$version is outdated. '
-          'Update to v${AppConfig.minRequiredCompanionVersion}+ for full compatibility '
-          '(Flows, clipboard sync control).';
-      _log.warn('APP', _companionWarning!);
-    } else {
-      _companionWarning = null;
+  /// Cancel current active pairing request and reject the client.
+  void cancelActivePairing() {
+    if (_activePairing != null) {
+      _ws.sendToClient(_activePairing!.socket, {
+        'type': 'auth_result',
+        'status': 'pairing_rejected',
+        'message': 'Pairing declined by user.',
+      });
+      _ws.disconnectClient(_activePairing!.socket);
+      _activePairing?.expiryTimer.cancel();
+      _activePairing = null;
+      _log.info('Auth', 'Pairing session cancelled by user');
+      notifyListeners();
     }
+  }
+
+  /// Revoke pairing for a device and sever active socket immediately.
+  Future<void> revokeDevice(String deviceId) async {
+    _ws.disconnectClientByDeviceId(
+      deviceId,
+      code: 4001,
+      reason: 'Pairing revoked',
+    );
+    await _pairedDevices.revokeDevice(deviceId);
     notifyListeners();
   }
 
+  /// Process version & pairing info sent by the Android companion on connect.
+  Future<void> _handleClientInfo(WebSocketClientCommand cmd) async {
+    final command = cmd.data;
+    final client = cmd.client;
+    final session = cmd.session;
+
+    final version = command['version'] as String?;
+    final deviceId = command['deviceId'] as String?;
+    final deviceName = (command['deviceName'] as String?) ?? 'Companion Device';
+    final deviceSecret = (command['deviceSecret'] as String?) ?? '';
+
+    if (version != null) {
+      _versionCheckTimer?.cancel();
+      _receivedClientInfo = true;
+      _companionVersion = version;
+      _log.info('APP', 'Companion connected: v$version ($deviceName, id: $deviceId)');
+
+      if (AppConfig.compareVersions(version, AppConfig.minRequiredCompanionVersion) < 0) {
+        _companionWarning =
+            'Connected Android app v$version is outdated. '
+            'Update to v${AppConfig.minRequiredCompanionVersion}+ for full compatibility '
+            '(Flows, clipboard sync control).';
+        _log.warn('APP', _companionWarning!);
+      } else {
+        _companionWarning = null;
+      }
+      notifyListeners();
+    }
+
+    if (deviceId == null || deviceId.isEmpty) {
+      _log.warn('Auth', 'Rejecting outdated companion from ${session.remoteIp}: missing deviceId');
+      _ws.sendToClient(client, {
+        'type': 'auth_result',
+        'status': 'outdated_companion',
+        'error': 'Companion app is outdated. Update required to connect securely.',
+      });
+      _ws.disconnectClient(client, code: 4003, reason: 'Outdated companion app');
+      return;
+    }
+
+    // Check if device is already paired
+    final isPaired = await _pairedDevices.isDevicePaired(deviceId, deviceSecret);
+
+    if (isPaired) {
+      _ws.markClientAuthenticated(client, deviceId: deviceId, deviceName: deviceName);
+      await _pairedDevices.updateLastSeen(deviceId, session.remoteIp);
+
+      _ws.sendToClient(client, {
+        'type': 'auth_result',
+        'status': 'authenticated',
+        'agent': 'autonion',
+        'agent_id': _deviceInfo.deviceId,
+        'agent_name': _deviceInfo.deviceName,
+        'version': AppConfig.appVersion,
+        'min_companion_version': AppConfig.minRequiredCompanionVersion,
+        'timestamp': DateTime.now().toIso8601String(),
+        'server_info': {
+          'port': _ws.activePort,
+          'clients': _ws.authenticatedClientsCount,
+        },
+      });
+      return;
+    }
+
+    // Not paired: check if new pairings are allowed
+    if (!_pairedDevices.allowNewPairings) {
+      _log.warn('Auth', 'Rejecting pairing request from $deviceName ($deviceId) - new pairings disabled');
+      _ws.sendToClient(client, {
+        'type': 'auth_result',
+        'status': 'pairing_disabled',
+        'message': 'New device pairing is disabled on this host.',
+      });
+      _ws.disconnectClient(client, code: 4003, reason: 'New pairings disabled');
+      return;
+    }
+
+    // Check if another pairing session is active
+    if (_activePairing != null) {
+      if (_activePairing!.deviceId != deviceId) {
+        _log.warn('Auth', 'Pairing busy: another device (${_activePairing!.deviceName}) is currently pairing');
+        _ws.sendToClient(client, {
+          'type': 'auth_result',
+          'status': 'pairing_busy',
+          'message': 'Another pairing request is currently in progress. Please try again shortly.',
+        });
+        return;
+      } else {
+        // Same device retrying: cancel old timer and refresh
+        _activePairing?.expiryTimer.cancel();
+      }
+    }
+
+    // Mark session as pairing pending so 10s auth timeout doesn't fire
+    session.markPairingPending();
+
+    // Generate random 6-digit PIN
+    final randomPin = (100000 + Random.secure().nextInt(900000)).toString();
+    _log.info('Auth', 'Generated pairing PIN $randomPin for $deviceName ($deviceId)');
+
+    final expiryTimer = Timer(const Duration(seconds: 120), () {
+      if (_activePairing?.deviceId == deviceId) {
+        _log.info('Auth', 'Pairing session expired for $deviceName ($deviceId)');
+        _ws.sendToClient(client, {
+          'type': 'auth_result',
+          'status': 'pairing_expired',
+          'message': 'Pairing timed out. Please try connecting again.',
+        });
+        _ws.disconnectClient(client, code: 4008, reason: 'Pairing expired');
+        _activePairing = null;
+        notifyListeners();
+      }
+    });
+
+    _activePairing = PendingPairing(
+      socket: client,
+      deviceId: deviceId,
+      deviceName: deviceName,
+      deviceSecret: deviceSecret,
+      pin: randomPin,
+      remoteIp: session.remoteIp,
+      createdAt: DateTime.now(),
+      expiryTimer: expiryTimer,
+    );
+
+    _ws.sendToClient(client, {
+      'type': 'auth_result',
+      'status': 'pairing_required',
+      'agent_id': _deviceInfo.deviceId,
+      'agent_name': _deviceInfo.deviceName,
+      'expiresInSeconds': 120,
+    });
+
+    notifyListeners();
+  }
+
+  /// Process pairing PIN submitted from the companion app.
+  Future<void> _handlePairingSubmit(WebSocketClientCommand cmd) async {
+    final command = cmd.data;
+    final client = cmd.client;
+    final session = cmd.session;
+
+    final pin = (command['pin'] as String? ?? '').replaceAll(' ', '').trim();
+    final deviceId = command['deviceId'] as String? ?? '';
+    final deviceName = (command['deviceName'] as String?) ?? 'Companion Device';
+    final deviceSecret = command['deviceSecret'] as String? ?? '';
+
+    if (_activePairing == null || _activePairing!.deviceId != deviceId) {
+      _log.warn('Auth', 'pairing_submit received but no active pairing found for $deviceId');
+      _ws.sendToClient(client, {
+        'type': 'auth_result',
+        'status': 'pairing_failed',
+        'error': 'No active pairing session found. Please reconnect.',
+      });
+      return;
+    }
+
+    if (_activePairing!.pin == pin) {
+      _log.info('Auth', 'PIN matched for $deviceName ($deviceId)! Pairing succeeded.');
+      final secretToUse = deviceSecret.isNotEmpty
+          ? deviceSecret
+          : _activePairing!.deviceSecret;
+
+      _activePairing?.expiryTimer.cancel();
+      _activePairing = null;
+
+      final pairedDevice = PairedDevice(
+        id: deviceId,
+        name: deviceName,
+        secret: secretToUse,
+        pairedAt: DateTime.now(),
+        lastSeen: DateTime.now(),
+        lastIp: session.remoteIp,
+      );
+
+      await _pairedDevices.pairDevice(pairedDevice);
+      _ws.markClientAuthenticated(client, deviceId: deviceId, deviceName: deviceName);
+
+      _ws.sendToClient(client, {
+        'type': 'auth_result',
+        'status': 'paired_success',
+        'agent': 'autonion',
+        'agent_id': _deviceInfo.deviceId,
+        'agent_name': _deviceInfo.deviceName,
+        'version': AppConfig.appVersion,
+        'min_companion_version': AppConfig.minRequiredCompanionVersion,
+        'timestamp': DateTime.now().toIso8601String(),
+        'server_info': {
+          'port': _ws.activePort,
+          'clients': _ws.authenticatedClientsCount,
+        },
+      });
+
+      notifyListeners();
+    } else {
+      final attempts = _ws.recordFailedPinAttempt(client);
+      _log.warn('Auth', 'Invalid PIN submitted by $deviceName ($deviceId). Attempt $attempts/3');
+
+      _ws.sendToClient(client, {
+        'type': 'auth_result',
+        'status': 'pairing_failed',
+        'error': 'Invalid PIN ($attempts of 3 attempts used)',
+        'attempts': attempts,
+      });
+
+      if (attempts >= 3) {
+        _activePairing?.expiryTimer.cancel();
+        _activePairing = null;
+        notifyListeners();
+      }
+    }
+  }
+
   /// Route incoming WebSocket commands.
-  Future<void> _executeCommand(Map<String, dynamic> command) async {
+  Future<void> _executeCommand(WebSocketClientCommand clientCmd) async {
+    final command = clientCmd.data;
+    final client = clientCmd.client;
+    final session = clientCmd.session;
+
+    // ── Version & Pairing handshake ────────────────────────
+    if (command['type'] == 'client_info') {
+      await _handleClientInfo(clientCmd);
+      return;
+    }
+
+    if (command['type'] == 'pairing_submit') {
+      await _handlePairingSubmit(clientCmd);
+      return;
+    }
+
     // Structured key press commands — check BEFORE prompt to avoid
     // routing type:'key_press' commands (that also carry 'prompt') to LLM.
     if (command['type'] == 'key_press') {
@@ -261,12 +542,6 @@ class ConnectionProvider extends ChangeNotifier {
 
     if (command['type'] == 'kill_switch') {
       _handleKillSwitch(command);
-      return;
-    }
-
-    // ── Version handshake from Android ──────────────────────
-    if (command['type'] == 'client_info') {
-      _handleClientInfo(command);
       return;
     }
 

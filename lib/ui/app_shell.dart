@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import '../core/di/service_locator.dart';
+import '../features/connection/providers/connection_provider.dart';
 import 'screens/ai_settings_screen.dart';
 import 'screens/automation_screen.dart';
 import 'screens/connections_screen.dart';
@@ -8,6 +10,7 @@ import 'screens/logs_screen.dart';
 import 'screens/settings_screen.dart';
 import 'theme/app_colors.dart';
 import 'widgets/nav_rail.dart';
+import 'widgets/pairing_dialog.dart';
 import 'widgets/update_banner.dart';
 
 /// Root app shell with navigation rail and content area.
@@ -71,42 +74,61 @@ class _AppShellState extends State<AppShell> {
 
   @override
   Widget build(BuildContext context) {
+    final conn = getIt<ConnectionProvider>();
+
     return Scaffold(
-      body: Container(
-        decoration: const BoxDecoration(gradient: AppColors.backgroundGradient),
-        child: Column(
-          children: [
-            // ── Update notification banner ─────────────
-            const UpdateBanner(),
-            // ── Main content ──────────────────────────
-            Expanded(
-              child: Row(
-                children: [
-                  AppNavRail(
-                    selectedIndex: _selectedIndex,
-                    onDestinationSelected: (index) {
-                      setState(() => _selectedIndex = index);
-                    },
-                    destinations: _destinations,
-                  ),
-                  const VerticalDivider(width: 1),
-                  Expanded(
-                    child: AnimatedSwitcher(
-                      duration: const Duration(milliseconds: 250),
-                      transitionBuilder: (child, animation) {
-                        return FadeTransition(opacity: animation, child: child);
-                      },
-                      child: KeyedSubtree(
-                        key: ValueKey(_selectedIndex),
-                        child: _screens[_selectedIndex],
+      body: Stack(
+        children: [
+          Container(
+            decoration:
+                const BoxDecoration(gradient: AppColors.backgroundGradient),
+            child: Column(
+              children: [
+                // ── Update notification banner ─────────────
+                const UpdateBanner(),
+                // ── Main content ──────────────────────────
+                Expanded(
+                  child: Row(
+                    children: [
+                      AppNavRail(
+                        selectedIndex: _selectedIndex,
+                        onDestinationSelected: (index) {
+                          setState(() => _selectedIndex = index);
+                        },
+                        destinations: _destinations,
                       ),
-                    ),
+                      const VerticalDivider(width: 1),
+                      Expanded(
+                        child: AnimatedSwitcher(
+                          duration: const Duration(milliseconds: 250),
+                          transitionBuilder: (child, animation) {
+                            return FadeTransition(
+                              opacity: animation,
+                              child: child,
+                            );
+                          },
+                          child: KeyedSubtree(
+                            key: ValueKey(_selectedIndex),
+                            child: _screens[_selectedIndex],
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
-                ],
-              ),
+                ),
+              ],
             ),
-          ],
-        ),
+          ),
+
+          // ── Pairing Dialog Overlay ──────────────────────
+          ListenableBuilder(
+            listenable: conn,
+            builder: (context, _) {
+              if (!conn.hasPendingPairing) return const SizedBox.shrink();
+              return const PairingDialog();
+            },
+          ),
+        ],
       ),
     );
   }
