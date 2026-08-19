@@ -1,75 +1,133 @@
 # Autonion Agent (Desktop Agent)
 
-## Overview
-The **Autonion Agent** is a Flutter-based desktop application that serves as the critical communication hub between your desktop environment and the Android **Automation Companion** app. It handles local connectivity, service discovery, clipboard synchronization, AI-powered automation, and relays commands to either browser extensions or native system automation processes via a Python backend.
+The **Autonion Agent** is a Flutter-based desktop application that serves as the central orchestration hub between your desktop operating system (Windows, macOS, Linux), browser environments, and the Android **Automation Companion** app. It provides zero-configuration local networking, secure device pairing, visual automation workflows, bi-directional clipboard sync, and hybrid AI-powered task execution.
 
-## Offline-First, Cloud-Enhanced Architecture
-The Autonion Agent supports a **hybrid AI model** that prioritizes local processing while optionally leveraging cloud-based LLMs for enhanced intelligence:
+---
 
-| Mode | Description | Privacy |
-|------|-------------|---------|
-| **Ollama (Local)** | Runs LLMs entirely on-device via Ollama. Zero data leaves your machine. | 🟢 Full Privacy |
-| **Cloud API** | Connects to third-party LLM APIs (OpenAI, Gemini, Groq, DeepSeek, OpenRouter, etc.). | 🟡 Data sent to cloud provider |
-| **Web-Based** | Delegates requests to the Autonion Chrome Extension (ChatGPT/Gemini DOM). | 🟡 Data processed by web service |
+## 🌟 Major Upgrades & New Features
 
-> ⚠️ **Privacy Notice:** When using Cloud API or Web-Based modes, your automation prompts and context data are sent to external servers. You are responsible for reviewing the privacy policies of your chosen provider. **We are not responsible for any data exposure when using cloud-based AI services.** Use local Ollama mode for maximum privacy.
+### 1. 🔄 Visual Flow Builder & Automation Engine
+A full-fledged, node-based visual workflow builder that lets you create, customize, and execute multi-step desktop automation flows without writing code:
+* **Visual Node Canvas:** Chain together actions like mouse clicks, keyboard keystrokes, application launches, text input, delays, and conditionals.
+* **Smart Flow Execution:** Execute complex automations locally on the desktop or trigger them remotely from your Android phone.
+* **Flow Management:** Save, organize, export, and import automation presets with execution history and detailed logs.
 
-### Secure API Key Storage
-All third-party API keys are stored using **`flutter_secure_storage`**, which provides:
-- **Windows:** DPAPI (Data Protection API) encryption
-- **macOS:** Keychain
-- **Linux:** libsecret
+### 2. 🔐 OTP-Based Secure Device Pairing
+Enhanced security layer preventing unauthorized devices on the local network from sending commands:
+* **6-Digit One-Time PIN (OTP):** When pairing your Android device with your desktop, an OTP prompt is verified on both ends.
+* **Trusted Device Registry:** Securely stores paired devices with cryptographically signed tokens.
+* **Access Control:** View, manage, and revoke connected mobile devices and browser extensions at any time from the **Connections** screen.
 
-API keys are **never stored in plaintext**. Existing plaintext keys from prior versions are automatically migrated to secure storage on first launch.
+### 3. 🛡️ Administrator Privilege & UAC Unlock Service
+Built-in IPC mechanism (via secure Windows Named Pipes) allowing the Agent to handle privileged desktop operations:
+* Gracefully handles tasks requiring elevated administrator permissions.
+* Prevents automation interruptions caused by Windows User Account Control (UAC) prompts.
 
-## Purpose
-The primary purpose of the Autonion Agent is to provide a seamless, unified connection layer on your desktop that:
-1. **Advertises its presence** securely over the Local Area Network (LAN) using mDNS (`_myautomation._tcp`), allowing the Android app to automatically discover and pair with your computer without manual IP configuration.
-2. **Hosts a local WebSocket Server** (`ws://<IP>:8080/automation`) to facilitate real-time, bi-directional communication between the Android app, the Chrome browser extension, and the desktop Python backend.
-3. **Synchronizes the clipboard** across your devices, enabling seamless sharing of text and images directly between Android and your Desktop.
-4. **Manages Python-based System Automation** by bridging the Flutter UI to a dedicated Python backend, enabling complex desktop automation actions that originate from the Omni-Chatbot on Android.
-5. **Provides configurable AI inference** with three provider modes (Ollama, Cloud API, Web-Based), each with distinct privacy and capability trade-offs.
+### 4. 🧠 Hybrid AI Engine & Model Hub
+An "Offline-First, Cloud-Enhanced" AI execution framework:
+* **Local SLM/LLM (Ollama):** Run open-source models (Llama 3.2, Qwen 2.5, Phi-3.5) locally with 100% data privacy.
+* **Cloud API Integration:** Connect to OpenAI, Google Gemini, Groq, DeepSeek, and OpenRouter for complex semantic tasks.
+* **Web-Based AI:** Delegate prompts through browser extensions for web-grounded interactions.
+* **Encrypted Secrets:** All API keys are encrypted at rest via `flutter_secure_storage` (Windows DPAPI, macOS Keychain, Linux libsecret).
 
-## How it works with Automation Companion
-1. **Discovery:** When you launch the Autonion Agent on your desktop, it uses mDNS to broadcast its availability on the local network. The Automation Companion (Android) automatically detects this signal and establishes a connection over Wi-Fi.
-2. **Web Automation:** When the Android app's Omni-Chatbot generates agentic actions to perform on the web, these commands are sent via WebSocket to the Autonion Agent, which then forwards them to the connected Autonion Chrome Extension to execute DOM interactions securely.
-3. **Desktop Automation:** For native desktop tasks, the Android app sends commands to the Agent, which forwards them to its embedded Python backend to interact directly with desktop software or the operating system.
-4. **AI Model Selection:** The AI provider (Ollama, Cloud API, or Web-Based) is configured directly on the Desktop Agent via **Settings → AI Settings**. The Android Cross-Device screen defers model selection to the Agent.
+---
 
-## Key Features
-- **Cross-Platform Compatibility:** Built with Flutter, supporting Windows, macOS, and Linux out of the box.
-- **Zero-Config Discovery:** Uses mDNS for automatic LAN discovery and pairing.
-- **WebSocket Bridge:** A robust, low-latency bridge connecting mobile clients, browser extensions, and Python runtimes.
-- **Hardware Remote Support:** Receives and executes remote presentation and media commands directly from the Android app's hardware remote module.
-- **Intelligent Task Routing:** Automatically distinguishes between browser DOM tasks (routed to extension) and native OS automation (executed via Python).
-- **Clipboard Sync:** Bi-directional clipboard synchronization for text and images.
-- **Background Execution:** Designed to run quietly in the background, supporting minimizing to the system tray and auto-launching at system startup.
-- **Auto-Initialization:** Automatically initializes the Python automation bridge upon startup for a friction-free experience.
-- **Hybrid AI Engine:** Supports local LLMs (Ollama), cloud LLM APIs, and web-based AI with encrypted credential storage.
-- **Secure Credential Storage:** API keys are encrypted via `flutter_secure_storage` (DPAPI on Windows, Keychain on macOS, libsecret on Linux).
+## 🏗️ System Architecture
 
-## Development Setup
+```mermaid
+graph TD
+    subgraph Mobile ["📱 Android Companion"]
+        AC[Automation Companion]
+    end
 
-### Prerequisites
-- Flutter SDK (`>= 3.9.2`)
-- Windows/macOS/Linux build tools (depending on your host OS)
-- Python (for the desktop automation backend)
-- Ollama (optional, for local LLM inference)
+    subgraph Desktop ["💻 Autonion Desktop Agent"]
+        WS[WebSocket Server :8080]
+        mDNS[mDNS Discovery]
+        FB[Visual Flow Builder]
+        AI[Hybrid AI Engine]
+        CLIP[Clipboard Sync]
+        ADMIN[Unlock Admin Service]
+    end
 
-### Running Locally
+    subgraph Extensions ["🌐 Web & OS Layer"]
+        EXT[Chrome / Browser Extension]
+        PY[Python Automation Backend]
+        OS[OS Desktop Environment]
+    end
 
-```bash
-# Fetch Flutter dependencies
-flutter pub get
-
-# Run the app locally (e.g., on Windows)
-flutter run -d windows
+    AC <-->|mDNS / Zero-Config| mDNS
+    AC <-->|Encrypted WS + OTP| WS
+    WS --> FB
+    WS --> AI
+    WS --> CLIP
+    FB --> ADMIN
+    FB --> OS
+    WS <--> EXT
+    WS <--> PY
 ```
 
-### AI Provider Configuration
-1. Launch the Agent and navigate to **Settings → AI Settings**.
-2. Select your preferred provider:
-   - **Ollama:** Enter host/port/model. The Agent will auto-launch Ollama if installed.
-   - **API Key:** Enter your API key, endpoint URL, and model name. Keys are stored securely.
-   - **Web-Based:** No configuration needed — delegates to the Chrome extension.
-3. Use **Test Connection** to verify your setup.
+---
+
+## 🚀 Core Capabilities
+
+| Feature | Description |
+| :--- | :--- |
+| **Zero-Config Discovery** | Uses mDNS (`_myautomation._tcp`) so your Android app instantly finds your desktop on the local Wi-Fi without typing IP addresses. |
+| **Visual Flows** | Create, test, and save node-based automation macros with conditional logic and error recovery. |
+| **OTP Device Pairing** | High-security device verification preventing network eavesdropping or unauthorized task execution. |
+| **Bi-Directional Clipboard Sync** | Real-time synchronization of copied text and images between your phone and desktop. |
+| **Hardware Remote** | Control media playback, slide presentations, system volume, and lock screen directly from the mobile app. |
+| **Intelligent Task Routing** | Automatically routes DOM-level browser tasks to the Chrome Extension and OS-level tasks to the native automation engine. |
+| **Background Service** | Minimizes cleanly to the system tray and supports auto-start on system boot. |
+
+---
+
+## 🔒 Privacy & Data Safety
+
+The Autonion Agent is engineered with a strict **Local-First Privacy Architecture**:
+
+| AI Mode | Data Transmission | Privacy Level |
+| :--- | :--- | :--- |
+| **Ollama (Local)** | Processed 100% on your local hardware. Zero network data transfer. | 🟢 **Complete Privacy** |
+| **Cloud API** | Transmits prompts and necessary screen context to your configured provider (OpenAI, Gemini, etc.). | 🟡 **Provider Governed** |
+| **Web-Based** | Context processed via active browser session. | 🟡 **Service Governed** |
+
+> 📌 **Note:** API keys are never stored in plaintext and are never transmitted to any third-party intermediate server.
+
+---
+
+## 🛠️ Development & Installation
+
+### Prerequisites
+* **Flutter SDK:** `>= 3.9.2`
+* **Desktop Build Tools:**
+  * Windows: Visual Studio 2022 (with "Desktop development with C++")
+  * macOS: Xcode
+  * Linux: `clang`, `cmake`, `libgtk-3-dev`
+* **Python 3.10+** (for Python automation backend)
+* **Ollama** *(Optional, for local SLM/LLM inference)*
+
+### Build and Run
+
+```bash
+# 1. Fetch dependencies
+flutter pub get
+
+# 2. Run in debug mode
+flutter run -d windows    # on Windows
+flutter run -d macos      # on macOS
+flutter run -d linux      # on Linux
+
+# 3. Build release binary
+flutter build windows --release
+```
+
+---
+
+## 📱 Connecting with Automation Companion
+
+1. Launch **Autonion Agent** on your desktop.
+2. Open **Automation Companion** on your Android device (ensure both devices are on the same Wi-Fi network).
+3. Tap **Connect Desktop** on your phone — your desktop will be discovered automatically.
+4. Enter the **6-digit OTP code** shown on your desktop screen to pair securely.
+5. You're ready to run flows, sync clipboard, and execute AI automations!
