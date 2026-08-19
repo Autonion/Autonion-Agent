@@ -15,14 +15,22 @@ import 'widgets/update_banner.dart';
 
 /// Root app shell with navigation rail and content area.
 class AppShell extends StatefulWidget {
-  const AppShell({super.key});
+  final int initialIndex;
+
+  const AppShell({super.key, this.initialIndex = 0});
 
   @override
   State<AppShell> createState() => _AppShellState();
 }
 
 class _AppShellState extends State<AppShell> {
-  int _selectedIndex = 0;
+  late int _selectedIndex;
+
+  @override
+  void initState() {
+    super.initState();
+    _selectedIndex = widget.initialIndex;
+  }
 
   static final List<Widget> _screens = [
     const DashboardScreen(),

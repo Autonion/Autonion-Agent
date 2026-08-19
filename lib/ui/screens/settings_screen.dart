@@ -4,6 +4,8 @@ import 'package:url_launcher/url_launcher.dart';
 import '../../core/config/app_config.dart';
 import '../../core/config/platform_config.dart';
 import '../../core/di/service_locator.dart';
+import '../../features/connection/providers/connection_provider.dart';
+import '../../features/desktop_automation/services/unlock_admin_service.dart';
 import '../../features/system/services/startup_service.dart';
 import '../../features/system/services/update_service.dart';
 import '../../features/system/services/window_manager_service.dart';
@@ -238,10 +240,153 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ],
                 ),
               ).animate().fadeIn(duration: 500.ms, delay: 200.ms),
+
+              // ── Maintenance / Uninstall ─────────────
+              if (PlatformConfig.isDesktop) ...[
+                const SizedBox(height: 24),
+                Text(
+                  'Maintenance',
+                  style: Theme.of(context).textTheme.titleLarge,
+                ),
+                const SizedBox(height: 12),
+                GlassmorphicCard(
+                  padding: const EdgeInsets.symmetric(
+                    vertical: 8,
+                    horizontal: 20,
+                  ),
+                  child: _SettingsTile(
+                    icon: Icons.delete_forever_outlined,
+                    title: 'Uninstall Autonion Agent',
+                    subtitle:
+                        'Remove background services, firewall rules, and app data',
+                    trailing: ElevatedButton(
+                      onPressed: () => _showUninstallDialog(context),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: AppColors.error.withValues(
+                          alpha: 0.15,
+                        ),
+                        foregroundColor: AppColors.error,
+                        elevation: 0,
+                        side: BorderSide(
+                          color: AppColors.error.withValues(alpha: 0.4),
+                        ),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 16,
+                          vertical: 10,
+                        ),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                      ),
+                      child: const Text('Uninstall'),
+                    ),
+                  ),
+                ).animate().fadeIn(duration: 500.ms, delay: 300.ms),
+              ],
             ],
           ),
         );
       },
+    );
+  }
+
+  void _showUninstallDialog(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.surface,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+          side: BorderSide(
+            color: AppColors.error.withValues(alpha: 0.3),
+          ),
+        ),
+        contentPadding: const EdgeInsets.fromLTRB(24, 20, 24, 16),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: AppColors.error.withValues(alpha: 0.12),
+              ),
+              child: const Icon(
+                Icons.delete_forever_rounded,
+                color: AppColors.error,
+                size: 38,
+              ),
+            ),
+            const SizedBox(height: 16),
+            const Text(
+              'Uninstall Autonion Agent?',
+              style: TextStyle(
+                color: AppColors.textPrimary,
+                fontSize: 18,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const SizedBox(height: 10),
+            const Text(
+              'This will stop all running connections, clean up the background unlock service, remove firewall rules, and launch the uninstaller.',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: AppColors.textSecondary,
+                fontSize: 13,
+                height: 1.4,
+              ),
+            ),
+            const SizedBox(height: 20),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: () => Navigator.of(ctx).pop(),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: AppColors.textSecondary,
+                      side: const BorderSide(color: AppColors.border),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                    ),
+                    child: const Text('Cancel'),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: ElevatedButton.icon(
+                    onPressed: () async {
+                      Navigator.of(ctx).pop();
+                      if (getIt.isRegistered<StartupService>()) {
+                        await getIt<StartupService>().setEnabled(false);
+                      }
+                      if (getIt.isRegistered<ConnectionProvider>()) {
+                        await getIt<ConnectionProvider>().stopServices();
+                      }
+                      if (getIt.isRegistered<UnlockAdminService>()) {
+                        final admin = getIt<UnlockAdminService>();
+                        await admin.launchAppUninstaller();
+                      }
+                    },
+                    icon: const Icon(Icons.delete_outline, size: 18),
+                    label: const Text('Uninstall'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppColors.error,
+                      foregroundColor: Colors.white,
+                      elevation: 0,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

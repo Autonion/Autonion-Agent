@@ -339,21 +339,18 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
                 final type = types[index];
                 return _PaletteItem(
                   type: type,
-                  onTap: () {
+                  onTap: () async {
                     // Data Iterator — redirect to Coming Soon dialog
                     if (type == DesktopFlowNodeType.dataIterator) {
                       _showComingSoonDialog();
                       return;
                     }
-                    final sceneCenter = _transformCtrl.toScene(
-                      const Offset(520, 280),
-                    );
-                    final r = math.Random();
-                    provider.addNode(
-                      type,
-                      sceneCenter.dx + r.nextDouble() * 80,
-                      sceneCenter.dy + r.nextDouble() * 80,
-                    );
+                    // Unlock node — requires Administrator permission once for background service & firewall setup
+                    if (type == DesktopFlowNodeType.unlock) {
+                      await _handleUnlockNodeAdd(provider);
+                      return;
+                    }
+                    _addNodeToCanvas(provider, type);
                   },
                 );
               },
@@ -1774,6 +1771,276 @@ class _FlowBuilderScreenState extends State<FlowBuilderScreen> {
           ),
         ),
       ],
+    );
+  }
+
+  // ═══════════════════════════════════════════════════════
+  //  NODE CREATION & UNLOCK ADMIN SETUP
+  // ═══════════════════════════════════════════════════════
+
+  void _addNodeToCanvas(FlowBuilderProvider provider, DesktopFlowNodeType type) {
+    final sceneCenter = _transformCtrl.toScene(
+      const Offset(520, 280),
+    );
+    final r = math.Random();
+    provider.addNode(
+      type,
+      sceneCenter.dx + r.nextDouble() * 80,
+      sceneCenter.dy + r.nextDouble() * 80,
+    );
+  }
+
+  /// Handles adding an Unlock node. Checks if the one-time administrator
+  /// setup is complete. If not, prompts the user to restart as Administrator.
+  Future<void> _handleUnlockNodeAdd(FlowBuilderProvider provider) async {
+    final isConfigured = await provider.isUnlockServiceReady();
+    if (isConfigured) {
+      // Service is already set up and running, proceed immediately
+      _addNodeToCanvas(provider, DesktopFlowNodeType.unlock);
+      return;
+    }
+
+    if (!mounted) return;
+
+    if (provider.isRunningAsAdmin()) {
+      // Running elevated: auto-configure the unlock service directly
+      _showAdminServiceProgressDialog();
+      final success = await provider.setupUnlockService();
+      if (mounted) {
+        Navigator.of(context, rootNavigator: true).pop(); // dismiss loading dialog
+      }
+      if (success) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Autonion Unlock Helper service configured successfully.'),
+              backgroundColor: AppColors.success,
+            ),
+          );
+          _addNodeToCanvas(provider, DesktopFlowNodeType.unlock);
+        }
+      } else {
+        if (mounted) {
+          _showUnlockSetupFailedDialog();
+        }
+      }
+      return;
+    }
+
+    // Not running as admin and not configured yet: prompt the user to restart as Administrator
+    _showUnlockAdminRequiredDialog(provider);
+  }
+
+  /// Dialog explaining that Administrator privileges are needed once for Unlock setup.
+  void _showUnlockAdminRequiredDialog(FlowBuilderProvider provider) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.surface,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+          side: BorderSide(
+            color: const Color(0xFF8b5cf6).withValues(alpha: 0.3),
+          ),
+        ),
+        contentPadding: const EdgeInsets.fromLTRB(24, 20, 24, 16),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: const Color(0xFF8b5cf6).withValues(alpha: 0.12),
+              ),
+              child: const Icon(
+                Icons.admin_panel_settings_rounded,
+                color: Color(0xFF8b5cf6),
+                size: 40,
+              ),
+            ),
+            const SizedBox(height: 16),
+            const Text(
+              'Administrator Setup Required',
+              style: TextStyle(
+                color: AppColors.textPrimary,
+                fontSize: 18,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const SizedBox(height: 10),
+            const Text(
+              'The Unlock node requires a one-time Administrator setup to install the background unlock helper service and configure Windows Firewall rules.',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: AppColors.textSecondary,
+                fontSize: 13,
+                height: 1.4,
+              ),
+            ),
+            const SizedBox(height: 14),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: const Color(0xFF8b5cf6).withValues(alpha: 0.08),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(
+                  color: const Color(0xFF8b5cf6).withValues(alpha: 0.25),
+                ),
+              ),
+              child: Row(
+                children: const [
+                  Icon(
+                    Icons.check_circle_outline,
+                    color: Color(0xFF8b5cf6),
+                    size: 18,
+                  ),
+                  SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Once configured, you will not need Administrator mode again.',
+                      style: TextStyle(
+                        color: Color(0xFFc4b5fd),
+                        fontSize: 11.5,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 20),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: () => Navigator.of(ctx).pop(),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: AppColors.textSecondary,
+                      side: const BorderSide(color: AppColors.border),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                    ),
+                    child: const Text('Cancel'),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: ElevatedButton.icon(
+                    onPressed: () async {
+                      final messenger = ScaffoldMessenger.of(context);
+                      Navigator.of(ctx).pop();
+                      if (provider.isDirty) {
+                        await provider.saveFlow();
+                      }
+                      final elevated = await provider.restartAsAdmin();
+                      if (!elevated && mounted) {
+                        messenger.showSnackBar(
+                          const SnackBar(
+                            content: Text(
+                              'Administrator elevation was cancelled or declined.',
+                            ),
+                            backgroundColor: AppColors.warning,
+                          ),
+                        );
+                      }
+                    },
+                    icon: const Icon(Icons.restart_alt, size: 18),
+                    label: const Text('Restart as Admin'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF8b5cf6),
+                      foregroundColor: Colors.white,
+                      elevation: 0,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _showAdminServiceProgressDialog() {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => AlertDialog(
+        backgroundColor: AppColors.surface,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+          side: BorderSide(
+            color: const Color(0xFF8b5cf6).withValues(alpha: 0.3),
+          ),
+        ),
+        content: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          child: Row(
+            children: const [
+              SizedBox(
+                width: 24,
+                height: 24,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2.5,
+                  valueColor: AlwaysStoppedAnimation<Color>(Color(0xFF8b5cf6)),
+                ),
+              ),
+              SizedBox(width: 16),
+              Expanded(
+                child: Text(
+                  'Configuring Autonion Unlock service...',
+                  style: TextStyle(
+                    color: AppColors.textPrimary,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _showUnlockSetupFailedDialog() {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.surface,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+          side: const BorderSide(color: AppColors.error),
+        ),
+        title: const Row(
+          children: [
+            Icon(Icons.error_outline, color: AppColors.error, size: 22),
+            SizedBox(width: 8),
+            Text(
+              'Unlock Setup Failed',
+              style: TextStyle(color: AppColors.textPrimary, fontSize: 16),
+            ),
+          ],
+        ),
+        content: const Text(
+          'Failed to install or start the Autonion Unlock Helper service. Please check application logs or ensure autonion_unlock_helper.exe is available.',
+          style: TextStyle(color: AppColors.textSecondary, fontSize: 13),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('OK'),
+          ),
+        ],
+      ),
     );
   }
 
@@ -4582,12 +4849,13 @@ class _UnlockPasswordFieldState extends State<_UnlockPasswordField> {
                 onPressed: _saving || _controller.text.isEmpty
                     ? null
                     : () async {
+                        final messenger = ScaffoldMessenger.of(context);
                         setState(() => _saving = true);
                         try {
                           final ok = await widget.onSave(_controller.text);
                           _controller.clear();
                           if (mounted) {
-                            ScaffoldMessenger.of(context).showSnackBar(
+                            messenger.showSnackBar(
                               SnackBar(
                                 content: Text(ok
                                     ? 'Password saved securely and provisioned for pre-login unlock'
@@ -4625,9 +4893,10 @@ class _UnlockPasswordFieldState extends State<_UnlockPasswordField> {
               const SizedBox(width: 8),
               TextButton(
                 onPressed: () async {
+                  final messenger = ScaffoldMessenger.of(context);
                   await widget.onClear();
                   if (mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
+                    messenger.showSnackBar(
                       const SnackBar(content: Text('Password cleared')),
                     );
                   }

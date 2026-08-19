@@ -15,6 +15,7 @@ import 'features/desktop_automation/providers/desktop_automation_provider.dart';
 import 'features/desktop_automation/services/secure_credential_service.dart';
 import 'features/desktop_automation/services/flow_storage_service.dart';
 import 'features/desktop_automation/services/unlock_service_pipe.dart';
+import 'features/desktop_automation/services/unlock_admin_service.dart';
 import 'features/desktop_automation/models/desktop_flow_models.dart';
 
 void main(List<String> args) async {
@@ -27,6 +28,25 @@ void main(List<String> args) async {
   final log = getIt<LoggingService>();
   log.info('APP', 'Autonion Agent starting...');
   log.info('APP', 'Platform: ${PlatformConfig.platformName}');
+
+  // If launched with Administrator privileges on Windows, ensure the
+  // unlock helper service and firewall rules are installed and running.
+  if (PlatformConfig.isDesktop && Platform.isWindows) {
+    final unlockAdmin = getIt<UnlockAdminService>();
+    if (unlockAdmin.isRunningAsAdmin()) {
+      log.info('APP', 'Running with Administrator privileges.');
+      final isConfigured = await unlockAdmin.isUnlockServiceConfigured();
+      if (!isConfigured) {
+        log.info('APP', 'Elevated run: configuring Autonion Unlock Helper service...');
+        final ok = await unlockAdmin.setupUnlockService();
+        if (ok) {
+          log.info('APP', 'Autonion Unlock Helper service configured successfully.');
+        } else {
+          log.warn('APP', 'Autonion Unlock Helper service auto-configuration failed.');
+        }
+      }
+    }
+  }
 
   // ── 2. Desktop-only: Window manager & System tray ───────
   WindowManagerService? windowService;
@@ -86,7 +106,7 @@ void main(List<String> args) async {
   }
 
   // ── 4. Run the app ──────────────────────────────────────
-  runApp(const AutonionApp());
+  runApp(AutonionApp(args: args));
 
   // ── 5. Check for updates (non-blocking) ─────────────────
   final updateService = getIt<UpdateService>();

@@ -10,16 +10,21 @@ import 'features/desktop_automation/services/flow_storage_service.dart';
 import 'features/desktop_automation/services/python_bridge_service.dart';
 import 'features/desktop_automation/services/secure_credential_service.dart';
 import 'features/desktop_automation/services/unlock_service_pipe.dart';
+import 'features/desktop_automation/services/unlock_admin_service.dart';
 import 'ui/theme/app_theme.dart';
 import 'ui/app_shell.dart';
 import 'ui/widgets/flow_run_overlay.dart';
 
 /// The root MaterialApp widget for Autonion Agent.
 class AutonionApp extends StatelessWidget {
-  const AutonionApp({super.key});
+  final List<String> args;
+
+  const AutonionApp({super.key, this.args = const []});
 
   @override
   Widget build(BuildContext context) {
+    final initialTab = args.contains('--open-flows') ? 3 : 0;
+
     // Only provide FlowBuilderProvider on desktop where the services exist
     if (PlatformConfig.isDesktop) {
       return ChangeNotifierProvider(
@@ -31,12 +36,13 @@ class AutonionApp extends StatelessWidget {
           log: getIt<LoggingService>(),
           credentials: getIt<SecureCredentialService>(),
           pipe: getIt<UnlockServicePipe>(),
+          adminService: getIt<UnlockAdminService>(),
         ),
         child: MaterialApp(
           title: 'Autonion Agent',
           debugShowCheckedModeBanner: false,
           theme: AppTheme.dark,
-          home: const FlowRunOverlay(child: AppShell()),
+          home: FlowRunOverlay(child: AppShell(initialIndex: initialTab)),
         ),
       );
     }
@@ -45,7 +51,7 @@ class AutonionApp extends StatelessWidget {
       title: 'Autonion Agent',
       debugShowCheckedModeBanner: false,
       theme: AppTheme.dark,
-      home: const AppShell(),
+      home: AppShell(initialIndex: initialTab),
     );
   }
 }

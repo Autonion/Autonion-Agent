@@ -16,6 +16,7 @@ import '../services/flow_storage_service.dart';
 import '../services/python_bridge_service.dart';
 import '../services/secure_credential_service.dart';
 import '../services/unlock_service_pipe.dart';
+import '../services/unlock_admin_service.dart';
 
 /// State management for the flow builder canvas and flow list.
 ///
@@ -29,6 +30,7 @@ class FlowBuilderProvider extends ChangeNotifier {
   final LoggingService _log;
   final SecureCredentialService _credentials;
   final UnlockServicePipe _pipe;
+  final UnlockAdminService _adminService;
 
   FlowBuilderProvider({
     required FlowStorageService storage,
@@ -38,13 +40,15 @@ class FlowBuilderProvider extends ChangeNotifier {
     required LoggingService log,
     required SecureCredentialService credentials,
     required UnlockServicePipe pipe,
+    required UnlockAdminService adminService,
   }) : _storage = storage,
        _execution = execution,
        _a11y = a11y,
        _bridge = bridge,
        _log = log,
        _credentials = credentials,
-       _pipe = pipe;
+       _pipe = pipe,
+       _adminService = adminService;
 
   // ── State ──────────────────────────────────────────────
 
@@ -744,4 +748,19 @@ class FlowBuilderProvider extends ChangeNotifier {
   Future<bool> hasUnlockPassword(String nodeId) async {
     return _credentials.hasUnlockPassword(nodeId);
   }
+
+  // ── Unlock Admin Setup ──────────────────────────────────────
+
+  /// Check whether the Autonion Unlock Helper service is installed and running.
+  Future<bool> isUnlockServiceReady() => _adminService.isUnlockServiceConfigured();
+
+  /// Check whether the current app instance is running elevated as Administrator.
+  bool isRunningAsAdmin() => _adminService.isRunningAsAdmin();
+
+  /// Install and configure the unlock helper service (must be running as Administrator).
+  Future<bool> setupUnlockService() => _adminService.setupUnlockService();
+
+  /// Restart the application elevated with Administrator privileges.
+  Future<bool> restartAsAdmin({List<String>? arguments}) =>
+      _adminService.restartAsAdmin(arguments: arguments);
 }

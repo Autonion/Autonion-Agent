@@ -18,6 +18,7 @@ import '../../features/desktop_automation/services/flow_storage_service.dart';
 import '../../features/desktop_automation/services/flow_execution_service.dart';
 import '../../features/desktop_automation/services/secure_credential_service.dart';
 import '../../features/desktop_automation/services/unlock_service_pipe.dart';
+import '../../features/desktop_automation/services/unlock_admin_service.dart';
 import '../../features/system/services/startup_service.dart';
 import '../../features/system/services/system_tray_service.dart';
 import '../../features/system/services/update_service.dart';
@@ -103,8 +104,11 @@ Future<void> setupServiceLocator() async {
     final secureCredentials = SecureCredentialService(log: log);
     getIt.registerSingleton<SecureCredentialService>(secureCredentials);
 
-    getIt.registerSingleton<UnlockServicePipe>(
-      UnlockServicePipe(log: log),
+    final unlockPipe = UnlockServicePipe(log: log);
+    getIt.registerSingleton<UnlockServicePipe>(unlockPipe);
+
+    getIt.registerSingleton<UnlockAdminService>(
+      UnlockAdminService(pipe: unlockPipe, log: log),
     );
 
     final flowExecution = FlowExecutionService(
