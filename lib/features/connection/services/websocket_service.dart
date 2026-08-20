@@ -36,7 +36,10 @@ class ConnectedClient {
   String? get deviceName => _deviceName;
   int get failedPinAttempts => _failedPinAttempts;
 
-  void markAuthenticated({required String deviceId, required String deviceName}) {
+  void markAuthenticated({
+    required String deviceId,
+    required String deviceName,
+  }) {
     _isAuthenticated = true;
     _isPairingPending = false;
     _authTimeoutTimer?.cancel();
@@ -128,6 +131,12 @@ class WebSocketService extends ChangeNotifier {
     }
   }
 
+  List<ConnectedClient> getSessionsByDeviceId(String deviceId) {
+    return _sessions
+        .where((s) => s.deviceId == deviceId && !s.isExtension)
+        .toList();
+  }
+
   void markClientAuthenticated(
     WebSocketChannel client, {
     required String deviceId,
@@ -136,7 +145,9 @@ class WebSocketService extends ChangeNotifier {
     final session = getClientSession(client);
     if (session != null) {
       session.markAuthenticated(deviceId: deviceId, deviceName: deviceName);
-      _log('Client authenticated: $deviceName ($deviceId) from ${session.remoteIp}');
+      _log(
+        'Client authenticated: $deviceName ($deviceId) from ${session.remoteIp}',
+      );
       notifyListeners();
     }
   }
@@ -165,7 +176,9 @@ class WebSocketService extends ChangeNotifier {
   }) {
     final matching = _sessions.where((s) => s.deviceId == deviceId).toList();
     for (final session in matching) {
-      _log('Severing connection for revoked device: $deviceId (${session.remoteIp})');
+      _log(
+        'Severing connection for revoked device: $deviceId (${session.remoteIp})',
+      );
       disconnectClient(session.socket, code: code, reason: reason);
     }
   }
@@ -193,8 +206,9 @@ class WebSocketService extends ChangeNotifier {
   /// Broadcasts only to authenticated clients.
   void broadcastEvent(Map<String, dynamic> event) {
     final payload = jsonEncode(event);
-    final authenticatedSessions =
-        _sessions.where((s) => s.isAuthenticated).toList();
+    final authenticatedSessions = _sessions
+        .where((s) => s.isAuthenticated)
+        .toList();
 
     _log(
       'Broadcasting to ${authenticatedSessions.length} authenticated client(s): ${event['type'] ?? 'unknown'}',
@@ -297,14 +311,18 @@ class WebSocketService extends ChangeNotifier {
       remoteIp: remoteIp,
     );
     _sessions.add(session);
-    _log('Client connected from $remoteIp (loopback=$isLoopback)! Total sockets: ${_sessions.length}');
+    _log(
+      'Client connected from $remoteIp (loopback=$isLoopback)! Total sockets: ${_sessions.length}',
+    );
     notifyListeners();
 
     // Enforce 10s authentication window for LAN sockets
     if (!isLoopback) {
       session.startAuthTimeout(const Duration(seconds: 10), () {
         if (!session.isAuthenticated && !session.isPairingPending) {
-          _log('Quarantine: Disconnecting unauthenticated socket from $remoteIp (auth timeout)');
+          _log(
+            'Quarantine: Disconnecting unauthenticated socket from $remoteIp (auth timeout)',
+          );
           disconnectClient(
             webSocket,
             code: 4008,
@@ -344,14 +362,19 @@ class WebSocketService extends ChangeNotifier {
               _extensionConnected = true;
               _extensionClient = webSocket;
               _extensionConnectionController.add(true);
-              _log('Extension client verified on loopback ($remoteIp) and tracked');
+              _log(
+                'Extension client verified on loopback ($remoteIp) and tracked',
+              );
               notifyListeners();
             }
 
             // 3. Strict Default-Deny Allowlist for unauthenticated sockets
             const allowedUnauthTypes = {'client_info', 'pairing_submit'};
-            if (!session.isAuthenticated && !allowedUnauthTypes.contains(type)) {
-              _log('Quarantine: dropped unauthenticated "$type" from $remoteIp');
+            if (!session.isAuthenticated &&
+                !allowedUnauthTypes.contains(type)) {
+              _log(
+                'Quarantine: dropped unauthenticated "$type" from $remoteIp',
+              );
               return;
             }
 
