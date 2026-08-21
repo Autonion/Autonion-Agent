@@ -4780,11 +4780,47 @@ class _UnlockPasswordFieldState extends State<_UnlockPasswordField> {
   bool _saving = false;
 
   @override
+  void initState() {
+    super.initState();
+    _controller.addListener(_onTextChanged);
+  }
+
+  void _onTextChanged() {
+    if (mounted) {
+      setState(() {});
+    }
+  }
+
+  @override
   void dispose() {
+    _controller.removeListener(_onTextChanged);
     // Clear sensitive text from memory
     _controller.clear();
     _controller.dispose();
     super.dispose();
+  }
+
+  Future<void> _handleSave() async {
+    if (_saving || _controller.text.isEmpty) return;
+    final messenger = ScaffoldMessenger.of(context);
+    setState(() => _saving = true);
+    try {
+      final ok = await widget.onSave(_controller.text);
+      _controller.clear();
+      if (mounted) {
+        messenger.showSnackBar(
+          SnackBar(
+            content: Text(ok
+                ? 'Password saved securely and provisioned for pre-login unlock'
+                : 'Password saved locally, but pre-login unlock sync failed. Ensure the Autonion Unlock service is running.'),
+            backgroundColor:
+                ok ? null : AppColors.warning,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
   }
 
   @override
@@ -4806,6 +4842,7 @@ class _UnlockPasswordFieldState extends State<_UnlockPasswordField> {
           controller: _controller,
           obscureText: _obscure,
           style: const TextStyle(color: AppColors.textPrimary, fontSize: 13),
+          onSubmitted: (_) => _handleSave(),
           decoration: InputDecoration(
             hintText: widget.hasPassword
                 ? 'Enter new password to update'
@@ -4848,27 +4885,7 @@ class _UnlockPasswordFieldState extends State<_UnlockPasswordField> {
               child: ElevatedButton(
                 onPressed: _saving || _controller.text.isEmpty
                     ? null
-                    : () async {
-                        final messenger = ScaffoldMessenger.of(context);
-                        setState(() => _saving = true);
-                        try {
-                          final ok = await widget.onSave(_controller.text);
-                          _controller.clear();
-                          if (mounted) {
-                            messenger.showSnackBar(
-                              SnackBar(
-                                content: Text(ok
-                                    ? 'Password saved securely and provisioned for pre-login unlock'
-                                    : 'Password saved locally, but pre-login unlock sync failed. Ensure the Autonion Unlock service is running.'),
-                                backgroundColor:
-                                    ok ? null : AppColors.warning,
-                              ),
-                            );
-                          }
-                        } finally {
-                          if (mounted) setState(() => _saving = false);
-                        }
-                      },
+                    : _handleSave,
                 style: ElevatedButton.styleFrom(
                   backgroundColor: const Color(0xFF8b5cf6),
                   foregroundColor: Colors.white,
