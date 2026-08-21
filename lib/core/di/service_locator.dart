@@ -7,12 +7,18 @@ import '../../features/clipboard/services/clipboard_sync_service.dart';
 import '../../features/connection/providers/connection_provider.dart';
 import '../../features/connection/services/device_info_service.dart';
 import '../../features/connection/services/discovery_service.dart';
+import '../../features/connection/services/paired_device_service.dart';
 import '../../features/connection/services/websocket_service.dart';
 import '../../features/desktop_automation/providers/desktop_automation_provider.dart';
 import '../../features/desktop_automation/services/accessibility_tree_service.dart';
 import '../../features/desktop_automation/services/desktop_agent_service.dart';
 import '../../features/desktop_automation/services/input_simulation_service.dart';
 import '../../features/desktop_automation/services/python_bridge_service.dart';
+import '../../features/desktop_automation/services/flow_storage_service.dart';
+import '../../features/desktop_automation/services/flow_execution_service.dart';
+import '../../features/desktop_automation/services/secure_credential_service.dart';
+import '../../features/desktop_automation/services/unlock_service_pipe.dart';
+import '../../features/desktop_automation/services/unlock_admin_service.dart';
 import '../../features/system/services/startup_service.dart';
 import '../../features/system/services/system_tray_service.dart';
 import '../../features/system/services/update_service.dart';
@@ -36,13 +42,16 @@ Future<void> setupServiceLocator() async {
   await deviceInfo.init();
   getIt.registerSingleton<DeviceInfoService>(deviceInfo);
 
+  getIt.registerLazySingleton<PairedDeviceService>(
+    () => PairedDeviceService(log: log),
+  );
   getIt.registerLazySingleton<WebSocketService>(() => WebSocketService());
   getIt.registerLazySingleton<DiscoveryService>(
     () => DiscoveryService(getIt<DeviceInfoService>()),
   );
-  getIt.registerLazySingleton<ClipboardSyncService>(
-    () => ClipboardSyncService(),
-  );
+  final clipboardSync = ClipboardSyncService();
+  await clipboardSync.init();
+  getIt.registerSingleton<ClipboardSyncService>(clipboardSync);
   getIt.registerLazySingleton<TriggerRuleService>(() => TriggerRuleService());
 
   // ── Browser Automation (desktop-only instances, but registered always for DI) ─
@@ -87,6 +96,29 @@ Future<void> setupServiceLocator() async {
       agent: desktopAgent,
     );
     getIt.registerSingleton<DesktopAutomationProvider>(desktopProvider);
+
+    // ── Flow System (desktop-only) ────────────────────────
+    final flowStorage = FlowStorageService(log: log);
+    getIt.registerSingleton<FlowStorageService>(flowStorage);
+
+    final secureCredentials = SecureCredentialService(log: log);
+    getIt.registerSingleton<SecureCredentialService>(secureCredentials);
+
+    final unlockPipe = UnlockServicePipe(log: log);
+    getIt.registerSingleton<UnlockServicePipe>(unlockPipe);
+
+    getIt.registerSingleton<UnlockAdminService>(
+      UnlockAdminService(pipe: unlockPipe, log: log),
+    );
+
+    final flowExecution = FlowExecutionService(
+      input: inputSim,
+      a11y: a11y,
+      bridge: pythonBridge,
+      log: log,
+      credentials: secureCredentials,
+    );
+    getIt.registerSingleton<FlowExecutionService>(flowExecution);
   }
 
   // ── Providers ───────────────────────────────────────────
@@ -99,6 +131,7 @@ Future<void> setupServiceLocator() async {
       browserLauncherService: getIt<BrowserLauncherService>(),
       clipboardSyncService: getIt<ClipboardSyncService>(),
       triggerRuleService: getIt<TriggerRuleService>(),
+      pairedDeviceService: getIt<PairedDeviceService>(),
     ),
   );
 }

@@ -76,8 +76,13 @@ class PythonBridgeService {
       throw PythonBridgeException('Failed to write to agent: $e');
     }
 
+    final timeout = (action == 'select_screen_region' ||
+            action == 'select_ui_element')
+        ? const Duration(minutes: 5)
+        : const Duration(seconds: 30);
+
     return completer.future.timeout(
-      const Duration(seconds: 30),
+      timeout,
       onTimeout: () {
         _pendingRequests.remove(id);
         throw PythonBridgeException('Command timed out ($action)');
@@ -128,6 +133,9 @@ class PythonBridgeService {
       'pyautogui',
       'mss',
       'Pillow',
+      'pyperclip',
+      'opencv-python',
+      'numpy',
     ]);
 
     if (pipResult.exitCode != 0) {

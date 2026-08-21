@@ -176,59 +176,61 @@ class _LogsScreenState extends State<LogsScreen> {
                                 ?.copyWith(color: AppColors.textMuted),
                           ),
                         )
-                      : ListView.builder(
-                          controller: _scrollController,
-                          padding: const EdgeInsets.all(12),
-                          itemCount: entries.length,
-                          itemBuilder: (context, index) {
-                            final entry = entries[index];
-                            return Padding(
-                              padding: const EdgeInsets.symmetric(
-                                vertical: 1.5,
-                              ),
-                              child: Row(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  _levelIndicator(entry.level),
-                                  const SizedBox(width: 8),
-                                  Text(
-                                    entry.timeString,
-                                    style: AppTypography.mono.copyWith(
-                                      color: AppColors.textMuted,
-                                      fontSize: 11,
-                                    ),
-                                  ),
-                                  const SizedBox(width: 8),
-                                  Container(
-                                    padding: const EdgeInsets.symmetric(
-                                      horizontal: 5,
-                                      vertical: 1,
-                                    ),
-                                    decoration: BoxDecoration(
-                                      color: AppColors.surfaceVariant,
-                                      borderRadius: BorderRadius.circular(4),
-                                    ),
-                                    child: Text(
-                                      entry.source,
+                      : SelectionArea(
+                          child: ListView.builder(
+                            controller: _scrollController,
+                            padding: const EdgeInsets.all(12),
+                            itemCount: entries.length,
+                            itemBuilder: (context, index) {
+                              final entry = entries[index];
+                              return Padding(
+                                padding: const EdgeInsets.symmetric(
+                                  vertical: 1.5,
+                                ),
+                                child: Row(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    _levelIndicator(entry.level),
+                                    const SizedBox(width: 8),
+                                    Text(
+                                      entry.timeString,
                                       style: AppTypography.mono.copyWith(
-                                        color: AppColors.secondary,
-                                        fontSize: 10,
-                                      ),
-                                    ),
-                                  ),
-                                  const SizedBox(width: 8),
-                                  Expanded(
-                                    child: Text(
-                                      entry.message,
-                                      style: AppTypography.mono.copyWith(
+                                        color: AppColors.textMuted,
                                         fontSize: 11,
                                       ),
                                     ),
-                                  ),
-                                ],
-                              ),
-                            );
-                          },
+                                    const SizedBox(width: 8),
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 5,
+                                        vertical: 1,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color: AppColors.surfaceVariant,
+                                        borderRadius: BorderRadius.circular(4),
+                                      ),
+                                      child: Text(
+                                        entry.source,
+                                        style: AppTypography.mono.copyWith(
+                                          color: AppColors.secondary,
+                                          fontSize: 10,
+                                        ),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 8),
+                                    Expanded(
+                                      child: Text(
+                                        entry.message,
+                                        style: AppTypography.mono.copyWith(
+                                          fontSize: 11,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              );
+                            },
+                          ),
                         ),
                 ),
               ),

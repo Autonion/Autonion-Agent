@@ -1,16 +1,20 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
+import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:web_socket_channel/web_socket_channel.dart';
+import '../../../core/config/app_config.dart';
 import '../../../core/config/platform_config.dart';
 import '../../../core/services/logging_service.dart';
 import '../../browser_automation/services/browser_launcher_service.dart';
 import '../../clipboard/services/clipboard_sync_service.dart';
 import '../../triggers/services/trigger_rule_service.dart';
+import '../models/paired_device.dart';
 import '../services/device_info_service.dart';
 import '../services/discovery_service.dart';
+import '../services/paired_device_service.dart';
 import '../services/websocket_service.dart';
 import '../../../core/di/service_locator.dart';
 import '../../desktop_automation/providers/desktop_automation_provider.dart';
@@ -18,6 +22,31 @@ import '../../desktop_automation/services/desktop_agent_service.dart';
 import '../../ai/models/ai_message.dart';
 import '../../ai/providers/ai_provider_notifier.dart';
 import '../../ai/models/ai_provider_type.dart';
+import '../../desktop_automation/services/flow_storage_service.dart';
+import '../../desktop_automation/services/flow_execution_service.dart';
+
+/// Tracks an active one-time PIN pairing session with an unknown device.
+class PendingPairing {
+  final WebSocketChannel socket;
+  final String deviceId;
+  final String deviceName;
+  final String deviceSecret;
+  final String pin;
+  final String remoteIp;
+  final DateTime createdAt;
+  final Timer expiryTimer;
+
+  PendingPairing({
+    required this.socket,
+    required this.deviceId,
+    required this.deviceName,
+    required this.deviceSecret,
+    required this.pin,
+    required this.remoteIp,
+    required this.createdAt,
+    required this.expiryTimer,
+  });
+}
 
 /// Orchestrates all connection-related services and exposes reactive state.
 ///
@@ -39,17 +68,34 @@ class ConnectionProvider extends ChangeNotifier {
   final BrowserLauncherService _browser;
   final ClipboardSyncService _clipboard;
   final TriggerRuleService _triggers;
+  final PairedDeviceService _pairedDevices;
 
   bool _isRunning = false;
+  bool _killSwitchActive = false;
+  String? _activeTransactionId;
   int? _port;
   StreamSubscription? _commandSub;
   StreamSubscription<String>? _clipboardSub;
+
+  // ── Companion version & pairing ──
+  String? _companionVersion;
+  String? _companionWarning;
+  Timer? _versionCheckTimer;
+  bool _receivedClientInfo = false;
+  PendingPairing? _activePairing;
 
   bool get isRunning => _isRunning;
   int? get port => _port;
   DeviceInfoService get deviceInfo => _deviceInfo;
   WebSocketService get ws => _ws;
   BrowserLauncherService get browser => _browser;
+  PairedDeviceService get pairedDevices => _pairedDevices;
+  PendingPairing? get activePairing => _activePairing;
+  bool get hasPendingPairing => _activePairing != null;
+
+  /// Non-null when the connected Android companion is outdated.
+  String? get companionWarning => _companionWarning;
+  String? get companionVersion => _companionVersion;
 
   ConnectionProvider({
     required LoggingService loggingService,
@@ -59,13 +105,15 @@ class ConnectionProvider extends ChangeNotifier {
     required BrowserLauncherService browserLauncherService,
     required ClipboardSyncService clipboardSyncService,
     required TriggerRuleService triggerRuleService,
+    required PairedDeviceService pairedDeviceService,
   }) : _log = loggingService,
        _ws = webSocketService,
        _discovery = discoveryService,
        _deviceInfo = deviceInfoService,
        _browser = browserLauncherService,
        _clipboard = clipboardSyncService,
-       _triggers = triggerRuleService;
+       _triggers = triggerRuleService,
+       _pairedDevices = pairedDeviceService;
 
   /// Wire all inter-service dependencies and start everything.
   Future<void> startServices() async {
@@ -82,6 +130,10 @@ class ConnectionProvider extends ChangeNotifier {
       _clipboard.setDeviceInfoService(_deviceInfo);
       _triggers.setLoggingService(_log);
       _triggers.setWebSocketService(_ws);
+
+      // Initialize paired devices database
+      await _pairedDevices.init();
+      _pairedDevices.addListener(notifyListeners);
 
       // Detect browsers (desktop only)
       if (PlatformConfig.isDesktop) {
@@ -102,7 +154,13 @@ class ConnectionProvider extends ChangeNotifier {
       // 4. Start clipboard polling
       _clipboard.startPolling();
 
-      // 5. Start trigger rule listening
+      // 5. Broadcast clipboard sync state to Android whenever it changes locally
+      _clipboard.addListener(_broadcastClipboardSyncState);
+
+      // 6. Push current clipboard state + start version timeout when a new client connects
+      _ws.addListener(_onWsStateChanged);
+
+      // 7. Start trigger rule listening
       _triggers.startListening();
 
       _isRunning = true;
@@ -115,6 +173,13 @@ class ConnectionProvider extends ChangeNotifier {
   Future<void> stopServices() async {
     if (!_isRunning) return;
     _log.info('APP', 'Stopping services...');
+
+    // Remove listeners before tearing down
+    _clipboard.removeListener(_broadcastClipboardSyncState);
+    _ws.removeListener(_broadcastClipboardSyncState);
+    _pairedDevices.removeListener(notifyListeners);
+
+    cancelActivePairing();
 
     try {
       _clipboard.stopPolling();
@@ -144,12 +209,417 @@ class ConnectionProvider extends ChangeNotifier {
 
     _isRunning = false;
     _port = null;
+    _versionCheckTimer?.cancel();
+    _receivedClientInfo = false;
+    _companionVersion = null;
+    _companionWarning = null;
+    _ws.removeListener(_onWsStateChanged);
     notifyListeners();
     _log.info('APP', 'Services stopped');
   }
 
+  /// Called whenever WebSocketService notifies (new client connect/disconnect).
+  void _onWsStateChanged() {
+    _broadcastClipboardSyncState();
+
+    // If the device engaged in pairing disconnected before entering PIN,
+    // clear active pairing immediately rather than locking for 120s.
+    if (_activePairing != null &&
+        _ws.getClientSession(_activePairing!.socket) == null) {
+      _activePairing?.expiryTimer.cancel();
+      _activePairing = null;
+      _log.info(
+        'Auth',
+        'Pending pairing client disconnected; dismissed pairing modal.',
+      );
+      notifyListeners();
+    }
+
+    // When a new client connects, start a timer to detect old companions
+    // that don't send client_info.
+    if (_ws.connectedClients > 0 && !_receivedClientInfo) {
+      _versionCheckTimer?.cancel();
+      _versionCheckTimer = Timer(const Duration(seconds: 5), () {
+        // Timer fired → no client_info received → old companion
+        if (!_receivedClientInfo && _isRunning) {
+          _companionWarning =
+              'Connected Android app appears to be outdated. '
+              'Update to v${AppConfig.minRequiredCompanionVersion}+ for full compatibility '
+              '(Flows, clipboard sync control).';
+          _log.warn('APP', _companionWarning!);
+          notifyListeners();
+        }
+      });
+    }
+
+    // All clients disconnected → reset version state
+    if (_ws.connectedClients == 0) {
+      _versionCheckTimer?.cancel();
+      _receivedClientInfo = false;
+      _companionVersion = null;
+      _companionWarning = null;
+      notifyListeners();
+    }
+  }
+
+  /// One-shot broadcast of current clipboard sync state to all connected clients.
+  /// Called when the local toggle changes or when a new client connects.
+  void _broadcastClipboardSyncState() {
+    if (!_isRunning || _ws.connectedClients == 0) return;
+    _ws.broadcastEvent({
+      'type': 'clipboard.sync_state_changed',
+      'payload': {'enabled': _clipboard.enabled},
+      'timestamp': DateTime.now().toIso8601String(),
+    });
+  }
+
+  /// Cancel current active pairing request and reject the client.
+  void cancelActivePairing() {
+    if (_activePairing != null) {
+      _ws.sendToClient(_activePairing!.socket, {
+        'type': 'auth_result',
+        'status': 'pairing_rejected',
+        'message': 'Pairing declined by user.',
+      });
+      _ws.disconnectClient(_activePairing!.socket);
+      _activePairing?.expiryTimer.cancel();
+      _activePairing = null;
+      _log.info('Auth', 'Pairing session cancelled by user');
+      notifyListeners();
+    }
+  }
+
+  /// Revoke pairing for a device, cancel its active work, and sever active socket immediately.
+  Future<void> revokeDevice(String deviceId) async {
+    // 1. Revoke persistent trust first so any re-auth attempts fail immediately
+    await _pairedDevices.revokeDevice(deviceId);
+
+    // 2. Cancel active work owned by this companion.
+    final ownedTimerIds = _scheduledTimerOwners.entries
+        .where((entry) => entry.value == deviceId)
+        .map((entry) => entry.key)
+        .toList();
+    for (final transactionId in ownedTimerIds) {
+      final timer = _scheduledTimers.remove(transactionId);
+      timer?.cancel();
+      _scheduledTimerOwners.remove(transactionId);
+    }
+    _triggers.clearRulesForDevice(deviceId);
+
+    // 3. Send targeted revocation notice to all matching sessions
+    final sessions = _ws.getSessionsByDeviceId(deviceId);
+    for (final session in sessions) {
+      _ws.sendToClient(session.socket, {
+        'type': 'auth_result',
+        'status': 'pairing_revoked',
+        'message': 'Pairing revoked by desktop host',
+      });
+    }
+
+    // 4. Sever active sockets
+    _ws.disconnectClientByDeviceId(
+      deviceId,
+      code: 4001,
+      reason: 'Pairing revoked',
+    );
+
+    _log.info('Auth', 'Revocation complete for device $deviceId');
+    notifyListeners();
+  }
+
+  /// Process version & pairing info sent by the Android companion on connect.
+  Future<void> _handleClientInfo(WebSocketClientCommand cmd) async {
+    final command = cmd.data;
+    final client = cmd.client;
+    final session = cmd.session;
+
+    final version = command['version'] as String?;
+    final deviceId = command['deviceId'] as String?;
+    final deviceName = (command['deviceName'] as String?) ?? 'Companion Device';
+    final deviceSecret = (command['deviceSecret'] as String?) ?? '';
+
+    if (version != null) {
+      _versionCheckTimer?.cancel();
+      _receivedClientInfo = true;
+      _companionVersion = version;
+      _log.info(
+        'APP',
+        'Companion connected: v$version ($deviceName, id: $deviceId)',
+      );
+
+      if (AppConfig.compareVersions(
+            version,
+            AppConfig.minRequiredCompanionVersion,
+          ) <
+          0) {
+        _companionWarning =
+            'Connected Android app v$version is outdated. '
+            'Update to v${AppConfig.minRequiredCompanionVersion}+ for full compatibility '
+            '(Flows, clipboard sync control).';
+        _log.warn('APP', _companionWarning!);
+      } else {
+        _companionWarning = null;
+      }
+      notifyListeners();
+    }
+
+    if (deviceId == null || deviceId.isEmpty) {
+      _log.warn(
+        'Auth',
+        'Rejecting outdated companion from ${session.remoteIp}: missing deviceId',
+      );
+      _ws.sendToClient(client, {
+        'type': 'auth_result',
+        'status': 'outdated_companion',
+        'error':
+            'Companion app is outdated. Update required to connect securely.',
+      });
+      _ws.disconnectClient(
+        client,
+        code: 4003,
+        reason: 'Outdated companion app',
+      );
+      return;
+    }
+
+    // Check if device is already paired
+    final isPaired = await _pairedDevices.isDevicePaired(
+      deviceId,
+      deviceSecret,
+    );
+
+    if (isPaired) {
+      _ws.markClientAuthenticated(
+        client,
+        deviceId: deviceId,
+        deviceName: deviceName,
+      );
+      await _pairedDevices.updateLastSeen(deviceId, session.remoteIp);
+
+      _ws.sendToClient(client, {
+        'type': 'auth_result',
+        'status': 'authenticated',
+        'agent': 'autonion',
+        'agent_id': _deviceInfo.deviceId,
+        'agent_name': _deviceInfo.deviceName,
+        'version': AppConfig.appVersion,
+        'min_companion_version': AppConfig.minRequiredCompanionVersion,
+        'timestamp': DateTime.now().toIso8601String(),
+        'server_info': {
+          'port': _ws.activePort,
+          'clients': _ws.authenticatedClientsCount,
+        },
+      });
+      return;
+    }
+
+    // Not paired: check if new pairings are allowed
+    if (!_pairedDevices.allowNewPairings) {
+      _log.warn(
+        'Auth',
+        'Rejecting pairing request from $deviceName ($deviceId) - new pairings disabled',
+      );
+      _ws.sendToClient(client, {
+        'type': 'auth_result',
+        'status': 'pairing_disabled',
+        'message': 'New device pairing is disabled on this host.',
+      });
+      _ws.disconnectClient(client, code: 4003, reason: 'New pairings disabled');
+      return;
+    }
+
+    // Check if another pairing session is active
+    if (_activePairing != null) {
+      if (_activePairing!.deviceId != deviceId) {
+        _log.warn(
+          'Auth',
+          'Pairing busy: another device (${_activePairing!.deviceName}) is currently pairing',
+        );
+        _ws.sendToClient(client, {
+          'type': 'auth_result',
+          'status': 'pairing_busy',
+          'message':
+              'Another pairing request is currently in progress. Please try again shortly.',
+        });
+        return;
+      } else {
+        // Same device retrying: cancel old timer and refresh
+        _activePairing?.expiryTimer.cancel();
+      }
+    }
+
+    // Mark session as pairing pending so 10s auth timeout doesn't fire
+    session.markPairingPending();
+
+    // Generate random 6-digit PIN
+    final randomPin = (100000 + Random.secure().nextInt(900000)).toString();
+    _log.info(
+      'Auth',
+      'Generated pairing PIN $randomPin for $deviceName ($deviceId)',
+    );
+
+    final expiryTimer = Timer(const Duration(seconds: 120), () {
+      if (_activePairing?.deviceId == deviceId) {
+        _log.info(
+          'Auth',
+          'Pairing session expired for $deviceName ($deviceId)',
+        );
+        _ws.sendToClient(client, {
+          'type': 'auth_result',
+          'status': 'pairing_expired',
+          'message': 'Pairing timed out. Please try connecting again.',
+        });
+        _ws.disconnectClient(client, code: 4008, reason: 'Pairing expired');
+        _activePairing = null;
+        notifyListeners();
+      }
+    });
+
+    _activePairing = PendingPairing(
+      socket: client,
+      deviceId: deviceId,
+      deviceName: deviceName,
+      deviceSecret: deviceSecret,
+      pin: randomPin,
+      remoteIp: session.remoteIp,
+      createdAt: DateTime.now(),
+      expiryTimer: expiryTimer,
+    );
+
+    _ws.sendToClient(client, {
+      'type': 'auth_result',
+      'status': 'pairing_required',
+      'agent_id': _deviceInfo.deviceId,
+      'agent_name': _deviceInfo.deviceName,
+      'expiresInSeconds': 120,
+    });
+
+    notifyListeners();
+  }
+
+  /// Process pairing PIN submitted from the companion app.
+  Future<void> _handlePairingSubmit(WebSocketClientCommand cmd) async {
+    final command = cmd.data;
+    final client = cmd.client;
+    final session = cmd.session;
+
+    final pin = (command['pin'] as String? ?? '').replaceAll(' ', '').trim();
+    final deviceId = command['deviceId'] as String? ?? '';
+    final deviceName = (command['deviceName'] as String?) ?? 'Companion Device';
+    final deviceSecret = command['deviceSecret'] as String? ?? '';
+
+    if (_activePairing == null || _activePairing!.deviceId != deviceId) {
+      _log.warn(
+        'Auth',
+        'pairing_submit received but no active pairing found for $deviceId',
+      );
+      _ws.sendToClient(client, {
+        'type': 'auth_result',
+        'status': 'pairing_failed',
+        'error': 'No active pairing session found. Please reconnect.',
+      });
+      return;
+    }
+
+    if (_activePairing!.pin == pin) {
+      _log.info(
+        'Auth',
+        'PIN matched for $deviceName ($deviceId)! Pairing succeeded.',
+      );
+      final secretToUse = deviceSecret.isNotEmpty
+          ? deviceSecret
+          : _activePairing!.deviceSecret;
+
+      _activePairing?.expiryTimer.cancel();
+      _activePairing = null;
+
+      final pairedDevice = PairedDevice(
+        id: deviceId,
+        name: deviceName,
+        secret: secretToUse,
+        pairedAt: DateTime.now(),
+        lastSeen: DateTime.now(),
+        lastIp: session.remoteIp,
+      );
+
+      await _pairedDevices.pairDevice(pairedDevice);
+      _ws.markClientAuthenticated(
+        client,
+        deviceId: deviceId,
+        deviceName: deviceName,
+      );
+
+      _ws.sendToClient(client, {
+        'type': 'auth_result',
+        'status': 'paired_success',
+        'agent': 'autonion',
+        'agent_id': _deviceInfo.deviceId,
+        'agent_name': _deviceInfo.deviceName,
+        'version': AppConfig.appVersion,
+        'min_companion_version': AppConfig.minRequiredCompanionVersion,
+        'timestamp': DateTime.now().toIso8601String(),
+        'server_info': {
+          'port': _ws.activePort,
+          'clients': _ws.authenticatedClientsCount,
+        },
+      });
+
+      notifyListeners();
+    } else {
+      final attempts = _ws.recordFailedPinAttempt(client);
+      _log.warn(
+        'Auth',
+        'Invalid PIN submitted by $deviceName ($deviceId). Attempt $attempts/3',
+      );
+
+      _ws.sendToClient(client, {
+        'type': 'auth_result',
+        'status': 'pairing_failed',
+        'error': 'Invalid PIN ($attempts of 3 attempts used)',
+        'attempts': attempts,
+      });
+
+      if (attempts >= 3) {
+        _activePairing?.expiryTimer.cancel();
+        _activePairing = null;
+        notifyListeners();
+      }
+    }
+  }
+
   /// Route incoming WebSocket commands.
-  Future<void> _executeCommand(Map<String, dynamic> command) async {
+  Future<void> _executeCommand(WebSocketClientCommand clientCmd) async {
+    final command = clientCmd.data;
+    final session = clientCmd.session;
+
+    // ── Version & Pairing handshake ────────────────────────
+    if (command['type'] == 'client_info') {
+      await _handleClientInfo(clientCmd);
+      return;
+    }
+
+    if (command['type'] == 'pairing_submit') {
+      await _handlePairingSubmit(clientCmd);
+      return;
+    }
+
+    if (command['type'] == 'unpair_device') {
+      final deviceId = session.deviceId;
+      if (deviceId != null && deviceId.isNotEmpty && session.isAuthenticated) {
+        _log.info(
+          'Auth',
+          'Device $deviceId (${session.deviceName}) requested self-unpair',
+        );
+        await revokeDevice(deviceId);
+      } else {
+        _log.warn(
+          'Auth',
+          'unpair_device rejected: session unauthenticated or missing deviceId',
+        );
+      }
+      return;
+    }
+
     // Structured key press commands — check BEFORE prompt to avoid
     // routing type:'key_press' commands (that also carry 'prompt') to LLM.
     if (command['type'] == 'key_press') {
@@ -159,12 +629,33 @@ class ConnectionProvider extends ChangeNotifier {
 
     // Scheduled/recurring actions — also check before generic prompt
     if (command['type'] == 'schedule') {
-      await _handleScheduleCommand(command);
+      await _handleScheduleCommand(command, ownerDeviceId: session.deviceId);
       return;
     }
 
     if (command['type'] == 'kill_switch') {
       _handleKillSwitch(command);
+      return;
+    }
+
+    // ── Flow System ──────────────────────────────────────
+    if (command['type'] == 'trigger_flow') {
+      await _handleFlowTrigger(command);
+      return;
+    }
+
+    if (command['type'] == 'list_flows') {
+      await _handleListFlows(command);
+      return;
+    }
+
+    if (command['type'] == 'stop_flow') {
+      _handleFlowStop(command);
+      return;
+    }
+
+    if (command['type'] == 'save_prompt_as_flow') {
+      await _handleSavePromptAsFlow(command);
       return;
     }
 
@@ -176,7 +667,7 @@ class ConnectionProvider extends ChangeNotifier {
 
     // Schedule cancellation
     if (command['type'] == 'schedule_cancel') {
-      _handleScheduleCancel(command);
+      _handleScheduleCancel(command, ownerDeviceId: session.deviceId);
       return;
     }
 
@@ -189,6 +680,14 @@ class ConnectionProvider extends ChangeNotifier {
 
       if (type == 'open_url') {
         action = 'open_url';
+      } else if (type == 'clipboard.set_sync_enabled') {
+        final enabled = payload?['enabled'] as bool? ?? true;
+        _clipboard.setEnabled(enabled);
+        _log.info(
+          'CMD',
+          'Clipboard sync ${enabled ? "enabled" : "disabled"} by Android',
+        );
+        return;
       } else if (type == 'clipboard.text_copied') {
         await _handleClipboardSync(payload);
         return;
@@ -196,7 +695,10 @@ class ConnectionProvider extends ChangeNotifier {
         await _handleImageClipboardSync(payload);
         return;
       } else if (type == 'register_triggers') {
-        _triggers.handleRegisterTriggers(payload ?? {});
+        _triggers.handleRegisterTriggers(
+          payload ?? {},
+          ownerDeviceId: session.deviceId,
+        );
         return;
       } else if (command['source'] == 'extension') {
         _handleExtensionMessage(command);
@@ -230,6 +732,14 @@ class ConnectionProvider extends ChangeNotifier {
     final prompt = command['prompt']?.toString() ?? '';
     final transactionId = command['transactionId']?.toString() ?? '';
 
+    // Extract conversation context from Android payload.
+    // The Android app sends this via AgentRequest.agentContext.conversationSummary
+    // and/or AgentRequest.context.
+    final agentContext = command['agentContext'] as Map<String, dynamic>?;
+    final conversationContext =
+        agentContext?['conversationSummary']?.toString() ??
+        command['context']?.toString();
+
     // Deduplication: skip if this transaction was already processed
     if (transactionId.isNotEmpty &&
         _processedTransactions.contains(transactionId)) {
@@ -246,6 +756,10 @@ class ConnectionProvider extends ChangeNotifier {
 
     _log.info('CMD', 'Received prompt: "$prompt" (txn=$transactionId)');
 
+    // Reset kill switch state for this new prompt
+    _killSwitchActive = false;
+    _activeTransactionId = transactionId;
+
     // Send immediate acknowledgment back to Android
     _sendPromptResponse(transactionId, 'started', 'Processing command...');
 
@@ -254,7 +768,11 @@ class ConnectionProvider extends ChangeNotifier {
     if (aiNotifier.config.providerType == AiProviderType.ollama) {
       final isAvailable = await aiNotifier.activeService.isAvailable();
       if (!isAvailable) {
-        _sendPromptResponse(transactionId, 'in_progress', 'Starting local AI service (Ollama)...');
+        _sendPromptResponse(
+          transactionId,
+          'in_progress',
+          'Starting local AI service (Ollama)...',
+        );
         await aiNotifier.ensureOllamaRunning();
       }
     }
@@ -457,21 +975,34 @@ class ConnectionProvider extends ChangeNotifier {
         await desktopProvider.runGoal(
           prompt,
           onProgress: (msg) {
+            if (_killSwitchActive) return;
             _sendPromptResponse(transactionId, 'in_progress', msg);
           },
+          conversationContext: conversationContext,
         );
-        // Check if the agent actually succeeded
-        if (desktopProvider.hasError) {
+        // Check if the kill switch was activated during execution
+        if (_killSwitchActive) {
+          _log.info(
+            'CMD',
+            'Desktop Agent finished aborting (kill switch was active).',
+          );
+        } else if (desktopProvider.hasError) {
           _sendPromptResponse(
             transactionId,
             'failed',
             desktopProvider.lastError ?? 'Desktop task failed.',
           );
         } else {
+          // Include action history so Android can offer "Save as Flow"
+          final actionHistory = desktopProvider.lastActionHistory;
+          final hasActions = actionHistory.isNotEmpty;
           _sendPromptResponse(
             transactionId,
             'completed',
             'Desktop task completed successfully.',
+            data: hasActions
+                ? {'action_history': jsonEncode(actionHistory)}
+                : null,
           );
         }
       } on NeedsBrowserException catch (e) {
@@ -601,6 +1132,18 @@ class ConnectionProvider extends ChangeNotifier {
       if (stepData == null) throw Exception('Failed to parse initial AI step');
 
       for (int i = 0; i < maxSteps; i++) {
+        // Check for kill switch at the start of each step
+        if (_killSwitchActive) {
+          _log.info('CMD', 'Agentic loop: kill_switch detected, stopping.');
+          _sendPromptResponse(
+            transactionId,
+            'cancelled',
+            'Browser automation stopped by user.',
+          );
+          _completedTransactions.add(transactionId);
+          return;
+        }
+
         // Check if LLM says we're done
         if (stepData!['done'] == true) {
           _log.info(
@@ -684,11 +1227,13 @@ class ConnectionProvider extends ChangeNotifier {
           final elements = snapshot['elements'] as List<dynamic>? ?? [];
           final domLines = elements.take(60).map((e) {
             final parts = <String>['id=${e['id']}', 'tag=${e['tag']}'];
-            if (e['text'] != null && e['text'].toString().isNotEmpty)
+            if (e['text'] != null && e['text'].toString().isNotEmpty) {
               parts.add('text="${e['text']}"');
+            }
             if (e['ariaLabel'] != null) parts.add('aria="${e['ariaLabel']}"');
-            if (e['placeholder'] != null)
+            if (e['placeholder'] != null) {
               parts.add('placeholder="${e['placeholder']}"');
+            }
             if (e['role'] != null) parts.add('role=${e['role']}');
             if (e['href'] != null) parts.add('href="${e['href']}"');
             return parts.join(', ');
@@ -959,6 +1504,11 @@ RULES:
 
   /// Handle image clipboard sync from Android → Desktop.
   Future<void> _handleImageClipboardSync(Map<String, dynamic>? payload) async {
+    // Respect the user's clipboard sync toggle
+    if (!_clipboard.enabled) {
+      _log.debug('Clipboard', 'Ignored incoming image (sync disabled)');
+      return;
+    }
     final base64Data = payload?['image_base64'] as String?;
     final mimeType = payload?['mime_type'] as String? ?? 'image/png';
     if (base64Data == null || base64Data.isEmpty) return;
@@ -1076,7 +1626,9 @@ RULES:
     // Prefer the 'keys' array; fall back to splitting the legacy 'keyName'
     List<String> keys;
     if (command['keys'] is List && (command['keys'] as List).isNotEmpty) {
-      keys = (command['keys'] as List).map((k) => k.toString().toLowerCase()).toList();
+      keys = (command['keys'] as List)
+          .map((k) => k.toString().toLowerCase())
+          .toList();
     } else {
       final keyName = command['keyName']?.toString() ?? '';
       keys = keyName.contains('+')
@@ -1087,18 +1639,30 @@ RULES:
     // Map user-friendly names to pyautogui key names
     keys = keys.map((k) {
       switch (k) {
-        case 'up arrow': return 'up';
-        case 'down arrow': return 'down';
-        case 'left arrow': return 'left';
-        case 'right arrow': return 'right';
-        case 'return': return 'enter';
-        case 'page_up': return 'pageup';
-        case 'page_down': return 'pagedown';
-        case 'caps_lock': return 'capslock';
-        case 'print_screen': return 'printscreen';
-        case 'num_lock': return 'numlock';
-        case 'scroll_lock': return 'scrolllock';
-        default: return k;
+        case 'up arrow':
+          return 'up';
+        case 'down arrow':
+          return 'down';
+        case 'left arrow':
+          return 'left';
+        case 'right arrow':
+          return 'right';
+        case 'return':
+          return 'enter';
+        case 'page_up':
+          return 'pageup';
+        case 'page_down':
+          return 'pagedown';
+        case 'caps_lock':
+          return 'capslock';
+        case 'print_screen':
+          return 'printscreen';
+        case 'num_lock':
+          return 'numlock';
+        case 'scroll_lock':
+          return 'scrolllock';
+        default:
+          return k;
       }
     }).toList();
 
@@ -1120,9 +1684,13 @@ RULES:
 
   /// Active scheduled timers, keyed by transaction ID.
   final Map<String, Timer> _scheduledTimers = {};
+  final Map<String, String> _scheduledTimerOwners = {};
 
   /// Handle a scheduled/recurring action command.
-  Future<void> _handleScheduleCommand(Map<String, dynamic> command) async {
+  Future<void> _handleScheduleCommand(
+    Map<String, dynamic> command, {
+    String? ownerDeviceId,
+  }) async {
     final transactionId = command['transactionId']?.toString() ?? '';
     final intervalMs = command['intervalMs'] as int? ?? 60000;
     final action = command['action'] as Map<String, dynamic>?;
@@ -1140,6 +1708,13 @@ RULES:
       'scheduled',
       'Timer started: pressing $keyName every ${intervalMs ~/ 1000}s',
     );
+
+    final existingTimer = _scheduledTimers.remove(transactionId);
+    existingTimer?.cancel();
+    _scheduledTimerOwners.remove(transactionId);
+    if (ownerDeviceId != null && ownerDeviceId.isNotEmpty) {
+      _scheduledTimerOwners[transactionId] = ownerDeviceId;
+    }
 
     int count = 0;
     _scheduledTimers[transactionId] = Timer.periodic(
@@ -1167,6 +1742,7 @@ RULES:
         if (repeatCount != null && count >= repeatCount) {
           timer.cancel();
           _scheduledTimers.remove(transactionId);
+          _scheduledTimerOwners.remove(transactionId);
           _sendPromptResponse(
             transactionId,
             'completed',
@@ -1178,9 +1754,25 @@ RULES:
   }
 
   /// Handle schedule cancellation.
-  void _handleScheduleCancel(Map<String, dynamic> command) {
+  void _handleScheduleCancel(
+    Map<String, dynamic> command, {
+    String? ownerDeviceId,
+  }) {
     final transactionId = command['transactionId']?.toString() ?? '';
+    final timerOwner = _scheduledTimerOwners[transactionId];
+    if (ownerDeviceId != null &&
+        ownerDeviceId.isNotEmpty &&
+        timerOwner != null &&
+        timerOwner != ownerDeviceId) {
+      _log.warn(
+        'CMD',
+        'Rejected schedule_cancel for $transactionId from non-owner $ownerDeviceId',
+      );
+      return;
+    }
+
     final timer = _scheduledTimers.remove(transactionId);
+    _scheduledTimerOwners.remove(transactionId);
     if (timer != null) {
       timer.cancel();
       _sendPromptResponse(
@@ -1194,6 +1786,8 @@ RULES:
 
   void _handleKillSwitch(Map<String, dynamic> command) {
     _log.info('CMD', 'Received global kill_switch');
+    _killSwitchActive = true;
+
     // Stop local desktop agent
     try {
       final desktopProvider = getIt<DesktopAutomationProvider>();
@@ -1202,18 +1796,278 @@ RULES:
       _log.error('CMD', 'Failed to stop DesktopAutomationProvider: $e');
     }
 
+    // Stop any running flow
+    try {
+      final flowExec = getIt<FlowExecutionService>();
+      flowExec.stopFlow();
+    } catch (_) {}
+
+    // Complete any pending browser step futures so the agentic loop
+    // breaks out immediately instead of waiting for a 45s timeout.
+    for (final entry in _pendingStepResults.entries.toList()) {
+      if (!entry.value.isCompleted) {
+        entry.value.complete({
+          'status': 'cancelled',
+          'message': 'Kill switch activated',
+        });
+      }
+    }
+    _pendingStepResults.clear();
+
     // Forward to extension
     _ws.sendToExtension({'type': 'kill_switch'});
 
-    // Optional: send response back to Android
-    final transactionId = command['transactionId']?.toString();
-    if (transactionId != null && transactionId.isNotEmpty) {
+    // Send response back to Android using the transactionId from the
+    // kill_switch command, or fall back to the active transaction.
+    final transactionId =
+        command['transactionId']?.toString() ?? _activeTransactionId ?? '';
+    if (transactionId.isNotEmpty) {
       _sendPromptResponse(
         transactionId,
         'cancelled',
         'Automation stopped by user.',
       );
     }
+  }
+
+  // ═══════════════════════════════════════════════════════════
+  //  FLOW SYSTEM HANDLERS
+  // ═══════════════════════════════════════════════════════════
+
+  /// Handle a stop_flow request from Android.
+  /// Stops the currently running flow and acknowledges back.
+  void _handleFlowStop(Map<String, dynamic> command) {
+    final transactionId = command['transactionId']?.toString() ?? '';
+    final flowId = command['flowId']?.toString() ?? '';
+
+    _log.info('CMD', 'Flow stop request (txn=$transactionId)');
+
+    try {
+      final flowExec = getIt<FlowExecutionService>();
+      if (flowExec.isRunning) {
+        flowExec.stopFlow();
+        _sendFlowResponse(
+          transactionId,
+          flowId,
+          'stopped',
+          'Flow stopped by user.',
+        );
+      } else {
+        _sendFlowResponse(
+          transactionId,
+          flowId,
+          'stopped',
+          'No flow is currently running.',
+        );
+      }
+    } catch (e) {
+      _log.error('CMD', 'Flow stop error: $e');
+      _sendFlowResponse(transactionId, flowId, 'failed', 'Error: $e');
+    }
+  }
+
+  /// Handle a trigger_flow request from Android.
+  /// Looks up the flow by ID, executes it, and streams progress back.
+  Future<void> _handleFlowTrigger(Map<String, dynamic> command) async {
+    final transactionId = command['transactionId']?.toString() ?? '';
+    final flowId = command['flowId']?.toString() ?? '';
+
+    if (flowId.isEmpty) {
+      _sendFlowResponse(transactionId, flowId, 'failed', 'No flowId provided');
+      return;
+    }
+
+    _log.info('CMD', 'Flow trigger request: $flowId (txn=$transactionId)');
+
+    try {
+      final execution = getIt<FlowExecutionService>();
+
+      // Guard: reject if a flow is already running
+      if (execution.isRunning) {
+        _sendFlowResponse(
+          transactionId,
+          flowId,
+          'failed',
+          'Another flow is already running',
+        );
+        return;
+      }
+
+      final storage = getIt<FlowStorageService>();
+      final flow = await storage.loadFlow(flowId);
+
+      if (flow == null) {
+        _sendFlowResponse(
+          transactionId,
+          flowId,
+          'failed',
+          'Flow not found: $flowId',
+        );
+        return;
+      }
+
+      _sendFlowResponse(
+        transactionId,
+        flowId,
+        'started',
+        'Running flow: ${flow.name}',
+      );
+
+      final result = await execution.executeFlow(
+        flow,
+        onProgress: (progress) {
+          _sendFlowResponse(
+            transactionId,
+            flowId,
+            progress.status,
+            progress.message,
+            step: progress.currentStep,
+            total: progress.totalSteps,
+            nodeLabel: progress.nodeLabel,
+          );
+        },
+      );
+
+      _sendFlowResponse(
+        transactionId,
+        flowId,
+        result.success ? 'completed' : 'failed',
+        result.success
+            ? 'Flow completed (${result.stepsExecuted} steps, ${result.elapsed.inMilliseconds}ms)'
+            : 'Flow failed: ${result.errorMessage}',
+        step: result.stepsExecuted,
+        isFinal: true,
+      );
+    } catch (e) {
+      _log.error('CMD', 'Flow trigger error: $e');
+      _sendFlowResponse(
+        transactionId,
+        flowId,
+        'failed',
+        'Error: $e',
+        isFinal: true,
+      );
+    }
+  }
+
+  /// Handle a list_flows request from Android.
+  /// Returns lightweight manifests for all saved flows.
+  Future<void> _handleListFlows(Map<String, dynamic> command) async {
+    final transactionId = command['transactionId']?.toString() ?? '';
+
+    try {
+      final storage = getIt<FlowStorageService>();
+      final manifests = await storage.listFlowManifests();
+
+      _ws.broadcastEvent({
+        'type': 'flow_list_response',
+        'transactionId': transactionId,
+        'flows': manifests.map((m) => m.toJson()).toList(),
+        'timestamp': DateTime.now().toIso8601String(),
+      });
+
+      _log.info('CMD', 'Sent flow list (${manifests.length} flows)');
+    } catch (e) {
+      _log.error('CMD', 'Failed to list flows: $e');
+      _ws.broadcastEvent({
+        'type': 'flow_list_response',
+        'transactionId': transactionId,
+        'flows': <Map<String, dynamic>>[],
+        'error': '$e',
+        'timestamp': DateTime.now().toIso8601String(),
+      });
+    }
+  }
+
+  /// Handle "Save as Flow" request from Android.
+  ///
+  /// The Android app sends this after a successful prompt execution,
+  /// carrying the action history that was included in the 'completed' response.
+  Future<void> _handleSavePromptAsFlow(Map<String, dynamic> command) async {
+    final transactionId = command['transactionId']?.toString() ?? '';
+    final flowName = command['flowName']?.toString() ?? 'AI-Generated Flow';
+    final rawHistory = command['actionHistory'];
+
+    List<Map<String, dynamic>> actionHistory;
+    if (rawHistory is String) {
+      try {
+        final decoded = jsonDecode(rawHistory);
+        actionHistory = (decoded as List)
+            .map((e) => Map<String, dynamic>.from(e as Map))
+            .toList();
+      } catch (e) {
+        _log.error('CMD', 'Failed to parse action history JSON: $e');
+        _sendPromptResponse(
+          transactionId,
+          'failed',
+          'Failed to parse action history.',
+        );
+        return;
+      }
+    } else if (rawHistory is List) {
+      actionHistory = rawHistory
+          .map((e) => Map<String, dynamic>.from(e as Map))
+          .toList();
+    } else {
+      _sendPromptResponse(
+        transactionId,
+        'failed',
+        'No action history provided.',
+      );
+      return;
+    }
+
+    try {
+      final storage = getIt<FlowStorageService>();
+      final flow = await storage.createFlowFromActionHistory(
+        flowName,
+        actionHistory,
+      );
+
+      if (flow != null) {
+        _log.info('CMD', 'Created flow "${flow.name}" from AI prompt actions');
+        _sendPromptResponse(
+          transactionId,
+          'completed',
+          'Flow "${flow.name}" saved successfully!',
+        );
+      } else {
+        _sendPromptResponse(
+          transactionId,
+          'failed',
+          'Failed to create flow from actions.',
+        );
+      }
+    } catch (e) {
+      _log.error('CMD', 'Failed to save prompt as flow: $e');
+      _sendPromptResponse(transactionId, 'failed', 'Error saving flow: $e');
+    }
+  }
+
+  /// Send a flow-specific response back to Android.
+  void _sendFlowResponse(
+    String transactionId,
+    String flowId,
+    String status,
+    String message, {
+    int? step,
+    int? total,
+    String? nodeLabel,
+    bool isFinal = false,
+  }) {
+    if (transactionId.isEmpty) return;
+    _ws.broadcastEvent({
+      'type': 'flow_trigger_response',
+      'transactionId': transactionId,
+      'flowId': flowId,
+      'status': status,
+      'message': message,
+      if (step != null) 'currentStep': step,
+      if (total != null) 'totalSteps': total,
+      if (nodeLabel != null) 'nodeLabel': nodeLabel,
+      'isFinal': isFinal,
+      'timestamp': DateTime.now().toIso8601String(),
+    });
   }
 
   @override

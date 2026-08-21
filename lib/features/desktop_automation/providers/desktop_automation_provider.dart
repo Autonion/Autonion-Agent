@@ -41,6 +41,10 @@ class DesktopAutomationProvider extends ChangeNotifier {
   bool get isBridgeReady => _bridge.isReady;
   bool get hasError => _agent.status == AgentStatus.error;
   String? get lastError => _agent.lastError;
+
+  /// The action history from the most recent task execution.
+  List<Map<String, dynamic>> get lastActionHistory => _agent.actionHistory;
+
   PythonBridgeService get bridge => _bridge;
 
   void setTier(AutomationTier t) {
@@ -58,7 +62,11 @@ class DesktopAutomationProvider extends ChangeNotifier {
     }
   }
 
-  Future<void> runGoal(String goal, {void Function(String)? onProgress}) async {
+  Future<void> runGoal(
+    String goal, {
+    void Function(String)? onProgress,
+    String? conversationContext,
+  }) async {
     if (!isBridgeReady) {
       await initBridge();
       if (!isBridgeReady) return;
@@ -68,7 +76,12 @@ class DesktopAutomationProvider extends ChangeNotifier {
     await aiNotifier.ensureOllamaRunning();
 
     notifyListeners(); // status -> running
-    await _agent.runTask(goal, tier: _tier, onProgress: onProgress);
+    await _agent.runTask(
+      goal,
+      tier: _tier,
+      onProgress: onProgress,
+      conversationContext: conversationContext,
+    );
     notifyListeners(); // status -> completed/error
   }
 

@@ -12,16 +12,35 @@ class InputSimulationService {
   }) : _log = log,
        _bridge = bridge;
 
-  Future<void> execute(DesktopAction action) async {
+  Future<Map<String, dynamic>> execute(DesktopAction action) async {
     _log.info('InputService', 'Executing action: ${action.type}');
 
-    await _bridge.sendCommand('execute_action', {
+    final result = await _bridge.sendCommand('execute_action', {
       'type': action.type,
       'targetIndex': action.targetIndex,
       'targetStableId': action.targetStableId,
+      'endTargetIndex': action.endTargetIndex,
+      'endTargetStableId': action.endTargetStableId,
+      'x': action.x,
+      'y': action.y,
+      'endX': action.endX,
+      'endY': action.endY,
+      'path': action.path,
       'text': action.text,
+      'appName': action.appName,
+      'appPath': action.appPath,
       'direction': action.direction,
+      'amount': action.amount,
       'keys': action.keys,
+      'durationMs': action.durationMs,
+      'button': action.button,
+      'coordinateSpace': action.coordinateSpace,
+      'replace': action.replace,
     });
+
+    if (result is Map<String, dynamic>) {
+      return result;
+    }
+    return {'status': 'executed', 'raw': result};
   }
 }

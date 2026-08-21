@@ -10,8 +10,37 @@
 
 // Unique mutex name to enforce single-instance behavior.
 constexpr const wchar_t kMutexName[] = L"Global\\AutonionAgentSingleInstance";
-// Must match the title passed to window.Create() below.
-constexpr const wchar_t kWindowTitle[] = L"autonion_cross_device";
+// Must match the class registered in win32_window.cpp.
+constexpr const wchar_t kWindowClassName[] = L"AUTONION_AGENT_WINDOW";
+constexpr const wchar_t kWindowTitle[] = L"Autonion Agent";
+constexpr int kNormalWindowWidth = 1100;
+constexpr int kNormalWindowHeight = 750;
+constexpr int kStuckOverlayMaxWidth = 500;
+constexpr int kStuckOverlayMaxHeight = 300;
+
+void RestoreExistingWindow(HWND existing) {
+  if (!existing) {
+    return;
+  }
+
+  ::ShowWindow(existing, SW_RESTORE);
+
+  RECT rect;
+  if (::GetWindowRect(existing, &rect)) {
+    const int width = rect.right - rect.left;
+    const int height = rect.bottom - rect.top;
+    if (width < kStuckOverlayMaxWidth || height < kStuckOverlayMaxHeight) {
+      const int screen_width = ::GetSystemMetrics(SM_CXSCREEN);
+      const int screen_height = ::GetSystemMetrics(SM_CYSCREEN);
+      const int x = std::max(0, (screen_width - kNormalWindowWidth) / 2);
+      const int y = std::max(0, (screen_height - kNormalWindowHeight) / 2);
+      ::SetWindowPos(existing, nullptr, x, y, kNormalWindowWidth,
+                     kNormalWindowHeight, SWP_NOZORDER | SWP_SHOWWINDOW);
+    }
+  }
+
+  ::SetForegroundWindow(existing);
+}
 
 int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
                       _In_ wchar_t *command_line, _In_ int show_command) {
@@ -22,14 +51,11 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   HANDLE mutex = ::CreateMutexW(nullptr, FALSE, kMutexName);
   if (mutex == nullptr || ::GetLastError() == ERROR_ALREADY_EXISTS) {
     // Another instance is running. Find its window and activate it.
-    HWND existing = ::FindWindowW(nullptr, kWindowTitle);
-    if (existing) {
-      // If the window is minimized or hidden, restore it first.
-      if (::IsIconic(existing) || !::IsWindowVisible(existing)) {
-        ::ShowWindow(existing, SW_RESTORE);
-      }
-      ::SetForegroundWindow(existing);
+    HWND existing = ::FindWindowW(kWindowClassName, nullptr);
+    if (!existing) {
+      existing = ::FindWindowW(nullptr, kWindowTitle);
     }
+    RestoreExistingWindow(existing);
     // Clean up and exit the duplicate instance.
     if (mutex) {
       ::CloseHandle(mutex);
@@ -62,7 +88,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   FlutterWindow window(project, start_hidden);
   Win32Window::Point origin(10, 10);
   Win32Window::Size size(1280, 720);
-  if (!window.Create(L"autonion_cross_device", origin, size)) {
+  if (!window.Create(kWindowTitle, origin, size)) {
     return EXIT_FAILURE;
   }
   window.SetQuitOnClose(true);

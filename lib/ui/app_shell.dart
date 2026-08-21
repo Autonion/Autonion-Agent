@@ -1,29 +1,42 @@
 import 'package:flutter/material.dart';
+import '../core/di/service_locator.dart';
+import '../features/connection/providers/connection_provider.dart';
 import 'screens/ai_settings_screen.dart';
 import 'screens/automation_screen.dart';
 import 'screens/connections_screen.dart';
 import 'screens/dashboard_screen.dart';
+import 'screens/flows_screen.dart';
 import 'screens/logs_screen.dart';
 import 'screens/settings_screen.dart';
 import 'theme/app_colors.dart';
 import 'widgets/nav_rail.dart';
+import 'widgets/pairing_dialog.dart';
 import 'widgets/update_banner.dart';
 
 /// Root app shell with navigation rail and content area.
 class AppShell extends StatefulWidget {
-  const AppShell({super.key});
+  final int initialIndex;
+
+  const AppShell({super.key, this.initialIndex = 0});
 
   @override
   State<AppShell> createState() => _AppShellState();
 }
 
 class _AppShellState extends State<AppShell> {
-  int _selectedIndex = 0;
+  late int _selectedIndex;
+
+  @override
+  void initState() {
+    super.initState();
+    _selectedIndex = widget.initialIndex;
+  }
 
   static final List<Widget> _screens = [
     const DashboardScreen(),
     const ConnectionsScreen(),
     const AutomationScreen(),
+    const FlowsScreen(),
     const AiSettingsScreen(),
     const LogsScreen(),
     const SettingsScreen(),
@@ -46,6 +59,11 @@ class _AppShellState extends State<AppShell> {
       label: Text('Automate'),
     ),
     NavigationRailDestination(
+      icon: Icon(Icons.account_tree_outlined),
+      selectedIcon: Icon(Icons.account_tree),
+      label: Text('Flows'),
+    ),
+    NavigationRailDestination(
       icon: Icon(Icons.psychology_outlined),
       selectedIcon: Icon(Icons.psychology),
       label: Text('AI'),
@@ -64,42 +82,61 @@ class _AppShellState extends State<AppShell> {
 
   @override
   Widget build(BuildContext context) {
+    final conn = getIt<ConnectionProvider>();
+
     return Scaffold(
-      body: Container(
-        decoration: const BoxDecoration(gradient: AppColors.backgroundGradient),
-        child: Column(
-          children: [
-            // ── Update notification banner ─────────────
-            const UpdateBanner(),
-            // ── Main content ──────────────────────────
-            Expanded(
-              child: Row(
-                children: [
-                  AppNavRail(
-                    selectedIndex: _selectedIndex,
-                    onDestinationSelected: (index) {
-                      setState(() => _selectedIndex = index);
-                    },
-                    destinations: _destinations,
-                  ),
-                  const VerticalDivider(width: 1),
-                  Expanded(
-                    child: AnimatedSwitcher(
-                      duration: const Duration(milliseconds: 250),
-                      transitionBuilder: (child, animation) {
-                        return FadeTransition(opacity: animation, child: child);
-                      },
-                      child: KeyedSubtree(
-                        key: ValueKey(_selectedIndex),
-                        child: _screens[_selectedIndex],
+      body: Stack(
+        children: [
+          Container(
+            decoration:
+                const BoxDecoration(gradient: AppColors.backgroundGradient),
+            child: Column(
+              children: [
+                // ── Update notification banner ─────────────
+                const UpdateBanner(),
+                // ── Main content ──────────────────────────
+                Expanded(
+                  child: Row(
+                    children: [
+                      AppNavRail(
+                        selectedIndex: _selectedIndex,
+                        onDestinationSelected: (index) {
+                          setState(() => _selectedIndex = index);
+                        },
+                        destinations: _destinations,
                       ),
-                    ),
+                      const VerticalDivider(width: 1),
+                      Expanded(
+                        child: AnimatedSwitcher(
+                          duration: const Duration(milliseconds: 250),
+                          transitionBuilder: (child, animation) {
+                            return FadeTransition(
+                              opacity: animation,
+                              child: child,
+                            );
+                          },
+                          child: KeyedSubtree(
+                            key: ValueKey(_selectedIndex),
+                            child: _screens[_selectedIndex],
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
-                ],
-              ),
+                ),
+              ],
             ),
-          ],
-        ),
+          ),
+
+          // ── Pairing Dialog Overlay ──────────────────────
+          ListenableBuilder(
+            listenable: conn,
+            builder: (context, _) {
+              if (!conn.hasPendingPairing) return const SizedBox.shrink();
+              return const PairingDialog();
+            },
+          ),
+        ],
       ),
     );
   }

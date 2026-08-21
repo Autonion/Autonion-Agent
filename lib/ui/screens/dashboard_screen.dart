@@ -6,6 +6,7 @@ import '../../core/config/platform_config.dart';
 import '../../core/di/service_locator.dart';
 import '../../core/models/log_entry.dart';
 import '../../core/services/logging_service.dart';
+import '../../features/clipboard/services/clipboard_sync_service.dart';
 import '../../features/connection/providers/connection_provider.dart';
 import '../../features/connection/services/websocket_service.dart';
 import '../theme/app_colors.dart';
@@ -21,9 +22,10 @@ class DashboardScreen extends StatelessWidget {
     final conn = getIt<ConnectionProvider>();
     final ws = getIt<WebSocketService>();
     final log = getIt<LoggingService>();
+    final clipboard = getIt<ClipboardSyncService>();
 
     return ListenableBuilder(
-      listenable: Listenable.merge([conn, ws, log]),
+      listenable: Listenable.merge([conn, ws, log, clipboard]),
       builder: (context, _) {
         return SingleChildScrollView(
           padding: const EdgeInsets.all(28),
@@ -63,6 +65,32 @@ class DashboardScreen extends StatelessWidget {
                 conn: conn,
               ).animate().fadeIn(duration: 500.ms, delay: 200.ms),
               const SizedBox(height: 20),
+
+              // ── Compatibility Warning ─────────────────
+              if (conn.companionWarning != null)
+                Container(
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    color: AppColors.warning.withAlpha(20),
+                    border: Border.all(color: AppColors.warning.withAlpha(80)),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.warning_amber_rounded,
+                          color: AppColors.warning, size: 22),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Text(
+                          conn.companionWarning!,
+                          style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                color: AppColors.warning),
+                        ),
+                      ),
+                    ],
+                  ),
+                ).animate().fadeIn(duration: 400.ms).slideY(begin: -0.1),
+              if (conn.companionWarning != null) const SizedBox(height: 20),
 
               // ── Quick Actions ───────────────────────
               Text(
@@ -104,6 +132,12 @@ class DashboardScreen extends StatelessWidget {
                       ),
                       mode: LaunchMode.externalApplication,
                     ),
+                  ),
+                  _ToggleChip(
+                    icon: Icons.content_paste_go_outlined,
+                    label: 'Sync Clipboard',
+                    isActive: clipboard.enabled,
+                    onToggle: (v) => clipboard.setEnabled(v),
                   ),
                 ],
               ).animate().fadeIn(duration: 500.ms, delay: 300.ms),
@@ -354,6 +388,59 @@ class _ActionChip extends StatelessWidget {
   }
 }
 
+class _ToggleChip extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final bool isActive;
+  final ValueChanged<bool> onToggle;
+
+  const _ToggleChip({
+    required this.icon,
+    required this.label,
+    required this.isActive,
+    required this.onToggle,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final color = isActive ? AppColors.success : AppColors.textMuted;
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: () => onToggle(!isActive),
+        borderRadius: BorderRadius.circular(12),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+          decoration: BoxDecoration(
+            color: isActive ? AppColors.success.withAlpha(15) : null,
+            border: Border.all(color: color.withAlpha(80)),
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(icon, size: 18, color: color),
+              const SizedBox(width: 8),
+              Text(
+                label,
+                style: Theme.of(
+                  context,
+                ).textTheme.labelLarge?.copyWith(color: color),
+              ),
+              const SizedBox(width: 6),
+              Icon(
+                isActive ? Icons.toggle_on : Icons.toggle_off_outlined,
+                size: 22,
+                color: color,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _RecentLogsCard extends StatelessWidget {
   final LoggingService log;
   const _RecentLogsCard({required this.log});
@@ -368,37 +455,39 @@ class _RecentLogsCard extends StatelessWidget {
       padding: const EdgeInsets.all(16),
       child: recentEntries.isEmpty
           ? Text('No logs yet', style: Theme.of(context).textTheme.bodySmall)
-          : Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: recentEntries.reversed.map((entry) {
-                return Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 2),
-                  child: Row(
-                    children: [
-                      _logLevelDot(entry.level),
-                      const SizedBox(width: 8),
-                      Text(
-                        entry.timeString,
-                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: AppColors.textMuted,
-                          fontFamily: 'monospace',
-                          fontSize: 11,
+          : SelectionArea(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: recentEntries.reversed.map((entry) {
+                  return Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 2),
+                    child: Row(
+                      children: [
+                        _logLevelDot(entry.level),
+                        const SizedBox(width: 8),
+                        Text(
+                          entry.timeString,
+                          style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color: AppColors.textMuted,
+                            fontFamily: 'monospace',
+                            fontSize: 11,
+                          ),
                         ),
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          entry.message,
-                          style: Theme.of(context).textTheme.bodySmall
-                              ?.copyWith(fontFamily: 'monospace', fontSize: 11),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            entry.message,
+                            style: Theme.of(context).textTheme.bodySmall
+                                ?.copyWith(fontFamily: 'monospace', fontSize: 11),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
                         ),
-                      ),
-                    ],
-                  ),
-                );
-              }).toList(),
+                      ],
+                    ),
+                  );
+                }).toList(),
+              ),
             ),
     );
   }

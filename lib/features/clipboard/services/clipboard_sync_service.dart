@@ -1,12 +1,21 @@
 import 'dart:async';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 import '../../../core/services/logging_service.dart';
 import '../../connection/services/websocket_service.dart';
 import '../../connection/services/device_info_service.dart';
 
 /// Bidirectional clipboard sync between desktop and connected devices.
-class ClipboardSyncService {
+///
+/// Exposes an [enabled] toggle (persisted via SharedPreferences) so the user
+/// can disable clipboard synchronisation without stopping the polling timer.
+/// When disabled, outgoing changes are silently dropped and incoming remote
+/// writes are ignored.
+class ClipboardSyncService extends ChangeNotifier {
+  static const String _prefKey = 'clipboard_sync_enabled';
+
   LoggingService? _loggingService;
   WebSocketService? _webSocketService;
   DeviceInfoService? _deviceInfoService;
@@ -15,6 +24,10 @@ class ClipboardSyncService {
   String? _lastClipboardText;
   bool _suppressNext = false;
   bool _isRunning = false;
+  bool _enabled = true; // Default: enabled
+
+  /// Whether clipboard sync is currently enabled.
+  bool get enabled => _enabled;
 
   final StreamController<String> _syncController = StreamController.broadcast();
   Stream<String> get clipboardSyncStream => _syncController.stream;
@@ -26,6 +39,23 @@ class ClipboardSyncService {
       _deviceInfoService = service;
 
   void _log(String message) => _loggingService?.info('Clipboard', message);
+
+  /// Load persisted enabled/disabled preference.
+  Future<void> init() async {
+    final prefs = await SharedPreferences.getInstance();
+    _enabled = prefs.getBool(_prefKey) ?? true;
+    _log('Clipboard sync: ${_enabled ? "enabled" : "disabled"}');
+  }
+
+  /// Toggle clipboard sync on/off and persist the choice.
+  Future<void> setEnabled(bool value) async {
+    if (_enabled == value) return;
+    _enabled = value;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_prefKey, value);
+    _log('Clipboard sync ${value ? "enabled" : "disabled"} by user');
+  }
 
   void startPolling() {
     if (_isRunning) return;
@@ -74,6 +104,10 @@ class ClipboardSyncService {
       return;
     }
     if (current.trim().isEmpty) return;
+
+    // Skip outgoing sync when disabled
+    if (!_enabled) return;
+
     _sendClipboardToRemote(current);
   }
 
@@ -91,7 +125,13 @@ class ClipboardSyncService {
     _log('Sent to remote: "$preview"');
   }
 
+  /// Write text received from a remote device to the local clipboard.
+  /// Silently skipped when clipboard sync is disabled.
   Future<void> writeFromRemote(String text) async {
+    if (!_enabled) {
+      _log('Ignored incoming clipboard (sync disabled)');
+      return;
+    }
     try {
       _suppressNext = true;
       _lastClipboardText = text;
@@ -105,8 +145,10 @@ class ClipboardSyncService {
     }
   }
 
+  @override
   void dispose() {
     stopPolling();
     _syncController.close();
+    super.dispose();
   }
 }

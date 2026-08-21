@@ -13,6 +13,8 @@ class AiMessage {
     this.base64Image,
   });
 
+  AiMessage withoutImage() => AiMessage(role: role, content: content);
+
   Map<String, dynamic> toOpenAiJson() {
     if (base64Image != null) {
       return {
