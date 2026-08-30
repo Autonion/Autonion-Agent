@@ -98,8 +98,21 @@ class PairedDeviceService extends ChangeNotifier {
       _pairedDevices[existingIndex] = device;
       _log.info('Auth', 'Updated pairing for device ${device.name} (${device.id})');
     } else {
-      _pairedDevices.add(device);
-      _log.info('Auth', 'Paired new device: ${device.name} (${device.id})');
+      // Deduplicate by name — handles deviceId changes (e.g., app reinstall with different signing key)
+      final staleIndex = _pairedDevices.indexWhere(
+        (d) => d.name.toLowerCase() == device.name.toLowerCase() && d.id != device.id,
+      );
+      if (staleIndex >= 0) {
+        final stale = _pairedDevices[staleIndex];
+        _log.info(
+          'Auth',
+          'Replacing stale pairing for ${stale.name} (old id=${stale.id}, new id=${device.id})',
+        );
+        _pairedDevices[staleIndex] = device;
+      } else {
+        _pairedDevices.add(device);
+        _log.info('Auth', 'Paired new device: ${device.name} (${device.id})');
+      }
     }
 
     await _save();
