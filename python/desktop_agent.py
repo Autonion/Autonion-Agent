@@ -11,6 +11,7 @@ import uuid
 import re
 from pathlib import Path
 from ctypes import wintypes
+from unlock_verification import query_console_session, confirm_unlock_result
 
 import uiautomation as auto
 import pyautogui
@@ -3588,24 +3589,30 @@ class DesktopAgent:
             self.send_response(cmd_id, success=False, error="No password provided")
             return
 
+        expected_session = query_console_session().session_id
         helper_errors = []
         try:
             helper_result = self._try_unlock_via_service(password)
             if helper_result is not None:
-                self.send_response(cmd_id, success=True, data=helper_result)
+                self.send_response(cmd_id, success=True, data=confirm_unlock_result(helper_result, expected_session))
                 return
         except Exception as exc:
             helper_errors.append(f"service: {exc}")
             eprint(f"Unlock service helper failed: {exc}")
+            # A handled request may already have sent the password. Do not submit it again.
+            self.send_response(cmd_id, success=False, error=str(exc))
+            return
 
         try:
             helper_result = self._try_unlock_via_installed_helper(password)
             if helper_result is not None:
-                self.send_response(cmd_id, success=True, data=helper_result)
+                self.send_response(cmd_id, success=True, data=confirm_unlock_result(helper_result, expected_session))
                 return
         except Exception as exc:
             helper_errors.append(f"legacy task: {exc}")
             eprint(f"Legacy unlock helper failed: {exc}")
+            self.send_response(cmd_id, success=False, error=str(exc))
+            return
 
         helper_error = "; ".join(helper_errors)
 
@@ -4138,10 +4145,10 @@ class DesktopAgent:
             except Exception as reg_exc:
                 eprint(f"  [unlock-service] Post-unlock service setup failed: {reg_exc}")
 
-            self.send_response(cmd_id, success=True, data={
+            self.send_response(cmd_id, success=True, data=confirm_unlock_result({
                 "status": "unlock_input_sent",
                 "helperExitCode": exit_code.value,
-            })
+            }, expected_session))
         except Exception as exc:
             eprint(f"Unlock error: {exc}")
             import traceback; traceback.print_exc(file=sys.stderr)

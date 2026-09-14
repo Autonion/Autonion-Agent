@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'package:get_it/get_it.dart';
 import '../../core/config/platform_config.dart';
 import '../../core/services/logging_service.dart';
@@ -43,7 +44,20 @@ Future<void> setupServiceLocator() async {
   getIt.registerSingleton<DeviceInfoService>(deviceInfo);
 
   getIt.registerLazySingleton<PairedDeviceService>(
-    () => PairedDeviceService(log: log),
+    () => PairedDeviceService(
+      log: log,
+      syncTrust: Platform.isWindows
+          ? (devices) {
+              return getIt<UnlockServicePipe>().replaceTrustedCompanions(
+                deviceId: deviceInfo.deviceId,
+                deviceName: deviceInfo.deviceName,
+                companions: devices
+                    .map((d) => {'id': d.id, 'secret': d.secret})
+                    .toList(),
+              );
+            }
+          : null,
+    ),
   );
   getIt.registerLazySingleton<WebSocketService>(() => WebSocketService());
   getIt.registerLazySingleton<DiscoveryService>(

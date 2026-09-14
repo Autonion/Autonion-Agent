@@ -15,52 +15,80 @@ const int _kPipeBufferSize = 65536;
 // ── Win32 FFI bindings (kernel32.dll) ───────────────────────
 final DynamicLibrary _kernel32 = DynamicLibrary.open('kernel32.dll');
 
-typedef _WaitNamedPipeW_C = Int32 Function(
-    Pointer<Utf16> lpNamedPipeName, Uint32 nTimeOut);
-typedef _WaitNamedPipeW_Dart = int Function(
-    Pointer<Utf16> lpNamedPipeName, int nTimeOut);
-final _WaitNamedPipeW =
-    _kernel32.lookupFunction<_WaitNamedPipeW_C, _WaitNamedPipeW_Dart>(
-        'WaitNamedPipeW');
+typedef _WaitNamedPipeW_C =
+    Int32 Function(Pointer<Utf16> lpNamedPipeName, Uint32 nTimeOut);
+typedef _WaitNamedPipeW_Dart =
+    int Function(Pointer<Utf16> lpNamedPipeName, int nTimeOut);
+final _WaitNamedPipeW = _kernel32
+    .lookupFunction<_WaitNamedPipeW_C, _WaitNamedPipeW_Dart>('WaitNamedPipeW');
 
-typedef _CreateFileW_C = IntPtr Function(
-    Pointer<Utf16> lpFileName,
-    Uint32 dwDesiredAccess,
-    Uint32 dwShareMode,
-    Pointer<Void> lpSecurityAttributes,
-    Uint32 dwCreationDisposition,
-    Uint32 dwFlagsAndAttributes,
-    IntPtr hTemplateFile);
-typedef _CreateFileW_Dart = int Function(
-    Pointer<Utf16> lpFileName,
-    int dwDesiredAccess,
-    int dwShareMode,
-    Pointer<Void> lpSecurityAttributes,
-    int dwCreationDisposition,
-    int dwFlagsAndAttributes,
-    int hTemplateFile);
-final _CreateFileW =
-    _kernel32.lookupFunction<_CreateFileW_C, _CreateFileW_Dart>('CreateFileW');
+typedef _CreateFileW_C =
+    IntPtr Function(
+      Pointer<Utf16> lpFileName,
+      Uint32 dwDesiredAccess,
+      Uint32 dwShareMode,
+      Pointer<Void> lpSecurityAttributes,
+      Uint32 dwCreationDisposition,
+      Uint32 dwFlagsAndAttributes,
+      IntPtr hTemplateFile,
+    );
+typedef _CreateFileW_Dart =
+    int Function(
+      Pointer<Utf16> lpFileName,
+      int dwDesiredAccess,
+      int dwShareMode,
+      Pointer<Void> lpSecurityAttributes,
+      int dwCreationDisposition,
+      int dwFlagsAndAttributes,
+      int hTemplateFile,
+    );
+final _CreateFileW = _kernel32
+    .lookupFunction<_CreateFileW_C, _CreateFileW_Dart>('CreateFileW');
 
-typedef _WriteFile_C = Int32 Function(IntPtr hFile, Pointer<Uint8> lpBuffer,
-    Uint32 nBytes, Pointer<Uint32> lpBytesWritten, Pointer<Void> lpOverlapped);
-typedef _WriteFile_Dart = int Function(int hFile, Pointer<Uint8> lpBuffer,
-    int nBytes, Pointer<Uint32> lpBytesWritten, Pointer<Void> lpOverlapped);
-final _WriteFile =
-    _kernel32.lookupFunction<_WriteFile_C, _WriteFile_Dart>('WriteFile');
+typedef _WriteFile_C =
+    Int32 Function(
+      IntPtr hFile,
+      Pointer<Uint8> lpBuffer,
+      Uint32 nBytes,
+      Pointer<Uint32> lpBytesWritten,
+      Pointer<Void> lpOverlapped,
+    );
+typedef _WriteFile_Dart =
+    int Function(
+      int hFile,
+      Pointer<Uint8> lpBuffer,
+      int nBytes,
+      Pointer<Uint32> lpBytesWritten,
+      Pointer<Void> lpOverlapped,
+    );
+final _WriteFile = _kernel32.lookupFunction<_WriteFile_C, _WriteFile_Dart>(
+  'WriteFile',
+);
 
-typedef _ReadFile_C = Int32 Function(IntPtr hFile, Pointer<Uint8> lpBuffer,
-    Uint32 nBytes, Pointer<Uint32> lpBytesRead, Pointer<Void> lpOverlapped);
-typedef _ReadFile_Dart = int Function(int hFile, Pointer<Uint8> lpBuffer,
-    int nBytes, Pointer<Uint32> lpBytesRead, Pointer<Void> lpOverlapped);
-final _ReadFile =
-    _kernel32.lookupFunction<_ReadFile_C, _ReadFile_Dart>('ReadFile');
+typedef _ReadFile_C =
+    Int32 Function(
+      IntPtr hFile,
+      Pointer<Uint8> lpBuffer,
+      Uint32 nBytes,
+      Pointer<Uint32> lpBytesRead,
+      Pointer<Void> lpOverlapped,
+    );
+typedef _ReadFile_Dart =
+    int Function(
+      int hFile,
+      Pointer<Uint8> lpBuffer,
+      int nBytes,
+      Pointer<Uint32> lpBytesRead,
+      Pointer<Void> lpOverlapped,
+    );
+final _ReadFile = _kernel32.lookupFunction<_ReadFile_C, _ReadFile_Dart>(
+  'ReadFile',
+);
 
 typedef _CloseHandle_C = Int32 Function(IntPtr hObject);
 typedef _CloseHandle_Dart = int Function(int hObject);
-final _CloseHandle =
-    _kernel32.lookupFunction<_CloseHandle_C, _CloseHandle_Dart>('CloseHandle');
-
+final _CloseHandle = _kernel32
+    .lookupFunction<_CloseHandle_C, _CloseHandle_Dart>('CloseHandle');
 
 /// Low-level service to send JSON requests to the AutonionUnlockHelper
 /// Windows service via its named pipe, bypassing the Python bridge.
@@ -104,6 +132,35 @@ class UnlockServicePipe {
       return result;
     } catch (e) {
       _log.warn(_tag, 'Identity provisioning failed: $e');
+      return false;
+    }
+  }
+
+  /// Replace the entire helper trust snapshot, including deletions/revocations.
+  Future<bool> replaceTrustedCompanions({
+    required String deviceId,
+    required String deviceName,
+    required List<Map<String, String>> companions,
+  }) async {
+    try {
+      final snapshot = StringBuffer('v1\n');
+      for (final companion in companions) {
+        final id = companion['id']!;
+        if (id.isEmpty || id.length > 128 || id.contains(RegExp(r'[\r\n\t]')))
+          return false;
+        snapshot.writeln(
+          '$id\t${base64Encode(utf8.encode(companion['secret']!))}',
+        );
+      }
+      return await _sendControl({
+        'action': 'replacePreloginTrust',
+        'requestId': _makeRequestId(),
+        'deviceId': deviceId,
+        'deviceName': deviceName,
+        'trustedDevicesB64': base64Encode(utf8.encode(snapshot.toString())),
+      });
+    } catch (e) {
+      _log.warn(_tag, 'Helper trust synchronization failed: $e');
       return false;
     }
   }

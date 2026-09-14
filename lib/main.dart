@@ -76,31 +76,15 @@ void main(List<String> args) async {
     await startupService.init();
   }
 
-  // ── 3. Start connection services & python bridge ────────
-  // When launched at system boot (--startup), defer heavy work
-  // so Windows finishes booting first. This reduces the startup
-  // impact rating shown in Task Manager.
-  if (isStartup) {
-    Future.delayed(const Duration(seconds: 8), () async {
-      log.info('APP', 'Deferred init: starting connection services...');
-      final connectionProvider = getIt<ConnectionProvider>();
-      await connectionProvider.startServices();
+  // ── 3. Start connections immediately; defer only heavy Python startup ──
+  final connectionProvider = getIt<ConnectionProvider>();
+  await connectionProvider.startServices();
 
-      if (PlatformConfig.isDesktop) {
-        // Sync unlock flows directly via named pipe (fast, no Python needed).
-        unawaited(_syncPreloginUnlockFlowsDirect(log));
-        // Init the Python bridge separately for desktop automation features.
-        unawaited(_initDesktopBridge(log));
-      }
-    });
-  } else {
-    final connectionProvider = getIt<ConnectionProvider>();
-    await connectionProvider.startServices();
-
-    if (PlatformConfig.isDesktop) {
-      // Sync unlock flows directly via named pipe (fast, no Python needed).
-      unawaited(_syncPreloginUnlockFlowsDirect(log));
-      // Init the Python bridge separately for desktop automation features.
+  if (PlatformConfig.isDesktop) {
+    unawaited(_syncPreloginUnlockFlowsDirect(log));
+    if (isStartup) {
+      Future.delayed(const Duration(seconds: 8), () => _initDesktopBridge(log));
+    } else {
       unawaited(_initDesktopBridge(log));
     }
   }

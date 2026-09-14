@@ -71,6 +71,16 @@ class ConnectionProvider extends ChangeNotifier {
   final PairedDeviceService _pairedDevices;
 
   bool _isRunning = false;
+  bool _disposed = false;
+  Future<void> _lifecycle = Future.value();
+  bool get isAdvertising => _discovery.isAdvertising;
+  String? get discoveryError => _discovery.lastError;
+
+  @override
+  void notifyListeners() {
+    if (!_disposed) super.notifyListeners();
+  }
+
   bool _killSwitchActive = false;
   String? _activeTransactionId;
   int? _port;
@@ -116,7 +126,12 @@ class ConnectionProvider extends ChangeNotifier {
        _pairedDevices = pairedDeviceService;
 
   /// Wire all inter-service dependencies and start everything.
-  Future<void> startServices() async {
+  Future<void> startServices() =>
+      _lifecycle = _lifecycle.then((_) => _startServices());
+  Future<void> stopServices() =>
+      _lifecycle = _lifecycle.then((_) => _stopServices());
+
+  Future<void> _startServices() async {
     if (_isRunning) return;
     _log.info('APP', 'Starting services...');
 
@@ -140,25 +155,35 @@ class ConnectionProvider extends ChangeNotifier {
         await _browser.detectBrowsers();
       }
 
+      // Install consumers before the listening port becomes reachable.
+      _commandSub = _ws.commandStream.listen((cmd) {
+        unawaited(
+          _executeCommand(cmd).catchError((Object error, StackTrace stack) {
+            _log.error('APP', 'Command failed: $error');
+          }),
+        );
+      });
+      _ws.addListener(_onWsStateChanged);
+      _discovery.addListener(notifyListeners);
+
       // 1. Start WebSocket Server
       _port = await _ws.startServer();
       _log.info('APP', 'WebSocket Server started on port $_port');
 
       // 2. Start mDNS Advertising
       await _discovery.startAdvertising(_port!);
-      _log.info('APP', 'mDNS Advertising started');
-
-      // 3. Listen for commands
-      _commandSub = _ws.commandStream.listen(_executeCommand);
+      _log.info(
+        'APP',
+        _discovery.isAdvertising
+            ? 'mDNS Advertising started'
+            : 'Discovery unavailable; retry scheduled',
+      );
 
       // 4. Start clipboard polling
       _clipboard.startPolling();
 
       // 5. Broadcast clipboard sync state to Android whenever it changes locally
       _clipboard.addListener(_broadcastClipboardSyncState);
-
-      // 6. Push current clipboard state + start version timeout when a new client connects
-      _ws.addListener(_onWsStateChanged);
 
       // 7. Start trigger rule listening
       _triggers.startListening();
@@ -167,14 +192,17 @@ class ConnectionProvider extends ChangeNotifier {
       notifyListeners();
     } catch (e) {
       _log.error('APP', 'Error starting services: $e');
+      await _stopServices();
     }
   }
 
-  Future<void> stopServices() async {
-    if (!_isRunning) return;
+  Future<void> _stopServices() async {
     _log.info('APP', 'Stopping services...');
 
     // Remove listeners before tearing down
+    _isRunning = false;
+    _discovery.removeListener(notifyListeners);
+    _ws.removeListener(_onWsStateChanged);
     _clipboard.removeListener(_broadcastClipboardSyncState);
     _ws.removeListener(_broadcastClipboardSyncState);
     _pairedDevices.removeListener(notifyListeners);
@@ -220,7 +248,8 @@ class ConnectionProvider extends ChangeNotifier {
 
   /// Called whenever WebSocketService notifies (new client connect/disconnect).
   void _onWsStateChanged() {
-    _broadcastClipboardSyncState();
+    // The phone pushes its preference after auth_result; do not overwrite it during authentication.
+    notifyListeners();
 
     // If the device engaged in pairing disconnected before entering PIN,
     // clear active pairing immediately rather than locking for 120s.
@@ -292,7 +321,7 @@ class ConnectionProvider extends ChangeNotifier {
   /// Revoke pairing for a device, cancel its active work, and sever active socket immediately.
   Future<void> revokeDevice(String deviceId) async {
     // 1. Revoke persistent trust first so any re-auth attempts fail immediately
-    await _pairedDevices.revokeDevice(deviceId);
+    final persistRevocation = _pairedDevices.revokeDevice(deviceId);
 
     // 2. Cancel active work owned by this companion.
     final ownedTimerIds = _scheduledTimerOwners.entries
@@ -322,6 +351,8 @@ class ConnectionProvider extends ChangeNotifier {
       code: 4001,
       reason: 'Pairing revoked',
     );
+
+    await persistRevocation;
 
     _log.info('Auth', 'Revocation complete for device $deviceId');
     notifyListeners();
@@ -388,6 +419,7 @@ class ConnectionProvider extends ChangeNotifier {
       deviceSecret,
     );
 
+    if (_ws.getClientSession(client) != session) return;
     if (isPaired) {
       _ws.markClientAuthenticated(
         client,
@@ -453,10 +485,7 @@ class ConnectionProvider extends ChangeNotifier {
 
     // Generate random 6-digit PIN
     final randomPin = (100000 + Random.secure().nextInt(900000)).toString();
-    _log.info(
-      'Auth',
-      'Generated pairing PIN $randomPin for $deviceName ($deviceId)',
-    );
+    _log.info('Auth', 'Generated pairing PIN for $deviceName ($deviceId)');
 
     final expiryTimer = Timer(const Duration(seconds: 120), () {
       if (_activePairing?.deviceId == deviceId) {
@@ -508,7 +537,10 @@ class ConnectionProvider extends ChangeNotifier {
     final deviceName = (command['deviceName'] as String?) ?? 'Companion Device';
     final deviceSecret = command['deviceSecret'] as String? ?? '';
 
-    if (_activePairing == null || _activePairing!.deviceId != deviceId) {
+    if (_activePairing == null ||
+        _activePairing!.deviceId != deviceId ||
+        !identical(_activePairing!.socket, client) ||
+        _ws.getClientSession(client) != session) {
       _log.warn(
         'Auth',
         'pairing_submit received but no active pairing found for $deviceId',
@@ -530,8 +562,8 @@ class ConnectionProvider extends ChangeNotifier {
           ? deviceSecret
           : _activePairing!.deviceSecret;
 
+      final acceptedPairing = _activePairing!;
       _activePairing?.expiryTimer.cancel();
-      _activePairing = null;
 
       final pairedDevice = PairedDevice(
         id: deviceId,
@@ -543,6 +575,10 @@ class ConnectionProvider extends ChangeNotifier {
       );
 
       await _pairedDevices.pairDevice(pairedDevice);
+      if (!identical(_activePairing, acceptedPairing) ||
+          _ws.getClientSession(client) != session)
+        return;
+      _activePairing = null;
       _ws.markClientAuthenticated(
         client,
         deviceId: deviceId,
@@ -2072,7 +2108,8 @@ RULES:
 
   @override
   void dispose() {
-    stopServices();
+    _disposed = true;
+    unawaited(stopServices());
     super.dispose();
   }
 }

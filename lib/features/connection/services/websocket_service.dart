@@ -87,6 +87,14 @@ class WebSocketClientCommand {
 /// default-deny quarantine for unauthenticated LAN clients, and pairing support.
 class WebSocketService extends ChangeNotifier {
   HttpServer? _server;
+  Future<int>? _starting;
+  bool _disposed = false;
+
+  @override
+  void notifyListeners() {
+    if (!_disposed) super.notifyListeners();
+  }
+
   final List<ConnectedClient> _sessions = [];
   final StreamController<WebSocketClientCommand> _commandController =
       StreamController.broadcast();
@@ -145,6 +153,14 @@ class WebSocketService extends ChangeNotifier {
     final session = getClientSession(client);
     if (session != null) {
       session.markAuthenticated(deviceId: deviceId, deviceName: deviceName);
+      for (final old in getSessionsByDeviceId(deviceId)) {
+        if (!identical(old, session))
+          disconnectClient(
+            old.socket,
+            code: 4000,
+            reason: 'Replaced by authenticated connection',
+          );
+      }
       _log(
         'Client authenticated: $deviceName ($deviceId) from ${session.remoteIp}',
       );
@@ -188,6 +204,8 @@ class WebSocketService extends ChangeNotifier {
     int code = 1000,
     String reason = 'Disconnected',
   }) {
+    final session = getClientSession(client);
+    if (session != null) _removeSession(session);
     try {
       client.sink.close(code, reason);
     } catch (e) {
@@ -235,7 +253,14 @@ class WebSocketService extends ChangeNotifier {
     }
   }
 
-  Future<int> startServer() async {
+  Future<int> startServer() {
+    if (_server != null) return Future.value(_server!.port);
+    return _starting ??= _startServer().whenComplete(() {
+      _starting = null;
+    });
+  }
+
+  Future<int> _startServer() async {
     // Top-level request handler captures connection metadata per request
     Future<Response> handler(Request request) async {
       if (request.url.path == 'automation') {
@@ -253,7 +278,7 @@ class WebSocketService extends ChangeNotifier {
             isLoopback: isLoopback,
             remoteIp: remoteIp,
           );
-        });
+        }, pingInterval: const Duration(seconds: 15));
 
         return await perRequestWsHandler(request);
       }
@@ -337,6 +362,7 @@ class WebSocketService extends ChangeNotifier {
         try {
           final data = jsonDecode(message);
           if (data is Map<String, dynamic>) {
+            if (!_sessions.contains(session)) return;
             final type = data['type'] as String?;
 
             // 1. Keep-alive pings are always answered
@@ -387,19 +413,16 @@ class WebSocketService extends ChangeNotifier {
           _log('Error decoding message: $e');
         }
       },
-      onDone: () {
-        session.cancelAuthTimeout();
-        _sessions.remove(session);
-        _onClientDisconnected(webSocket);
-        notifyListeners();
-      },
-      onError: (error) {
-        session.cancelAuthTimeout();
-        _sessions.remove(session);
-        _onClientDisconnected(webSocket);
-        notifyListeners();
-      },
+      onDone: () => _removeSession(session),
+      onError: (Object error) => _removeSession(session),
     );
+  }
+
+  void _removeSession(ConnectedClient session) {
+    if (!_sessions.remove(session)) return;
+    session.cancelAuthTimeout();
+    _onClientDisconnected(session.socket);
+    notifyListeners();
   }
 
   void _onClientDisconnected(WebSocketChannel client) {
@@ -414,6 +437,9 @@ class WebSocketService extends ChangeNotifier {
 
   Future<void> stopServer() async {
     try {
+      await _starting;
+    } catch (_) {}
+    try {
       await _server?.close(force: true);
     } catch (e) {
       _log('Error closing server: $e');
@@ -421,8 +447,8 @@ class WebSocketService extends ChangeNotifier {
     _server = null;
 
     final snapshot = List.of(_sessions);
-    _sessions.clear();
     for (final session in snapshot) {
+      _removeSession(session);
       try {
         session.socket.sink.close();
       } catch (_) {}
@@ -436,9 +462,13 @@ class WebSocketService extends ChangeNotifier {
 
   @override
   void dispose() {
-    stopServer();
-    _commandController.close();
-    _extensionConnectionController.close();
+    _disposed = true;
+    unawaited(
+      stopServer().whenComplete(() {
+        _commandController.close();
+        _extensionConnectionController.close();
+      }),
+    );
     super.dispose();
   }
 }

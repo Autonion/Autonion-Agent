@@ -14,12 +14,15 @@
 #include <sstream>
 #include <string>
 #include <vector>
+#include "prelogin_auth.h"
+#include "json_strings.h"
+#include "unlock_verification.h"
 
 namespace fs = std::filesystem;
 
 namespace {
 
-const DWORD kWaitTimeoutMs = 15000;
+const DWORD kWaitTimeoutMs = 25000;
 const DWORD kPipeBufferSize = 65536;
 const DWORD kPreloginWebSocketPort = 4545;
 const DWORD kMdnsPort = 5353;
@@ -141,40 +144,7 @@ void WriteStatus(const fs::path& path, bool success, const std::string& message,
   WriteTextFile(path, json.str());
 }
 
-std::string ExtractJsonString(const std::string& json, const std::string& key) {
-  const std::string needle = "\"" + key + "\"";
-  size_t pos = json.find(needle);
-  if (pos == std::string::npos) return "";
-  pos = json.find(':', pos + needle.size());
-  if (pos == std::string::npos) return "";
-  pos = json.find('"', pos + 1);
-  if (pos == std::string::npos) return "";
-  ++pos;
-
-  std::string out;
-  while (pos < json.size()) {
-    char ch = json[pos++];
-    if (ch == '"') break;
-    if (ch != '\\') {
-      out.push_back(ch);
-      continue;
-    }
-    if (pos >= json.size()) break;
-    char esc = json[pos++];
-    switch (esc) {
-      case '"': out.push_back('"'); break;
-      case '\\': out.push_back('\\'); break;
-      case '/': out.push_back('/'); break;
-      case 'b': out.push_back('\b'); break;
-      case 'f': out.push_back('\f'); break;
-      case 'n': out.push_back('\n'); break;
-      case 'r': out.push_back('\r'); break;
-      case 't': out.push_back('\t'); break;
-      default: out.push_back(esc); break;
-    }
-  }
-  return out;
-}
+using autonion::ExtractJsonString;
 
 bool ExtractJsonBool(const std::string& json, const std::string& key) {
   const std::string needle = "\"" + key + "\"";
@@ -342,7 +312,7 @@ std::string MakePipeResponse(bool success, const std::string& request_id,
     json << "{\n"
          << "  \"success\": true,\n"
          << "  \"data\": {\n"
-         << "    \"status\": \"unlock_input_sent\",\n"
+         << "    \"status\": \"" << ((message == "unlock_confirmed" || message == "already_unlocked") ? "unlock_confirmed" : "operation_completed") << "\",\n"
          << "    \"via\": \"windows_service_helper\",\n"
          << "    \"requestId\": \"" << JsonEscape(request_id) << "\",\n"
          << "    \"message\": \"" << JsonEscape(message) << "\",\n"
@@ -478,6 +448,43 @@ bool LoadPreloginIdentity(std::string* device_id, std::string* device_name) {
   return true;
 }
 
+SRWLOCK g_companion_trust_lock = SRWLOCK_INIT;
+
+fs::path CompanionTrustPath() { return GetCredentialRootDir() / L"trusted_companions.json"; }
+
+std::string ReplacePreloginTrust(const std::string& request) {
+  const std::string request_id = ExtractJsonString(request, "requestId");
+  const std::string snapshot = Base64Decode(ExtractJsonString(request, "trustedDevicesB64"));
+  autonion::CompanionTrust trust;
+  if (!autonion::ParseCompanionTrust(snapshot, &trust))
+    return MakePipeResponse(false, request_id, "Invalid companion trust snapshot", "");
+  const std::string identity_result = StorePreloginIdentity(request);
+  if (!ExtractJsonBool(identity_result, "success")) return identity_result;
+  std::string encrypted;
+  if (!ProtectSecret(snapshot, &encrypted))
+    return MakePipeResponse(false, request_id, "Could not encrypt companion trust", "");
+  const std::string json = "{\"trustedDevicesDpapiB64\":\"" + JsonEscape(encrypted) + "\"}";
+  AcquireSRWLockExclusive(&g_companion_trust_lock);
+  const fs::path path = CompanionTrustPath();
+  const fs::path temporary = path.wstring() + L".tmp";
+  const bool saved = WriteTextFile(temporary, json) && ApplySystemAdminOnlyDacl(temporary) &&
+      MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+  ReleaseSRWLockExclusive(&g_companion_trust_lock);
+  return MakePipeResponse(saved, request_id, saved ? "companion_trust_saved" : "Could not save companion trust", "");
+}
+
+bool IsPairedCompanion(const std::string& device_id, const std::string& secret) {
+  if (device_id.empty() || secret.empty() || secret.size() > 1024) return false;
+  AcquireSRWLockShared(&g_companion_trust_lock);
+  const std::string json = ReadTextFile(CompanionTrustPath());
+  ReleaseSRWLockShared(&g_companion_trust_lock);
+  std::string snapshot;
+  autonion::CompanionTrust trust;
+  if (!UnprotectSecret(ExtractJsonString(json, "trustedDevicesDpapiB64"), &snapshot) ||
+      !autonion::ParseCompanionTrust(snapshot, &trust)) return false;
+  return autonion::IsTrustedCompanion(trust, device_id, Base64Encode(BytesFromString(secret)));
+}
+
 std::string StorePreloginCredential(const std::string& request) {
   const std::string request_id = ExtractJsonString(request, "requestId");
   const std::string flow_id = ExtractJsonString(request, "flowId");
@@ -608,6 +615,34 @@ bool SwitchToInputDesktop(std::ostringstream& log, const char* label) {
   return true;
 }
 
+autonion::SessionSnapshot QueryConsoleSession() {
+  autonion::SessionSnapshot snapshot;
+  snapshot.session_id = WTSGetActiveConsoleSessionId();
+  if (snapshot.session_id == 0xFFFFFFFF) return snapshot;
+  LPWSTR buffer = nullptr;
+  DWORD bytes = 0;
+  if (WTSQuerySessionInformationW(WTS_CURRENT_SERVER_HANDLE, snapshot.session_id,
+                                  WTSSessionInfoEx, &buffer, &bytes)) {
+    if (buffer && bytes >= sizeof(WTSINFOEXW)) {
+      const auto* info = reinterpret_cast<const WTSINFOEXW*>(buffer);
+      if (info->Level == 1 && info->Data.WTSInfoExLevel1.SessionId == snapshot.session_id) {
+        const auto& session = info->Data.WTSInfoExLevel1;
+        snapshot.active = session.SessionState == WTSActive;
+        snapshot.has_user = session.UserName[0] != L'\0';
+        if (session.SessionFlags == WTS_SESSIONSTATE_UNLOCK) snapshot.lock_state = autonion::LockState::unlocked;
+        else if (session.SessionFlags == WTS_SESSIONSTATE_LOCK) snapshot.lock_state = autonion::LockState::locked;
+      }
+    }
+  }
+  if (buffer) WTSFreeMemory(buffer);
+  return snapshot;
+}
+
+bool IsConsoleSessionUnlocked() {
+  const auto state = QueryConsoleSession();
+  return autonion::IsUnlockedSession(state, state.session_id);
+}
+
 int RunChild(const fs::path& request_path, const fs::path& status_path) {
   std::ostringstream log;
   const std::string request = ReadTextFile(request_path);
@@ -628,6 +663,16 @@ int RunChild(const fs::path& request_path, const fs::path& status_path) {
     return 3;
   }
 
+  DWORD target_session = 0xFFFFFFFF;
+  if (!ProcessIdToSessionId(GetCurrentProcessId(), &target_session)) {
+    WriteStatus(status_path, false, "Could not determine the unlock session", request_id, log.str());
+    return 7;
+  }
+  auto already_unlocked = [&] { return autonion::IsUnlockedSession(QueryConsoleSession(), target_session); };
+  if (already_unlocked()) {
+    WriteStatus(status_path, true, "already_unlocked", request_id, "OK: Windows session is already unlocked");
+    return 0;
+  }
   AppendLog(log, "OK: helper child started");
   if (!SwitchToInputDesktop(log, "initial")) {
     WriteStatus(status_path, false, "Could not switch to lock-screen input desktop", request_id, log.str());
@@ -643,6 +688,10 @@ int RunChild(const fs::path& request_path, const fs::path& status_path) {
     return 5;
   }
 
+  if (already_unlocked()) {
+    WriteStatus(status_path, true, "unlock_confirmed", request_id, "OK: Windows session unlock confirmed");
+    return 0;
+  }
   AppendLog(log, "Step 2: typing password");
   size_t typed = 0;
   for (size_t i = 0; i < password.size(); ++i) {
@@ -674,10 +723,15 @@ int RunChild(const fs::path& request_path, const fs::path& status_path) {
     line << "WARN: Enter key returned " << enter_sent << "; continuing because password characters were sent";
     AppendLog(log, line.str());
   }
-  Sleep(3000);
-
-  AppendLog(log, "OK: unlock finished");
-  WriteStatus(status_path, true, "unlock_input_sent", request_id, log.str());
+  const bool confirmed = autonion::WaitForUnlockedSession(target_session, 8000,
+      QueryConsoleSession, [] { return GetTickCount64(); }, [](uint64_t ms) { Sleep(static_cast<DWORD>(ms)); });
+  if (!confirmed) {
+    AppendLog(log, "ERROR: Windows session unlock was not confirmed");
+    WriteStatus(status_path, false, "Password input sent, but Windows unlock was not confirmed", request_id, log.str());
+    return 7;
+  }
+  AppendLog(log, "OK: Windows session unlock confirmed");
+  WriteStatus(status_path, true, "unlock_confirmed", request_id, log.str());
   return 0;
 }
 
@@ -848,6 +902,9 @@ bool WritePipeText(HANDLE pipe, const std::string& text) {
 
 std::string HandleServiceUnlockRequest(const std::string& request) {
   const std::string action = ExtractJsonString(request, "action");
+  if (action == "replacePreloginTrust") {
+    return ReplacePreloginTrust(request);
+  }
   if (action == "storePreloginIdentity") {
     return StorePreloginIdentity(request);
   }
@@ -990,7 +1047,10 @@ bool RecvExact(SOCKET client, uint8_t* data, size_t length) {
   while (offset < length) {
     int received = recv(client, reinterpret_cast<char*>(data + offset),
                         static_cast<int>(length - offset), 0);
-    if (received <= 0) return false;
+    if (received <= 0) {
+      if (offset != 0 || received == 0) WSASetLastError(WSAECONNRESET);
+      return false;
+    }
     offset += static_cast<size_t>(received);
   }
   return true;
@@ -1068,7 +1128,7 @@ bool SendWebSocketText(SOCKET client, const std::string& payload) {
   return SendWebSocketFrame(client, 0x1, payload);
 }
 
-bool ReceiveWebSocketText(SOCKET client, std::string* message) {
+bool ReceiveWebSocketText(SOCKET client, std::string* message, ULONGLONG* last_activity = nullptr) {
   if (!message) return false;
   message->clear();
 
@@ -1082,11 +1142,11 @@ bool ReceiveWebSocketText(SOCKET client, std::string* message) {
 
     if (length == 126) {
       uint8_t extended[2]{};
-      if (!RecvExact(client, extended, 2)) return false;
+      if (!RecvExact(client, extended, 2)) { WSASetLastError(WSAECONNRESET); return false; }
       length = (static_cast<uint64_t>(extended[0]) << 8) | extended[1];
     } else if (length == 127) {
       uint8_t extended[8]{};
-      if (!RecvExact(client, extended, 8)) return false;
+      if (!RecvExact(client, extended, 8)) { WSASetLastError(WSAECONNRESET); return false; }
       length = 0;
       for (uint8_t byte : extended) length = (length << 8) | byte;
     }
@@ -1094,12 +1154,13 @@ bool ReceiveWebSocketText(SOCKET client, std::string* message) {
     if (length > 1024 * 1024) return false;
 
     uint8_t mask[4]{};
-    if (masked && !RecvExact(client, mask, 4)) return false;
+    if (masked && !RecvExact(client, mask, 4)) { WSASetLastError(WSAECONNRESET); return false; }
 
     std::string payload(static_cast<size_t>(length), '\0');
     if (length > 0 &&
         !RecvExact(client, reinterpret_cast<uint8_t*>(payload.data()),
                    static_cast<size_t>(length))) {
+      WSASetLastError(WSAECONNRESET);
       return false;
     }
     if (masked) {
@@ -1108,7 +1169,8 @@ bool ReceiveWebSocketText(SOCKET client, std::string* message) {
       }
     }
 
-    if (opcode == 0x8) return false; // Close frame
+    if (last_activity) *last_activity = GetTickCount64();
+    if (opcode == 0x8) { WSASetLastError(WSAECONNRESET); return false; }
     if (opcode == 0x9) {
       // Binary ping frame from OkHttp: reply with pong (0xA) and continue loop
       SendWebSocketFrame(client, 0xA, payload);
@@ -1269,60 +1331,66 @@ void HandlePreloginWebSocketMessage(SOCKET client, const std::string& message) {
   }
 }
 
-bool IsConsoleSessionUnlocked() {
-  DWORD session_id = WTSGetActiveConsoleSessionId();
-  if (session_id == 0xFFFFFFFF) return false;
 
-  LPWSTR buffer = nullptr;
-  DWORD bytes_returned = 0;
-  if (WTSQuerySessionInformationW(WTS_CURRENT_SERVER_HANDLE, session_id,
-                                  WTSSessionInfoEx, &buffer, &bytes_returned)) {
-    if (buffer && bytes_returned >= sizeof(WTSINFOEXW)) {
-      WTSINFOEXW* info = reinterpret_cast<WTSINFOEXW*>(buffer);
-      if (info->Level == 1) {
-        ULONG flags = info->Data.WTSInfoExLevel1.SessionFlags;
-        WTSFreeMemory(buffer);
-        // WTS_SESSIONSTATE_LOCK = 0, WTS_SESSIONSTATE_UNLOCK = 1
-        return flags == WTS_SESSIONSTATE_UNLOCK;
-      }
-    }
-    if (buffer) WTSFreeMemory(buffer);
-  }
-  return false;
-}
+using SessionUnlockedQuery = bool (*)();
 
-void HandlePreloginClient(SOCKET client, HANDLE stop_event) {
+void HandlePreloginClient(SOCKET client, HANDLE stop_event,
+    SessionUnlockedQuery is_unlocked = IsConsoleSessionUnlocked) {
   DWORD timeout_ms = 1000;
-  setsockopt(client, SOL_SOCKET, SO_RCVTIMEO,
-             reinterpret_cast<const char*>(&timeout_ms), sizeof(timeout_ms));
-
+  setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout_ms), sizeof(timeout_ms));
+  DWORD send_timeout_ms = 5000;
+  setsockopt(client, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&send_timeout_ms), sizeof(send_timeout_ms));
   std::string request;
-  if (!ReadHttpUpgradeRequest(client, &request) ||
-      !CompleteWebSocketHandshake(client, request)) {
-    return;
-  }
+  if (!ReadHttpUpgradeRequest(client, &request) || !CompleteWebSocketHandshake(client, request)) return;
 
-  std::ostringstream ack;
-  ack << "{\"type\":\"connection_ack\","
-      << "\"status\":\"connected\","
-      << "\"agent\":\"autonion-prelogin\","
-      << "\"version\":\"2.0.5\","
-      << "\"prelogin\":true,"
-      << "\"timestamp\":\"" << UtcTimestamp() << "\","
-      << "\"server_info\":{\"port\":" << kPreloginWebSocketPort << ",\"clients\":1}}";
-  SendWebSocketText(client, ack.str());
-
+  const ULONGLONG connected_at = GetTickCount64();
+  ULONGLONG last_activity = connected_at;
+  ULONGLONG last_ping = connected_at;
+  std::string companion_id;
+  std::string companion_secret;
+  bool authenticated = false;
   while (WaitForSingleObject(stop_event, 0) == WAIT_TIMEOUT &&
-         WaitForSingleObject(g_service_stop_event, 0) == WAIT_TIMEOUT &&
-         !IsConsoleSessionUnlocked()) {
+         WaitForSingleObject(g_service_stop_event, 0) == WAIT_TIMEOUT && !is_unlocked()) {
+    if (!authenticated && GetTickCount64() - connected_at > 10000) break;
+    if (GetTickCount64() - last_activity > 45000) break;
+    if (authenticated && GetTickCount64() - last_ping >= 15000) {
+      if (!SendWebSocketFrame(client, 0x9, "")) break;
+      last_ping = GetTickCount64();
+    }
     std::string message;
-    if (!ReceiveWebSocketText(client, &message)) {
-      int error = WSAGetLastError();
+    if (!ReceiveWebSocketText(client, &message, &last_activity)) {
+      const int error = WSAGetLastError();
       if (error == WSAETIMEDOUT || error == WSAEWOULDBLOCK) continue;
+      break;
+    }
+    if (!authenticated) {
+      if (ExtractJsonString(message, "type") != "client_info") continue;
+      companion_id = ExtractJsonString(message, "deviceId");
+      companion_secret = ExtractJsonString(message, "deviceSecret");
+      if (!IsPairedCompanion(companion_id, companion_secret)) {
+        SendWebSocketText(client, "{\"type\":\"auth_result\",\"status\":\"authentication_failed\","
+            "\"message\":\"Pair with the Desktop Agent and synchronize unlock access before using the helper.\"}");
+        break;
+      }
+      std::string agent_id, agent_name;
+      if (!LoadPreloginIdentity(&agent_id, &agent_name)) break;
+      authenticated = true;
+      std::ostringstream ack;
+      ack << "{\"type\":\"auth_result\",\"status\":\"authenticated\","
+          << "\"agent\":\"autonion-prelogin\",\"version\":\"2.0.5\",\"prelogin\":true,"
+          << "\"agent_id\":\"" << JsonEscape(agent_id) << "\","
+          << "\"agent_name\":\"" << JsonEscape(agent_name) << "\"}";
+      if (!SendWebSocketText(client, ack.str())) break;
+      continue;
+    }
+    // Reload the complete snapshot for every command so revocation also affects live sessions.
+    if (!IsPairedCompanion(companion_id, companion_secret)) {
+      SendWebSocketText(client, "{\"type\":\"auth_result\",\"status\":\"pairing_revoked\"}");
       break;
     }
     HandlePreloginWebSocketMessage(client, message);
   }
+  companion_secret.assign(companion_secret.size(), '\0');
 }
 
 struct PreloginClientParams {
