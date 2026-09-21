@@ -124,6 +124,32 @@ flutter build windows --release
 
 ---
 
+## Publishing Windows updates
+
+Use the same stable version in `pubspec.yaml` (with a build number),
+`lib/core/config/app_config.dart`, and `setup.iss`. Then build the release:
+
+```powershell
+.\tools\build_release.ps1
+# If Flutter is not on PATH:
+.\tools\build_release.ps1 -FlutterPath C:\Users\YourName\flutter\bin\flutter.bat
+```
+
+The script checks version consistency, runs updater tests, builds the Windows
+application and installer, and writes a SHA256 checksum. Upload
+`Output/Autonion Agent.exe` and its `.sha256` file to a **public, published,
+stable GitHub Release**, with a matching tag such as `v2.0.6`. Mark it as the
+latest release. Drafts, prereleases, and Git tags without a published release
+are not update announcements. Rebuild the installer after every code change;
+replacing an existing release asset without increasing the version does not
+notify users.
+
+The app checks at startup and every six hours while running, retries failed
+checks with backoff, and respects GitHub rate limits. Settings shows the last
+check and its result. **View release** opens GitHub; users download and run the
+installer themselves. Exit Autonion from the tray before installing an update.
+Normal updates do not require uninstalling the previous version.
+
 ## 📱 Connecting with Automation Companion
 
 1. Launch **Autonion Agent** on your desktop.

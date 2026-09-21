@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
-import 'package:url_launcher/url_launcher.dart';
+import 'package:intl/intl.dart';
 import '../../core/config/app_config.dart';
 import '../../core/config/platform_config.dart';
 import '../../core/di/service_locator.dart';
@@ -11,6 +11,7 @@ import '../../features/system/services/update_service.dart';
 import '../../features/system/services/window_manager_service.dart';
 import '../theme/app_colors.dart';
 import '../widgets/glassmorphic_card.dart';
+import '../widgets/update_release_button.dart';
 
 /// General settings: startup, system tray, about.
 class SettingsScreen extends StatefulWidget {
@@ -154,22 +155,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           OutlinedButton.icon(
                             onPressed: () => updateService.checkForUpdate(),
                             icon: Icon(
-                              updateService.updateAvailable
+                              updateService.hasUpdate
                                   ? Icons.system_update
                                   : Icons.refresh,
                               size: 16,
                             ),
                             label: Text(
-                              updateService.updateAvailable
+                              updateService.hasUpdate
                                   ? 'v${updateService.latestVersion} Available'
                                   : 'Check for Updates',
                             ),
                             style: OutlinedButton.styleFrom(
-                              foregroundColor: updateService.updateAvailable
+                              foregroundColor: updateService.hasUpdate
                                   ? AppColors.success
                                   : AppColors.textSecondary,
                               side: BorderSide(
-                                color: updateService.updateAvailable
+                                color: updateService.hasUpdate
                                     ? AppColors.success.withAlpha(120)
                                     : AppColors.border,
                               ),
@@ -182,8 +183,26 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           ),
                       ],
                     ),
+                    const SizedBox(height: 12),
+                    Text(
+                      updateService.statusMessage,
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: updateService.status == UpdateStatus.error
+                            ? AppColors.warning
+                            : AppColors.textSecondary,
+                      ),
+                    ),
+                    if (updateService.lastCheckedAt != null) ...[
+                      const SizedBox(height: 4),
+                      Text(
+                        'Last checked: ${DateFormat('MMM d, HH:mm').format(updateService.lastCheckedAt!.toLocal())}',
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: AppColors.textSecondary,
+                        ),
+                      ),
+                    ],
                     // ── Update available info ──────────────
-                    if (updateService.updateAvailable) ...[
+                    if (updateService.hasUpdate) ...[
                       const SizedBox(height: 12),
                       Container(
                         width: double.infinity,
@@ -205,25 +224,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             const SizedBox(width: 10),
                             Expanded(
                               child: Text(
-                                'New version v${updateService.latestVersion} is available!',
+                                'Download the installer from GitHub, then run it to update.',
                                 style: Theme.of(context).textTheme.bodySmall?.copyWith(
                                   color: AppColors.success,
                                   fontWeight: FontWeight.w500,
                                 ),
                               ),
                             ),
-                            TextButton(
-                              onPressed: () {
-                                final url = updateService.releaseUrl;
-                                if (url != null) {
-                                  launchUrl(
-                                    Uri.parse(url),
-                                    mode: LaunchMode.externalApplication,
-                                  );
-                                }
-                              },
-                              child: const Text('Download'),
-                            ),
+                            UpdateReleaseButton(url: updateService.releaseUrl),
                           ],
                         ),
                       ),

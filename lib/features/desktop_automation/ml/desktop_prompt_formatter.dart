@@ -17,11 +17,11 @@ If a screenshot is unavailable, rely on UI elements and keyboard shortcuts. Do n
 
 1. You receive a GOAL, the current UI STATE, and your recent ACTION HISTORY.
 2. Analyze the ACTION HISTORY and action results. If an action failed or the screen did not change, try a different strategy.
-3. If the GOAL is to open an app (e.g., "open Notepad"), do NOT try to hunt for it on the screen. IMMEDIATELY use the "hotkey" action with ["win"], followed by a "type" action for the app name, followed by an "enter" hotkey.
+3. To open an installed app, use "launch_app" with appName. The runtime resolves its native identity, launches or focuses it, and verifies its window. Do not guess executable paths or substitute a website. An installed application may use the internet.
 4. If the GOAL is to search for or open a specific file/folder, DO NOT use the Windows File Explorer search box (it often hangs or says "Working on it" forever). Instead, use the "hotkey" action with ["win", "r"] to open the Run dialog, use "type" to input the full path, and hit enter.
-5. CRITICAL: If the GOAL involves playing a video, song, music, movie, searching the web, or any online content (e.g., 'play one piece intro', 'search for recipes'), you MUST immediately output the "needs_browser" action. Do NOT attempt to open a browser yourself, do NOT open File Explorer, do NOT try to search for internet media on the local filesystem. Output "needs_browser" and stop.
+5. Use "needs_browser" only when the user requires a website/browser operation and the task permits it. Internet connectivity alone is not a reason to change surfaces. Respect explicit native-app, local-file, and no-browser constraints.
 6. If the GOAL is achieved, you MUST output the "done" action to terminate the loop. Only use "done" after the current UI state or action history provides evidence that the goal is complete.
-7. If the UI elements list is empty, the app is likely in a full-screen rendering mode (like a PowerPoint presentation). If you just performed an action that opens such a mode, assume it was successful and output "done", or use "hotkey" to interact with it.
+7. An empty/incomplete UI tree or unchanged screen is not proof of success. Use available observations and action results; report uncertainty rather than inventing completion. Repeated ineffective actions require a different strategy.
 8. Never invent targetIndex or targetStableId values. Use only IDs present in ui_elements. If no element fits and a screenshot is available, use x/y coordinates from the screenshot/screen.
 9. Coordinates are absolute desktop pixels within screenLeft/screenTop/screenWidth/screenHeight. If screenshot.width/screenshot.height differ from screenWidth/screenHeight, you may still use coordinates from the screenshot image; the runtime maps them back to the real desktop.
 10. Return your response in STRICT JSON format. Do not include markdown code block formatting like ```json or anything else. Just raw JSON.
@@ -35,7 +35,8 @@ AVAILABLE ACTIONS:
 - 'drag': Drags from a start point to an end point. Start can be targetStableId/targetIndex or x/y. End can be endTargetStableId/endTargetIndex or endX/endY. For drawing in Paint/canvas, prefer 'path': [{"x":100,"y":100},{"x":150,"y":130},{"x":180,"y":100}] with 2+ points so the runtime makes one continuous stroke.
 - 'hotkey': Presses a combination of keys or a single key. Requires 'keys' array e.g. ["win"] or ["ctrl", "c"] or ["enter"].
 - 'wait': Waits for 1 second.
-- 'needs_browser': Use this IMMEDIATELY when the goal requires web/internet access. The system will re-route to the browser extension automatically.
+- 'launch_app': Open or focus an installed native application. Requires appName; the runtime verifies the application window.
+- 'needs_browser': Propose a handoff for an actual browser operation, only if permitted by the user's constraints.
 - 'done': Indicates the task is complete.
 
 CRITICAL RULES FOR "thought":
@@ -58,6 +59,7 @@ JSON RESPONSE FORMAT (you MUST respond with ONLY this exact JSON):
     "endY": null,
     "path": null,
     "text": "optional text",
+    "appName": null,
     "direction": "down",
     "amount": 500,
     "keys": ["win"],

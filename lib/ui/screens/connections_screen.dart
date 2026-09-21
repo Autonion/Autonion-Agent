@@ -112,7 +112,21 @@ class _ServerStatusCard extends StatelessWidget {
           const SizedBox(height: 16),
           if (conn.isRunning) ...[
             _infoRow(context, 'Port', '${conn.port}'),
-            _infoRow(context, 'Trusted Clients', '${ws.authenticatedClientsCount}'),
+            _infoRow(
+              context,
+              'Discovery',
+              conn.isAdvertising ? 'Advertising' : 'Retrying…',
+            ),
+            if (conn.discoveryError != null)
+              Text(
+                'Device discovery is unavailable. Retrying automatically.',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+            _infoRow(
+              context,
+              'Trusted Clients',
+              '${ws.authenticatedClientsCount}',
+            ),
             if (pendingCount > 0)
               _infoRow(context, 'Pending Sockets', '$pendingCount'),
             _infoRow(
@@ -207,11 +221,11 @@ class _PairedDevicesCard extends StatelessWidget {
                           ? 'Allowing new device pairings'
                           : 'New pairings blocked',
                       style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                            color: allowPairings
-                                ? AppColors.success
-                                : AppColors.warning,
-                            fontSize: 11,
-                          ),
+                        color: allowPairings
+                            ? AppColors.success
+                            : AppColors.warning,
+                        fontSize: 11,
+                      ),
                     ),
                   ],
                 ),
@@ -248,16 +262,16 @@ class _PairedDevicesCard extends StatelessWidget {
                   Text(
                     'No paired companion devices',
                     style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                          fontWeight: FontWeight.w600,
-                        ),
+                      fontWeight: FontWeight.w600,
+                    ),
                   ),
                   const SizedBox(height: 4),
                   Text(
                     'When a phone connects on LAN, a PIN pairing prompt will appear.',
                     textAlign: TextAlign.center,
                     style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: AppColors.textSecondary,
-                        ),
+                      color: AppColors.textSecondary,
+                    ),
                   ),
                 ],
               ),
@@ -302,9 +316,7 @@ class _PairedDevicesCard extends StatelessWidget {
               Navigator.of(ctx).pop();
               conn.revokeDevice(device.id);
             },
-            style: ElevatedButton.styleFrom(
-              backgroundColor: AppColors.error,
-            ),
+            style: ElevatedButton.styleFrom(backgroundColor: AppColors.error),
             child: const Text('Unpair'),
           ),
         ],
@@ -317,10 +329,7 @@ class _PairedDeviceTile extends StatelessWidget {
   final PairedDevice device;
   final VoidCallback onRevoke;
 
-  const _PairedDeviceTile({
-    required this.device,
-    required this.onRevoke,
-  });
+  const _PairedDeviceTile({required this.device, required this.onRevoke});
 
   @override
   Widget build(BuildContext context) {
@@ -352,17 +361,17 @@ class _PairedDeviceTile extends StatelessWidget {
               children: [
                 Text(
                   device.name,
-                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                        fontWeight: FontWeight.w600,
-                      ),
+                  style: Theme.of(
+                    context,
+                  ).textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600),
                 ),
                 const SizedBox(height: 2),
                 Text(
                   'Paired: $pairedDateStr • Last seen: $lastSeenStr${device.lastIp != null ? " (${device.lastIp})" : ""}',
                   style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: AppColors.textSecondary,
-                        fontSize: 11,
-                      ),
+                    color: AppColors.textSecondary,
+                    fontSize: 11,
+                  ),
                 ),
               ],
             ),

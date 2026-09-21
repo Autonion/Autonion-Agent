@@ -3,6 +3,7 @@ import '../../../core/services/logging_service.dart';
 import '../../ai/providers/ai_provider_notifier.dart';
 import '../../ai/models/ai_message.dart';
 import '../../ai/models/ai_response.dart';
+import '../../ai/services/ai_service.dart';
 import '../models/automation_tier.dart';
 import '../models/desktop_action.dart';
 import '../models/screen_state.dart';
@@ -12,6 +13,9 @@ import 'accessibility_tree_service.dart';
 import 'automation_memory_service.dart';
 import 'input_simulation_service.dart';
 import 'task_decomposer_service.dart';
+import 'task_intent.dart';
+import 'completion_verifier.dart';
+import 'agent_run.dart';
 
 enum AgentStatus { idle, running, error, complete }
 
@@ -30,7 +34,9 @@ class DesktopAgentService {
   final AccessibilityTreeService _a11y;
   final InputSimulationService _input;
   final TaskDecomposerService _decomposer = TaskDecomposerService();
-  final AutomationMemoryService _memory = AutomationMemoryService();
+  final Map<String, AutomationMemoryService> _sessionMemory = {};
+  String _memoryOwner = 'local';
+  AutomationMemoryService get _memory => _sessionMemory[_memoryOwner]!;
 
   AgentStatus _status = AgentStatus.idle;
   AgentStatus get status => _status;
@@ -41,6 +47,9 @@ class DesktopAgentService {
 
   final List<Map<String, dynamic>> _history = [];
   bool _stopRequested = false;
+  bool _allowBrowser = true;
+  AgentRun? _run;
+  Future<AiService> Function()? _resolveAi;
 
   /// The action history from the most recent task execution.
   /// Each entry contains 'step', 'thought', 'action' (as a Map), and 'result'.
@@ -59,6 +68,7 @@ class DesktopAgentService {
   void stop() {
     if (_status == AgentStatus.running) {
       _stopRequested = true;
+      _run?.cancel();
       _log.info('DesktopAgent', 'Stop requested by user.');
     }
   }
@@ -68,19 +78,35 @@ class DesktopAgentService {
     AutomationTier tier = AutomationTier.accessibilityOnly,
     void Function(String)? onProgress,
     String? conversationContext,
+    bool allowBrowser = true,
+    AgentRun? run,
+    Future<AiService> Function()? resolveAi,
   }) async {
-    if (_status == AgentStatus.running) return;
+    if (_status == AgentStatus.running) {
+      throw StateError('Desktop agent is busy.');
+    }
 
+    run?.check();
     _status = AgentStatus.running;
     _stopRequested = false;
     _lastError = null;
+    _allowBrowser = allowBrowser;
+    _run =
+        run ??
+        AgentRun('desktop-${DateTime.now().microsecondsSinceEpoch}', 'local');
+    _resolveAi = resolveAi;
+    _memoryOwner = _run!.owner;
+    _sessionMemory.putIfAbsent(_memoryOwner, AutomationMemoryService.new);
+    if (_sessionMemory.length > 100) {
+      _sessionMemory.remove(
+        _sessionMemory.keys.firstWhere((key) => key != _memoryOwner),
+      );
+    }
     _history.clear();
 
     // Inject Android conversation context into memory so the LLM
     // can resolve references like "it", "the same one", etc.
-    if (conversationContext != null) {
-      _memory.setConversationContext(conversationContext);
-    }
+    _memory.setConversationContext(conversationContext);
 
     // Decompose compound commands FIRST — before any deterministic shortcuts.
     // This prevents shortcuts like the screenshot shortcut from swallowing
@@ -94,9 +120,43 @@ class DesktopAgentService {
     );
 
     if (subGoals.length <= 1) {
+      final appName = TaskIntent.launchAppName(goal);
+      if (appName != null) {
+        try {
+          onProgress?.call('Opening installed $appName application...');
+          _run!.check();
+          final result = await _run!.wait(_input.openApp(appName));
+          if (_stopRequested) {
+            _status = AgentStatus.idle;
+            return;
+          }
+          _history.add({
+            'step': 1,
+            'action': {'type': 'launch_app', 'appName': appName},
+            'result': result,
+          });
+          _status = AgentStatus.complete;
+          _memory.recordGoalOutcome(
+            goal,
+            'native app window verified',
+            true,
+            appUsed: appName,
+          );
+        } catch (e) {
+          _status = _stopRequested || _run!.isCancelled
+              ? AgentStatus.idle
+              : AgentStatus.error;
+          _lastError = _firstLine(e.toString());
+          _memory.recordGoalOutcome(goal, _lastError!, false);
+        }
+        return;
+      }
       // Single goal — try deterministic shortcuts first
       if (await _tryRunDeterministicScreenshotCommand(goal, onProgress)) {
-        final success = _status != AgentStatus.error;
+        final success =
+            !_stopRequested &&
+            !_run!.isCancelled &&
+            _status != AgentStatus.error;
         if (success) _status = AgentStatus.complete;
         _memory.recordGoalOutcome(
           goal,
@@ -125,7 +185,7 @@ class DesktopAgentService {
     // completed, but retains full context of what happened before.
     final completedSubGoals = <SubGoal>[];
     for (final subGoal in subGoals) {
-      if (_stopRequested) break;
+      if (_stopRequested || _run!.isCancelled) break;
 
       _log.info(
         'DesktopAgent',
@@ -148,8 +208,8 @@ class DesktopAgentService {
       }
 
       // For screenshot sub-goals, use the deterministic shortcut directly.
-      // Screenshots produce no visible UI confirmation, so the agentic loop
-      // would spin forever waiting for evidence that never comes.
+      // Full-screen capture returns a verified file; region and overlay goals
+      // still require the observed interaction loop.
       if (_isScreenshotGoal(subGoal.description)) {
         _log.info(
           'DesktopAgent',
@@ -160,7 +220,9 @@ class DesktopAgentService {
           onProgress,
         );
         if (shortcutHandled) {
-          _status = (_status == AgentStatus.error)
+          _status = (_stopRequested || _run!.isCancelled)
+              ? AgentStatus.idle
+              : (_status == AgentStatus.error)
               ? AgentStatus.error
               : AgentStatus.complete;
         } else {
@@ -198,6 +260,11 @@ class DesktopAgentService {
       await Future.delayed(const Duration(milliseconds: 500));
     }
 
+    if (_stopRequested || _run!.isCancelled) {
+      _status = AgentStatus.idle;
+      _memory.recordGoalOutcome(goal, 'cancelled', false);
+      return;
+    }
     _status = AgentStatus.complete;
     _memory.recordGoalOutcome(goal, 'completed all steps', true);
   }
@@ -227,28 +294,38 @@ class DesktopAgentService {
     const maxSteps = 25;
     const maxAiRetries = 3;
     String? lastObservationSignature;
-    // Track repeated identical actions for stale-loop detection.
-    // If the LLM emits the same action type N times in a row with an
-    // unchanged screen, the action likely succeeded but has no visible
-    // confirmation (e.g., screenshot hotkey). Auto-complete to avoid
-    // burning through 25 steps pointlessly.
+    // No progress is a blocker, never completion evidence.
     String? lastActionFingerprint;
     int consecutiveRepeats = 0;
-    const maxConsecutiveRepeats = 2; // auto-complete after 2 identical actions
+    const maxConsecutiveRepeats = 2;
     final observationTier =
         tier == AutomationTier.accessibilityOnly && _needsVisualFeedback(goal)
         ? AutomationTier.treeWithThumbnail
         : tier;
 
     try {
+      if (_run != null) {
+        await _run!.wait(_aiProvider.ensureOllamaRunning());
+      } else {
+        await _aiProvider.ensureOllamaRunning();
+      }
+      final aiService = _resolveAi == null
+          ? _aiProvider.activeService
+          : await _run!.wait(_resolveAi!());
       while (steps < maxSteps && !_stopRequested) {
+        _run!.check();
         steps++;
         _log.info('DesktopAgent', '--- Step $steps ---');
 
         // 1. Observe Screen
-        final screenState = await _a11y.getScreenState(observationTier);
+        final screenState = await _run!.wait(
+          _a11y.getScreenState(observationTier),
+        );
         if (_stopRequested) {
-          _log.warn('DesktopAgent', 'Task aborted by user after screen observation.');
+          _log.warn(
+            'DesktopAgent',
+            'Task aborted by user after screen observation.',
+          );
           _status = AgentStatus.idle;
           return;
         }
@@ -334,6 +411,7 @@ class DesktopAgentService {
                     "scroll",
                     "drag",
                     "hotkey",
+                    "launch_app",
                     "wait",
                     "needs_browser",
                     "done",
@@ -378,6 +456,9 @@ class DesktopAgentService {
                 "text": {
                   "type": ["string", "null"],
                 },
+                "appName": {
+                  "type": ["string", "null"],
+                },
                 "direction": {
                   "type": ["string", "null"],
                 },
@@ -410,6 +491,7 @@ class DesktopAgentService {
                 "endY",
                 "path",
                 "text",
+                "appName",
                 "direction",
                 "amount",
                 "keys",
@@ -423,12 +505,12 @@ class DesktopAgentService {
         };
 
         // 3. Ask LLM (with retry for transient failures)
-        final aiService = _aiProvider.activeService;
         AiResponse? response;
         bool gotValidResponse = false;
 
         for (int retry = 0; retry <= maxAiRetries; retry++) {
-          response = await aiService.chat(messages, jsonSchema: schema);
+          final chat = aiService.chat(messages, jsonSchema: schema);
+          response = await (_run?.wait<AiResponse>(chat) ?? chat);
           if (_stopRequested) {
             _log.warn('DesktopAgent', 'Task aborted by user during AI chat.');
             _status = AgentStatus.idle;
@@ -466,7 +548,10 @@ class DesktopAgentService {
             );
             await Future.delayed(Duration(seconds: waitSec));
             if (_stopRequested) {
-              _log.warn('DesktopAgent', 'Task aborted by user during retry delay.');
+              _log.warn(
+                'DesktopAgent',
+                'Task aborted by user during retry delay.',
+              );
               _status = AgentStatus.idle;
               return;
             }
@@ -518,8 +603,11 @@ class DesktopAgentService {
         try {
           parsed = jsonDecode(rawJson) as Map<String, dynamic>;
         } catch (_) {
-          // Attempt to repair truncated JSON by closing open braces
-          parsed = _tryRepairJson(rawJson);
+          _log.warn(
+            'DesktopAgent',
+            'Invalid or incomplete action JSON; requesting a fresh action.',
+          );
+          continue;
         }
 
         final thought = parsed['thought']?.toString() ?? '(truncated)';
@@ -538,7 +626,6 @@ class DesktopAgentService {
             'Response truncated before action — retrying step...',
           );
           onProgress?.call('⚠️ AI response was truncated — retrying...');
-          steps--; // Don't count this as a real step
           continue;
         }
 
@@ -552,20 +639,44 @@ class DesktopAgentService {
 
         // If stop was requested while parsing/retrying, abort before executing action
         if (_stopRequested) {
-          _log.warn('DesktopAgent', 'Task aborted by user before executing action.');
+          _log.warn(
+            'DesktopAgent',
+            'Task aborted by user before executing action.',
+          );
           _status = AgentStatus.idle;
           return;
         }
 
         // 5. Execute Action
         if (action.type == 'done') {
-          _log.info('DesktopAgent', 'Task completed successfully by Agent.');
-          _status = AgentStatus.complete;
-          _lastError = null;
+          final finalState = await _run!.wait(
+            _a11y.getScreenState(observationTier),
+          );
+          final verified =
+              finalState.observationComplete &&
+              !finalState.activeWindowIsSystemSurface &&
+              (finalState.elements.isNotEmpty ||
+                  finalState.screenshotBase64 != null) &&
+              await _waitForVerification(aiService, goal, finalState);
+          if (_stopRequested) {
+            _status = AgentStatus.idle;
+            return;
+          }
+          _status = verified ? AgentStatus.complete : AgentStatus.error;
+          _lastError = verified
+              ? null
+              : 'The requested result could not be verified from the current screen.';
           return;
         }
 
         if (action.type == 'needs_browser') {
+          if (!_allowBrowser ||
+              TaskIntent.resolve(goal).surface == TaskSurface.desktop) {
+            _status = AgentStatus.error;
+            _lastError =
+                'This task requires the native desktop application; browser substitution is not allowed.';
+            return;
+          }
           _log.info(
             'DesktopAgent',
             'Agent determined task needs browser. Re-routing...',
@@ -594,14 +705,22 @@ class DesktopAgentService {
 
         try {
           if (_stopRequested) {
-            _log.warn('DesktopAgent', 'Task aborted by user before action dispatch.');
+            _log.warn(
+              'DesktopAgent',
+              'Task aborted by user before action dispatch.',
+            );
             _status = AgentStatus.idle;
             return;
           }
-          final result = await _input.execute(action);
+          final result = action.type == 'launch_app'
+              ? await _input.openApp(action.appName!)
+              : await _input.execute(action);
           _history.last['result'] = {'status': 'executed', ...result};
           if (_stopRequested) {
-            _log.warn('DesktopAgent', 'Task aborted by user after action execution.');
+            _log.warn(
+              'DesktopAgent',
+              'Task aborted by user after action execution.',
+            );
             _status = AgentStatus.idle;
             return;
           }
@@ -630,12 +749,13 @@ class DesktopAgentService {
             _log.info(
               'DesktopAgent',
               'Detected $consecutiveRepeats consecutive identical actions '
-                  'with unchanged screen — auto-completing sub-goal.',
+                  'with unchanged screen — stopping without completion.',
             );
             onProgress?.call(
-              '✅ Action appears successful (no further changes detected).',
+              'No progress was observed after repeated actions.',
             );
-            _status = AgentStatus.complete;
+            _status = AgentStatus.error;
+            _lastError = 'Repeated actions did not make observable progress.';
             return;
           }
         } else {
@@ -648,7 +768,10 @@ class DesktopAgentService {
         // Wait a bit for UI to settle
         await Future.delayed(const Duration(milliseconds: 500));
         if (_stopRequested) {
-          _log.warn('DesktopAgent', 'Task aborted by user during settle delay.');
+          _log.warn(
+            'DesktopAgent',
+            'Task aborted by user during settle delay.',
+          );
           _status = AgentStatus.idle;
           return;
         }
@@ -666,6 +789,8 @@ class DesktopAgentService {
         _status = AgentStatus.error;
         _lastError = 'Task did not complete within $maxSteps steps.';
       }
+    } on AgentCancelledException {
+      _status = AgentStatus.idle;
     } on NeedsBrowserException {
       rethrow; // Let connection_provider handle re-routing
     } catch (e) {
@@ -677,6 +802,26 @@ class DesktopAgentService {
     }
   }
 
+  Future<bool> _waitForVerification(
+    AiService ai,
+    String goal,
+    ScreenState state,
+  ) {
+    final verification = verifyObservedCompletion(
+      ai: ai,
+      goal: goal,
+      observation: {
+        'screen': state.toPromptMetadata(),
+        'elements': state.elements.map((e) => e.toPromptJson()).toList(),
+      },
+      history: _history
+          .where((h) => (h['action'] as Map?)?['type'] != 'done')
+          .toList(),
+      screenshotBase64: state.screenshotBase64,
+    );
+    return _run?.wait(verification) ?? verification;
+  }
+
   String? _validateAction(DesktopAction action, ScreenState state) {
     const allowed = {
       'click',
@@ -686,6 +831,7 @@ class DesktopAgentService {
       'scroll',
       'drag',
       'hotkey',
+      'launch_app',
       'wait',
       'needs_browser',
       'done',
@@ -696,6 +842,10 @@ class DesktopAgentService {
     }
 
     switch (action.type) {
+      case 'launch_app':
+        return action.appName == null || action.appName!.trim().isEmpty
+            ? 'launch_app requires an installed app name.'
+            : null;
       case 'click':
       case 'double_click':
       case 'right_click':
@@ -930,137 +1080,36 @@ class DesktopAgentService {
     String goal,
     void Function(String)? onProgress,
   ) async {
-    final normalized = goal.toLowerCase().replaceAll(RegExp(r'\s+'), ' ');
-    final mentionsScreenshot =
-        normalized.contains('screenshot') ||
-        normalized.contains('screen shot') ||
-        normalized.contains('snip') ||
-        normalized.contains('snipping') ||
-        normalized.contains('win+shift+s') ||
-        normalized.contains('won+shift+s') ||
-        normalized.contains('win shift s') ||
-        normalized.contains('won shift s') ||
-        normalized.contains('windows+shift+s') ||
-        normalized.contains('windows shift s');
-
-    if (!mentionsScreenshot) return false;
-
-    // Safety net: reject if the prompt clearly contains other action verbs,
-    // which signals it is a compound command even if the decomposer returned
-    // a single sub-goal (e.g., edge cases it couldn't split).
-    const nonScreenshotVerbs = {
-      'open',
-      'launch',
-      'start',
-      'create',
-      'make',
-      'draw',
-      'write',
-      'type',
-      'enter',
-      'compose',
-      'search',
-      'find',
-      'navigate',
-      'go',
-      'click',
-      'tap',
-      'press',
-      'select',
-      'play',
-      'pause',
-      'close',
-      'save',
-      'download',
-      'send',
-      'share',
-      'copy',
-      'paste',
-      'delete',
-      'rename',
-      'move',
-      'scroll',
-      'drag',
-      'enable',
-      'disable',
-      'set',
-    };
-    final words = normalized.split(RegExp(r'[\s,\.;!?]+'));
-    final hasOtherVerbs = words.any((w) => nonScreenshotVerbs.contains(w));
-    if (hasOtherVerbs) {
-      _log.info(
-        'DesktopAgent',
-        'Screenshot shortcut skipped — prompt contains other action verbs, deferring to agentic loop.',
-      );
+    // Only a complete full-screen capture has a deterministic result. Region,
+    // clipboard, and snipping-overlay requests remain in the observed loop.
+    if (!RegExp(
+      r'^(?:(?:take|capture|snap|grab)\s+)?(?:a\s+|the\s+)?(?:full[- ]screen\s+)?(?:screenshot|screen shot)(?:\s+of\s+(?:the\s+)?(?:full\s+)?screen)?[.!]?$',
+      caseSensitive: false,
+    ).hasMatch(goal.trim())) {
       return false;
     }
-
-    final wantsSnippingShortcut =
-        normalized.contains('win+shift+s') ||
-        normalized.contains('won+shift+s') ||
-        normalized.contains('win shift s') ||
-        normalized.contains('won shift s') ||
-        normalized.contains('windows+shift+s') ||
-        normalized.contains('windows shift s') ||
-        normalized.contains('snip') ||
-        normalized.contains('snipping') ||
-        normalized.contains('select area') ||
-        normalized.contains('drag');
-
-    final wantsDragSelection =
-        normalized.contains('drag') ||
-        normalized.contains('select area') ||
-        normalized.contains('top start') ||
-        normalized.contains('top corner') ||
-        normalized.contains('bottom end') ||
-        normalized.contains('bottom corner');
-
     try {
-      if (!wantsSnippingShortcut) {
-        onProgress?.call('Taking a full-screen screenshot to clipboard.');
-        await _input.execute(
-          const DesktopAction(type: 'hotkey', keys: ['printscreen']),
-        );
-        return true;
-      }
-
-      final screenState = await _a11y.getScreenState(
-        AutomationTier.accessibilityOnly,
+      _run!.check();
+      final result = await _run!.wait(
+        _input.execute(const DesktopAction(type: 'take_screenshot')),
       );
-      final left = screenState.screenLeft.toDouble();
-      final top = screenState.screenTop.toDouble();
-      final right = left + screenState.screenWidth - 1;
-      final bottom = top + screenState.screenHeight - 1;
-
-      onProgress?.call('Opening Windows snipping overlay.');
-      await _input.execute(
-        const DesktopAction(type: 'hotkey', keys: ['win', 'shift', 's']),
-      );
-      await Future.delayed(const Duration(milliseconds: 900));
-
-      if (wantsDragSelection) {
-        final inset = 12.0;
-        onProgress?.call('Selecting the requested screenshot area.');
-        await _input.execute(
-          DesktopAction(
-            type: 'drag',
-            x: left + inset,
-            y: top + inset,
-            endX: right - inset,
-            endY: bottom - inset,
-            durationMs: 900,
-            button: 'left',
-          ),
-        );
+      if (result['verified'] != true || result['filepath'] is! String) {
+        throw StateError('The screenshot file could not be verified.');
       }
-
+      _history.add({
+        'step': _history.length + 1,
+        'action': {'type': 'take_screenshot'},
+        'result': result,
+      });
+      onProgress?.call('Screenshot saved: ${result['filepath']}');
+      return true;
+    } on AgentCancelledException {
+      _status = AgentStatus.idle;
       return true;
     } catch (e) {
-      final errMsg = _firstLine(e.toString());
-      _log.error('DesktopAgent', 'Deterministic screenshot command failed: $e');
-      onProgress?.call('Screenshot shortcut failed: $errMsg');
       _status = AgentStatus.error;
-      _lastError = errMsg;
+      _lastError = _firstLine(e.toString());
+      onProgress?.call('Screenshot failed: $_lastError');
       return true;
     }
   }
@@ -1069,12 +1118,15 @@ class DesktopAgentService {
   /// repeated identical actions in the stale-loop detector.
   String _actionFingerprint(DesktopAction action) {
     final parts = <String>[action.type];
+    if (action.appName != null) parts.add('app=${action.appName}');
     if (action.keys != null) parts.add('keys=${action.keys!.join('+')}');
-    if (action.targetStableId != null)
+    if (action.targetStableId != null) {
       parts.add('sid=${action.targetStableId}');
+    }
     if (action.targetIndex != null) parts.add('idx=${action.targetIndex}');
-    if (action.x != null && action.y != null)
+    if (action.x != null && action.y != null) {
       parts.add('xy=${action.x},${action.y}');
+    }
     if (action.text != null) parts.add('text=${action.text}');
     if (action.direction != null) parts.add('dir=${action.direction}');
     return parts.join('|');
@@ -1084,127 +1136,5 @@ class DesktopAgentService {
   String _firstLine(String s) {
     final idx = s.indexOf('\n');
     return idx >= 0 ? s.substring(0, idx) : s;
-  }
-
-  /// Attempts to repair truncated JSON by closing unclosed braces/brackets.
-  Map<String, dynamic> _tryRepairJson(String raw) {
-    _log.warn('DesktopAgent', 'Attempting to repair truncated JSON...');
-
-    // Count unclosed braces/brackets
-    int openBraces = 0;
-    int openBrackets = 0;
-    bool inString = false;
-    bool escaped = false;
-
-    for (int i = 0; i < raw.length; i++) {
-      final c = raw[i];
-      if (escaped) {
-        escaped = false;
-        continue;
-      }
-      if (c == '\\') {
-        escaped = true;
-        continue;
-      }
-      if (c == '"') {
-        inString = !inString;
-        continue;
-      }
-      if (inString) continue;
-      if (c == '{') openBraces++;
-      if (c == '}') openBraces--;
-      if (c == '[') openBrackets++;
-      if (c == ']') openBrackets--;
-    }
-
-    // If we're inside a string, close it first
-    String repaired = raw;
-    if (inString) repaired += '"';
-
-    // Close any open brackets then braces
-    for (int i = 0; i < openBrackets; i++) {
-      repaired += ']';
-    }
-    for (int i = 0; i < openBraces; i++) {
-      repaired += '}';
-    }
-
-    try {
-      final result = jsonDecode(repaired) as Map<String, dynamic>;
-      _log.info('DesktopAgent', 'JSON repair successful.');
-      return result;
-    } catch (e) {
-      _log.warn(
-        'DesktopAgent',
-        'JSON repair failed: $e. Using regex fallback.',
-      );
-      // Last resort: try to extract action type with regex
-      return _regexFallback(raw);
-    }
-  }
-
-  /// Regex fallback: extract what we can from raw truncated text.
-  Map<String, dynamic> _regexFallback(String raw) {
-    final thoughtMatch = RegExp(
-      r'"thought"\s*:\s*"([^"]*(?:\\.[^"]*)*)"',
-    ).firstMatch(raw);
-    final typeMatch = RegExp(r'"type"\s*:\s*"(\w+)"').firstMatch(raw);
-    final textMatch = RegExp(
-      r'"text"\s*:\s*"((?:[^"\\]|\\.)*)"',
-    ).firstMatch(raw);
-    final indexMatch = RegExp(r'"targetIndex"\s*:\s*(\d+)').firstMatch(raw);
-    final stableIdMatch = RegExp(
-      r'"targetStableId"\s*:\s*"([^"]+)"',
-    ).firstMatch(raw);
-    final endIndexMatch = RegExp(
-      r'"endTargetIndex"\s*:\s*(\d+)',
-    ).firstMatch(raw);
-    final endStableIdMatch = RegExp(
-      r'"endTargetStableId"\s*:\s*"([^"]+)"',
-    ).firstMatch(raw);
-    final directionMatch = RegExp(r'"direction"\s*:\s*"(\w+)"').firstMatch(raw);
-    final xMatch = RegExp(r'"x"\s*:\s*(-?\d+(?:\.\d+)?)').firstMatch(raw);
-    final yMatch = RegExp(r'"y"\s*:\s*(-?\d+(?:\.\d+)?)').firstMatch(raw);
-    final endXMatch = RegExp(r'"endX"\s*:\s*(-?\d+(?:\.\d+)?)').firstMatch(raw);
-    final endYMatch = RegExp(r'"endY"\s*:\s*(-?\d+(?:\.\d+)?)').firstMatch(raw);
-    final amountMatch = RegExp(r'"amount"\s*:\s*(\d+)').firstMatch(raw);
-    final durationMatch = RegExp(r'"durationMs"\s*:\s*(\d+)').firstMatch(raw);
-    // Extract keys array values
-    final keysMatch = RegExp(r'"keys"\s*:\s*\[(.*?)\]').firstMatch(raw);
-
-    final action = <String, dynamic>{};
-    if (typeMatch != null) action['type'] = typeMatch.group(1);
-    if (textMatch != null)
-      action['text'] = textMatch.group(1)!.replaceAll(r'\"', '"');
-    if (indexMatch != null)
-      action['targetIndex'] = int.tryParse(indexMatch.group(1)!);
-    if (stableIdMatch != null)
-      action['targetStableId'] = stableIdMatch.group(1);
-    if (endIndexMatch != null)
-      action['endTargetIndex'] = int.tryParse(endIndexMatch.group(1)!);
-    if (endStableIdMatch != null)
-      action['endTargetStableId'] = endStableIdMatch.group(1);
-    if (directionMatch != null) action['direction'] = directionMatch.group(1);
-    if (xMatch != null) action['x'] = double.tryParse(xMatch.group(1)!);
-    if (yMatch != null) action['y'] = double.tryParse(yMatch.group(1)!);
-    if (endXMatch != null)
-      action['endX'] = double.tryParse(endXMatch.group(1)!);
-    if (endYMatch != null)
-      action['endY'] = double.tryParse(endYMatch.group(1)!);
-    if (amountMatch != null)
-      action['amount'] = int.tryParse(amountMatch.group(1)!);
-    if (durationMatch != null)
-      action['durationMs'] = int.tryParse(durationMatch.group(1)!);
-    if (keysMatch != null) {
-      final keysStr = keysMatch.group(1)!;
-      action['keys'] = RegExp(
-        r'"(\w+)"',
-      ).allMatches(keysStr).map((m) => m.group(1)!).toList();
-    }
-
-    return {
-      'thought': thoughtMatch?.group(1) ?? '(could not parse)',
-      if (action.isNotEmpty) 'action': action,
-    };
   }
 }

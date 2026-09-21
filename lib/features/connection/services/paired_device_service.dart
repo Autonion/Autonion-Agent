@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -17,7 +18,45 @@ class PairedDeviceService extends ChangeNotifier {
   bool _allowNewPairings = true;
   bool _isInitialized = false;
 
-  PairedDeviceService({required LoggingService log}) : _log = log;
+  final Future<bool> Function(List<PairedDevice>)? syncTrust;
+  Future<void> _trustQueue = Future.value();
+  Future<void> _saveQueue = Future.value();
+  Timer? _trustRetry;
+  bool _trustDirty = true;
+  int _trustRevision = 0;
+  bool _disposed = false;
+
+  PairedDeviceService({required LoggingService log, this.syncTrust})
+    : _log = log;
+
+  Future<void> _syncTrust() {
+    if (syncTrust == null) return Future.value();
+    _trustDirty = true;
+    _trustRevision++;
+    return _trustQueue = _trustQueue.then((_) async {
+      if (!_trustDirty || _disposed) return;
+      final revision = _trustRevision;
+      try {
+        final saved = await syncTrust!(List.of(_pairedDevices));
+        _trustDirty = !saved || revision != _trustRevision;
+      } catch (e) {
+        _trustDirty = true;
+        _log.warn('Auth', 'Unlock helper trust synchronization failed: $e');
+      }
+      _trustRetry?.cancel();
+      if (_trustDirty && !_disposed)
+        _trustRetry = Timer(const Duration(seconds: 30), () {
+          unawaited(_syncTrust());
+        });
+    });
+  }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    _trustRetry?.cancel();
+    super.dispose();
+  }
 
   bool get allowNewPairings => _allowNewPairings;
   List<PairedDevice> get pairedDevices => List.unmodifiable(_pairedDevices);
@@ -42,16 +81,20 @@ class PairedDeviceService extends ChangeNotifier {
       _pairedDevices = [];
     }
     _isInitialized = true;
+    unawaited(_syncTrust());
     notifyListeners();
   }
 
-  Future<void> _save() async {
-    try {
-      final list = _pairedDevices.map((d) => d.toMap()).toList();
-      await _storage.write(key: _storageKey, value: jsonEncode(list));
-    } catch (e) {
-      _log.error('Auth', 'Failed to save paired devices: $e');
-    }
+  Future<void> _save() {
+    final snapshot = jsonEncode(_pairedDevices.map((d) => d.toMap()).toList());
+    // A delayed last-seen write must not restore a subsequently revoked pairing.
+    return _saveQueue = _saveQueue.then((_) async {
+      try {
+        await _storage.write(key: _storageKey, value: snapshot);
+      } catch (e) {
+        _log.error('Auth', 'Failed to save paired devices: $e');
+      }
+    });
   }
 
   Future<bool> setAllowNewPairings(bool value) async {
@@ -96,13 +139,18 @@ class PairedDeviceService extends ChangeNotifier {
     final existingIndex = _pairedDevices.indexWhere((d) => d.id == device.id);
     if (existingIndex >= 0) {
       _pairedDevices[existingIndex] = device;
-      _log.info('Auth', 'Updated pairing for device ${device.name} (${device.id})');
+      _log.info(
+        'Auth',
+        'Updated pairing for device ${device.name} (${device.id})',
+      );
     } else {
+      // Display names are not identities: multiple phones can share a model name.
       _pairedDevices.add(device);
       _log.info('Auth', 'Paired new device: ${device.name} (${device.id})');
     }
 
     await _save();
+    unawaited(_syncTrust());
     notifyListeners();
   }
 
@@ -114,6 +162,7 @@ class PairedDeviceService extends ChangeNotifier {
     if (_pairedDevices.length < countBefore) {
       _log.info('Auth', 'Revoked pairing for device $deviceId');
       await _save();
+      await _syncTrust();
       notifyListeners();
     }
   }

@@ -1,10 +1,16 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:autonion_cross_device/core/services/logging_service.dart';
 import 'package:autonion_cross_device/features/connection/models/paired_device.dart';
 import 'package:autonion_cross_device/features/connection/services/paired_device_service.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+  setUp(() {
+    SharedPreferences.setMockInitialValues({});
+    FlutterSecureStorage.setMockInitialValues({});
+  });
 
   group('PairedDevice model tests', () {
     test('serializes and deserializes correctly', () {
@@ -37,7 +43,10 @@ void main() {
         lastSeen: now,
       );
 
-      final updated = device.copyWith(name: 'Renamed Device', lastIp: '10.0.0.1');
+      final updated = device.copyWith(
+        name: 'Renamed Device',
+        lastIp: '10.0.0.1',
+      );
       expect(updated.id, 'dev-1');
       expect(updated.name, 'Renamed Device');
       expect(updated.secret, 'token1');
@@ -61,17 +70,29 @@ void main() {
 
       await service.pairDevice(device);
 
-      final isPaired = await service.isDevicePaired('phone-test-id', 'super_secure_secret_token_123');
+      final isPaired = await service.isDevicePaired(
+        'phone-test-id',
+        'super_secure_secret_token_123',
+      );
       expect(isPaired, isTrue);
 
-      final isWrongSecret = await service.isDevicePaired('phone-test-id', 'wrong_token');
+      final isWrongSecret = await service.isDevicePaired(
+        'phone-test-id',
+        'wrong_token',
+      );
       expect(isWrongSecret, isFalse);
 
-      final isUnknownDevice = await service.isDevicePaired('unknown-id', 'token');
+      final isUnknownDevice = await service.isDevicePaired(
+        'unknown-id',
+        'token',
+      );
       expect(isUnknownDevice, isFalse);
 
       await service.revokeDevice('phone-test-id');
-      final isStillPaired = await service.isDevicePaired('phone-test-id', 'super_secure_secret_token_123');
+      final isStillPaired = await service.isDevicePaired(
+        'phone-test-id',
+        'super_secure_secret_token_123',
+      );
       expect(isStillPaired, isFalse);
     });
   });

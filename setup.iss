@@ -1,6 +1,6 @@
 [Setup]
 AppName=Autonion Agent
-AppVersion=2.0.5
+AppVersion=2.0.6
 DefaultDirName={autopf}\Autonion Agent
 DefaultGroupName=Autonion
 OutputBaseFilename=Autonion Agent
@@ -16,7 +16,6 @@ Name: "{commonappdata}\Autonion Agent\Unlock"; Permissions: users-modify
 
 [Files]
 Source: "build\windows\x64\runner\Release\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "python\*"; DestDir: "{app}\python"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\Autonion Agent"; Filename: "{app}\autonion_cross_device.exe"

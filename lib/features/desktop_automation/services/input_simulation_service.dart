@@ -12,6 +12,18 @@ class InputSimulationService {
   }) : _log = log,
        _bridge = bridge;
 
+  Future<Map<String, dynamic>> openApp(String name) async {
+    final result = await _bridge.sendCommand('open_app', {'appName': name});
+    if (result is! Map<String, dynamic> ||
+        result['status'] != 'verified' ||
+        result['window'] is! Map) {
+      throw PythonBridgeException(
+        'Native application window could not be verified.',
+      );
+    }
+    return result;
+  }
+
   Future<Map<String, dynamic>> execute(DesktopAction action) async {
     _log.info('InputService', 'Executing action: ${action.type}');
 

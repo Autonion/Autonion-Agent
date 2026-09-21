@@ -13,7 +13,7 @@ class AppConfig {
 
   // ── App Info ─────────────────────────────────────────────
   static const String appName = 'Autonion Agent';
-  static const String appVersion = '2.0.5';
+  static const String appVersion = '2.0.6';
 
   /// Minimum Android Companion version required for full compatibility.
   static const String minRequiredCompanionVersion = '1.1.0';
