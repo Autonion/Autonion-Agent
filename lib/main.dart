@@ -95,7 +95,7 @@ void main(List<String> args) async {
   // ── 5. Check for updates (non-blocking) ─────────────────
   final updateService = getIt<UpdateService>();
   updateService.setLoggingService(log);
-  updateService.checkForUpdate();
+  updateService.startAutomaticChecks();
 
   // ── 6. Re-enforce hidden state after Flutter renders ────
   // Flutter's rendering pipeline can briefly flash the window;
