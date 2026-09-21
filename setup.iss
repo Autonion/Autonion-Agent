@@ -16,7 +16,6 @@ Name: "{commonappdata}\Autonion Agent\Unlock"; Permissions: users-modify
 
 [Files]
 Source: "build\windows\x64\runner\Release\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "python\*"; DestDir: "{app}\python"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\Autonion Agent"; Filename: "{app}\autonion_cross_device.exe"

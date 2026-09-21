@@ -42,7 +42,12 @@ class ApiKeyService extends AiService {
 
     final url = Uri.parse(_config.apiEndpoint);
     final hasImage = messages.any((m) => m.base64Image != null);
-    return _chat(url, messages, jsonSchema: jsonSchema, allowImageRetry: hasImage);
+    return _chat(
+      url,
+      messages,
+      jsonSchema: jsonSchema,
+      allowImageRetry: hasImage,
+    );
   }
 
   Future<AiResponse> _chat(
@@ -58,7 +63,11 @@ class ApiKeyService extends AiService {
       'max_tokens': 4096,
     };
 
-    if (jsonSchema != null) {
+    // Ollama Cloud does not currently enforce structured outputs. Keep local
+    // validation, rather than implying the endpoint provides schema guarantees.
+    final isOllamaCloud =
+        url.host == 'ollama.com' || url.host.endsWith('.ollama.com');
+    if (jsonSchema != null && !isOllamaCloud) {
       body['response_format'] = {
         'type': 'json_schema',
         'json_schema': {
@@ -151,7 +160,7 @@ class ApiKeyService extends AiService {
       final body = {
         'model': _config.apiModel,
         'messages': [
-          {'role': 'user', 'content': 'Hi'}
+          {'role': 'user', 'content': 'Hi'},
         ],
         'max_tokens': 5,
         'temperature': 0.0,
@@ -193,14 +202,13 @@ class ApiKeyService extends AiService {
 
     try {
       final url = Uri.parse(_config.apiEndpoint);
-      final modelsUrl = url.replace(path: url.path.replaceAll('/chat/completions', '/models'));
-      
-      final response = await http.get(
-        modelsUrl,
-        headers: {
-          'Authorization': 'Bearer $_apiKey',
-        },
-      ).timeout(const Duration(seconds: 10));
+      final modelsUrl = url.replace(
+        path: url.path.replaceAll('/chat/completions', '/models'),
+      );
+
+      final response = await http
+          .get(modelsUrl, headers: {'Authorization': 'Bearer $_apiKey'})
+          .timeout(const Duration(seconds: 10));
 
       if (response.statusCode == 200) {
         final json = jsonDecode(response.body) as Map<String, dynamic>;
@@ -211,11 +219,17 @@ class ApiKeyService extends AiService {
               .where((id) => id != null && id.isNotEmpty)
               .cast<String>()
               .toList();
-          _log.info('ApiKeyService', 'Fetched ${models.length} models from Ollama Cloud');
+          _log.info(
+            'ApiKeyService',
+            'Fetched ${models.length} models from Ollama Cloud',
+          );
           return models;
         }
       } else {
-        _log.warn('ApiKeyService', 'listModels failed: HTTP ${response.statusCode}');
+        _log.warn(
+          'ApiKeyService',
+          'listModels failed: HTTP ${response.statusCode}',
+        );
       }
     } catch (e) {
       _log.warn('ApiKeyService', 'listModels check failed: $e');

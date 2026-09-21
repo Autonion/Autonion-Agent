@@ -20,30 +20,55 @@ class PythonBridgeService {
   int _requestId = 0;
   final Map<int, Completer<dynamic>> _pendingRequests = {};
 
-  bool _isInitializing = false;
-  bool get isReady => _process != null;
+  Future<void>? _initialization;
+  Future<void>? _stopping;
+  bool _ready = false;
+  int _generation = 0;
+  bool get isReady => _ready;
+  final Future<Process> Function()? processFactory;
+  final Duration commandTimeout;
 
-  PythonBridgeService({required LoggingService log}) : _log = log;
+  PythonBridgeService({
+    required LoggingService log,
+    this.processFactory,
+    this.commandTimeout = const Duration(seconds: 30),
+  }) : _log = log;
 
   /// Ensures python is available, venv is setup, deps are installed, and agent is running.
-  Future<void> init() async {
-    if (_process != null) return;
-    if (_isInitializing) {
-      _log.info('PythonBridge', 'Initialization already in progress...');
-      return;
-    }
+  Future<void> init() {
+    if (isReady) return Future.value();
+    return _initialization ??= _initialize().whenComplete(
+      () => _initialization = null,
+    );
+  }
 
-    _isInitializing = true;
+  Future<void> _initialize() async {
+    final generation = _generation;
+    await _stopping;
     _log.info('PythonBridge', 'Initializing Python bridge...');
 
     try {
-      final pythonExe = await _setupVenvAndDependencies();
-      await _startAgent(pythonExe);
+      final process = processFactory != null
+          ? await processFactory!()
+          : await _spawnAgent(await _setupVenvAndDependencies());
+      if (generation != _generation) {
+        process.kill();
+        await process.exitCode;
+        throw PythonBridgeException('Initialization cancelled');
+      }
+      _attachAgent(process);
+      final response = await _sendCommand('ping');
+      if (response != 'pong' ||
+          generation != _generation ||
+          !identical(_process, process)) {
+        throw PythonBridgeException('Agent handshake did not complete');
+      }
+      _ready = true;
+      _log.info('PythonBridge', 'Pong received; agent ready.');
     } catch (e) {
+      await stop();
       _log.error('PythonBridge', 'Failed to init Python bridge: $e');
       rethrow;
-    } finally {
-      _isInitializing = false;
     }
   }
 
@@ -55,9 +80,17 @@ class PythonBridgeService {
     if (!isReady) {
       await init();
     }
+    return _sendCommand(action, payload);
+  }
 
+  Future<dynamic> _sendCommand(
+    String action, [
+    Map<String, dynamic>? payload,
+  ]) async {
     final id = ++_requestId;
     final completer = Completer<dynamic>();
+    // A stop/exit may arrive while stdin.flush is still pending.
+    completer.future.ignore();
     _pendingRequests[id] = completer;
 
     final command = {
@@ -70,31 +103,52 @@ class PythonBridgeService {
 
     try {
       _process!.stdin.writeln(jsonStr);
-      _process!.stdin.flush();
+      await _process!.stdin.flush();
     } catch (e) {
       _pendingRequests.remove(id);
       throw PythonBridgeException('Failed to write to agent: $e');
     }
 
-    final timeout = (action == 'select_screen_region' ||
-            action == 'select_ui_element')
+    final timeout =
+        (action == 'select_screen_region' || action == 'select_ui_element')
         ? const Duration(minutes: 5)
-        : const Duration(seconds: 30);
+        : commandTimeout;
 
     return completer.future.timeout(
       timeout,
-      onTimeout: () {
+      onTimeout: () async {
         _pendingRequests.remove(id);
+        // The Python worker processes commands sequentially. Terminating it
+        // prevents timed-out work from executing after a later task starts.
+        await stop();
         throw PythonBridgeException('Command timed out ($action)');
       },
     );
   }
 
   Future<void> stop() async {
-    if (_process != null) {
+    _generation++;
+    _ready = false;
+    _failPending('Python agent stopped');
+    final process = _process;
+    _process = null;
+    if (process != null) {
       _log.info('PythonBridge', 'Stopping Python agent...');
-      _process!.kill();
-      _process = null;
+      process.kill();
+      final stopping = process.exitCode.then<void>((_) {});
+      _stopping = stopping;
+      await stopping;
+      if (identical(_stopping, stopping)) _stopping = null;
+    }
+  }
+
+  void _failPending(String message) {
+    final pending = _pendingRequests.values.toList();
+    _pendingRequests.clear();
+    for (final request in pending) {
+      if (!request.isCompleted) {
+        request.completeError(PythonBridgeException(message));
+      }
     }
   }
 
@@ -122,13 +176,20 @@ class PythonBridgeService {
       }
     }
 
-    // 3. Install dependencies
+    // An existing environment should not access the network or upgrade its
+    // packages on every startup/recovery.
+    final check = await Process.run(venvPythonExe, [
+      '-c',
+      'import uiautomation, pyautogui, mss, PIL, pyperclip, cv2, numpy',
+    ]);
+    if (check.exitCode == 0) return venvPythonExe;
+
+    // 3. Install missing dependencies
     _log.info('PythonBridge', 'Ensuring dependencies are installed...');
     final pipResult = await Process.run(venvPythonExe, [
       '-m',
       'pip',
       'install',
-      '--upgrade',
       'uiautomation',
       'pyautogui',
       'mss',
@@ -141,8 +202,9 @@ class PythonBridgeService {
     if (pipResult.exitCode != 0) {
       final stderr = pipResult.stderr.toString();
       _log.error('PythonBridge', 'Pip install output: $stderr');
-      // We don't throw because sometimes warnings cause non-zero exits,
-      // instead we will fail at runtime if imports fail.
+      throw PythonBridgeException(
+        'Python dependencies could not be installed.',
+      );
     }
 
     return venvPythonExe;
@@ -161,7 +223,7 @@ class PythonBridgeService {
     return null;
   }
 
-  Future<void> _startAgent(String pythonExe) async {
+  Future<Process> _spawnAgent(String pythonExe) async {
     // Find the python script. It is inside `python/desktop_agent.py`.
     // We use the executable's directory so it works when installed or launched via shortcut.
     final exeDir = p.dirname(Platform.resolvedExecutable);
@@ -177,10 +239,14 @@ class PythonBridgeService {
     }
 
     _log.info('PythonBridge', 'Spawning agent process...');
-    _process = await Process.start(pythonExe, [scriptPath]);
+    return Process.start(pythonExe, [scriptPath]);
+  }
+
+  void _attachAgent(Process process) {
+    _process = process;
 
     // Handle stdout (JSON responses)
-    _process!.stdout
+    process.stdout
         .transform(utf8.decoder)
         .transform(const LineSplitter())
         .listen((line) {
@@ -209,7 +275,7 @@ class PythonBridgeService {
         });
 
     // Handle stderr (Agent logs)
-    _process!.stderr
+    process.stderr
         .transform(utf8.decoder)
         .transform(const LineSplitter())
         .listen((line) {
@@ -217,20 +283,13 @@ class PythonBridgeService {
         });
 
     // Handle exit
-    _process!.exitCode.then((code) {
+    process.exitCode.then((code) {
       _log.warn('PythonBridge', 'Agent process exited with code $code');
-      _process = null;
+      if (identical(_process, process)) {
+        _process = null;
+        _ready = false;
+        _failPending('Python agent exited with code $code');
+      }
     });
-
-    // Ping test
-    _log.info('PythonBridge', 'Pinging agent...');
-    final response = await sendCommand('ping');
-    if (response == 'pong' ||
-        (response is Map &&
-            (response['status'] == 'pong' || response['data'] == 'pong'))) {
-      _log.info('PythonBridge', 'Pong received.');
-    } else {
-      _log.warn('PythonBridge', 'Unexpected ping response: $response');
-    }
   }
 }

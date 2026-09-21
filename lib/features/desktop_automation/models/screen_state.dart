@@ -16,6 +16,7 @@ class ScreenState {
   final int? activeWindowHandle;
   final String? activeWindowSource;
   final bool activeWindowIsSystemSurface;
+  final bool observationComplete;
   final int? mouseX;
   final int? mouseY;
   final int screenLeft;
@@ -38,6 +39,7 @@ class ScreenState {
     this.activeWindowHandle,
     this.activeWindowSource,
     this.activeWindowIsSystemSurface = false,
+    this.observationComplete = true,
     this.mouseX,
     this.mouseY,
     this.screenLeft = 0,
@@ -66,6 +68,7 @@ class ScreenState {
       activeWindowSource: json['activeWindowSource'] as String?,
       activeWindowIsSystemSurface:
           json['activeWindowIsSystemSurface'] as bool? ?? false,
+      observationComplete: json['observationComplete'] as bool? ?? true,
       mouseX: json['mouseX'] as int?,
       mouseY: json['mouseY'] as int?,
       screenLeft: json['screenLeft'] as int? ?? 0,
@@ -93,6 +96,7 @@ class ScreenState {
     'activeWindowHandle': activeWindowHandle,
     'activeWindowSource': activeWindowSource,
     'activeWindowIsSystemSurface': activeWindowIsSystemSurface,
+    'observationComplete': observationComplete,
     'mouse': {'x': mouseX, 'y': mouseY},
     'elementCount': elements.length,
     'elementTreeHash': elementTreeHash,

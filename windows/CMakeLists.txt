@@ -79,6 +79,12 @@ install(TARGETS ${BINARY_NAME} RUNTIME DESTINATION "${CMAKE_INSTALL_PREFIX}"
 install(TARGETS autonion_unlock_helper RUNTIME DESTINATION "${CMAKE_INSTALL_PREFIX}"
   COMPONENT Runtime)
 
+# The supervised desktop worker must match the Dart executable in every bundle.
+install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/../python/"
+  DESTINATION "${CMAKE_INSTALL_PREFIX}/python" COMPONENT Runtime
+  FILES_MATCHING PATTERN "*.py"
+  PATTERN "tests" EXCLUDE PATTERN "__pycache__" EXCLUDE)
+
 install(FILES "${FLUTTER_ICU_DATA_FILE}" DESTINATION "${INSTALL_BUNDLE_DATA_DIR}"
   COMPONENT Runtime)
 

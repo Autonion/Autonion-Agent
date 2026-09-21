@@ -12,6 +12,7 @@ import re
 from pathlib import Path
 from ctypes import wintypes
 from unlock_verification import query_console_session, confirm_unlock_result
+from native_apps import discover_windows_apps, open_verified_app
 
 import uiautomation as auto
 import pyautogui
@@ -73,6 +74,7 @@ class DesktopAgent:
         self.last_target_window_info = {}
         self.last_launch_request = {}
         self.automation_topmost_window_handle = 0
+        self.last_tree_truncated = False
 
     def run(self):
         eprint("Python bridge starting up. Waiting for JSON commands on stdin...")
@@ -95,6 +97,8 @@ class DesktopAgent:
                     self.handle_execute_action(command)
                 elif action == "list_apps":
                     self.handle_list_apps(command)
+                elif action == "open_app":
+                    self.handle_open_app(command)
                 elif action == "select_screen_region":
                     self.handle_select_screen_region(command)
                 elif action == "template_match":
@@ -159,6 +163,7 @@ class DesktopAgent:
             "mouseX": mouse_x,
             "mouseY": mouse_y,
             "elementTreeHash": self._hash_json(elements),
+            "observationComplete": not self.last_tree_truncated,
             "activeWindowTitle": self.active_window_info.get("title"),
             "activeWindowClassName": self.active_window_info.get("className"),
             "activeWindowProcessId": self.active_window_info.get("processId"),
@@ -177,6 +182,25 @@ class DesktopAgent:
     def handle_list_apps(self, command):
         apps = self._list_installed_apps()
         self.send_response(command.get("id"), success=True, data={"apps": apps})
+
+    def handle_open_app(self, command):
+        if sys.platform != "win32":
+            raise RuntimeError("Verified native app launch is currently supported on Windows only")
+        name = str(command.get("payload", {}).get("appName") or "").strip()
+        if not name:
+            raise ValueError("open_app requires appName")
+        # Refresh per request so an installation/removal cannot leave stale identities.
+        apps = discover_windows_apps()
+        result = open_verified_app(
+            name, apps,
+            windows=lambda: self._snapshot_top_level_windows(include_minimized=True),
+            activate=lambda hwnd: self._activate_window(hwnd, restore_if_minimized=True),
+            describe=self._describe_window, is_foreground=self._is_foreground_window,
+        )
+        window = result["window"]
+        self.last_target_window_handle = int(window["hwnd"])
+        self.last_target_window_info = window
+        self.send_response(command.get("id"), success=True, data=result)
 
     def handle_execute_action(self, command):
         payload = command.get("payload", {})
@@ -220,6 +244,8 @@ class DesktopAgent:
                     "mouseX": mouse_x,
                     "mouseY": mouse_y,
                     "filepath": result.get("filepath"),
+                    "verified": result.get("verified", False),
+                    "sha256": result.get("sha256"),
                 })
                 return
             elif action_type == "done":
@@ -1097,6 +1123,8 @@ class DesktopAgent:
         self.active_window_info = {}
         elements = []
         node_id_counter = 0
+        scan_deadline = time.monotonic() + 6.0
+        self.last_tree_truncated = False
 
         root = auto.GetRootControl()
         scan_root, scan_info = self._select_accessibility_scan_root(root, payload)
@@ -1136,7 +1164,10 @@ class DesktopAgent:
 
         def walk(control, depth, path="0"):
             nonlocal node_id_counter
-            if depth > 14 or not control:
+            if not control:
+                return
+            if depth > 14 or node_id_counter >= 350 or time.monotonic() >= scan_deadline:
+                self.last_tree_truncated = True
                 return
 
             try:
@@ -1346,11 +1377,14 @@ class DesktopAgent:
 
         save_dir = os.path.join(os.path.expanduser("~"), "Pictures", "Autonion Screenshots")
         os.makedirs(save_dir, exist_ok=True)
-        filename = f"screenshot_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+        filename = f"screenshot_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.png"
         filepath = os.path.join(save_dir, filename)
         img.save(filepath, "PNG")
+        with Image.open(filepath) as saved:
+            saved.verify()
+        digest = hashlib.sha256(Path(filepath).read_bytes()).hexdigest()
         eprint(f"Screenshot saved: {filepath}")
-        return {"filepath": filepath}
+        return {"filepath": filepath, "verified": True, "sha256": digest}
 
     def _type_text(self, text):
         if not text:
